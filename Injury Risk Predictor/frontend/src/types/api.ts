@@ -5,6 +5,8 @@ export interface PlayerSummary {
   risk_level: 'High' | 'Medium' | 'Low';
   risk_probability: number;
   archetype: string;
+  minutes_played: number;
+  is_starter: boolean;
 }
 
 export interface RiskFactors {
@@ -53,4 +55,37 @@ export interface TeamOverview {
   low_risk_count: number;
   avg_risk: number;
   players: PlayerSummary[];
+}
+
+// FPL Types
+export interface LeagueStanding {
+  id: number;
+  name: string;
+  short_name: string;
+  position: number;
+  played: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  points: number;
+  form: string | null;
+  strength: number;
+}
+
+export interface GameweekSummary {
+  gameweek: number;
+  name: string;
+  deadline: string | null;
+  is_current: boolean;
+  is_next: boolean;
+  fixture_count: number;
+  double_gameweek_teams: string[];
+  featured_matches: string[];
+}
+
+export interface FPLInsights {
+  current_gameweek: number | null;
+  standings: LeagueStanding[];
+  upcoming_gameweeks: GameweekSummary[];
+  has_double_gameweek: boolean;
 }

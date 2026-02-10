@@ -234,6 +234,84 @@ class TransfermarktScraper:
                 continue
         return None
 
+    def get_player_stats(self, slug: str, player_id: str, season: str = "2024") -> Dict:
+        """
+        Get player's season statistics including minutes played.
+
+        Args:
+            slug: Player URL slug
+            player_id: Transfermarkt player ID
+            season: Season year (e.g., "2024" for 2024/25)
+
+        Returns:
+            Dict with: minutes_played, appearances, goals, assists
+        """
+        url = f"{BASE_URL}/{slug}/leistungsdaten/spieler/{player_id}/saison/{season}/plus/1"
+
+        try:
+            html = self._fetch(url)
+            soup = BeautifulSoup(html, "html.parser")
+
+            stats = {
+                "minutes_played": 0,
+                "appearances": 0,
+                "goals": 0,
+                "assists": 0,
+                "is_starter": False,
+            }
+
+            # Find the stats table (tfoot has totals)
+            footer = soup.select_one("table.items tfoot tr")
+            if footer:
+                cells = footer.select("td")
+                # Typical columns: Appearances, Goals, Assists, Yellow, Red, Minutes
+                for i, cell in enumerate(cells):
+                    text = cell.get_text(strip=True).replace(".", "").replace(",", "").replace("'", "")
+
+                    # Minutes is usually the last numeric column with high values
+                    if text.isdigit():
+                        val = int(text)
+                        if val > 100:  # Likely minutes
+                            stats["minutes_played"] = val
+                        elif val < 50 and i < 3:  # Early columns: appearances
+                            if stats["appearances"] == 0:
+                                stats["appearances"] = val
+
+            # Alternative: look for specific labeled rows
+            info_items = soup.select("li.data-header__label")
+            for item in info_items:
+                label = item.get_text(strip=True).lower()
+                value_span = item.select_one("span.data-header__content")
+                if value_span:
+                    value = value_span.get_text(strip=True).replace(".", "").replace(",", "").replace("'", "")
+                    if "minute" in label and value.isdigit():
+                        stats["minutes_played"] = int(value)
+                    elif "appearance" in label and value.isdigit():
+                        stats["appearances"] = int(value)
+
+            # Parse from the performance data box if available
+            perf_box = soup.select("div.data-header__box--small span")
+            for span in perf_box:
+                text = span.get_text(strip=True)
+                if "'" in text:  # Minutes often shown as "1,234'"
+                    minutes_text = text.replace("'", "").replace(".", "").replace(",", "")
+                    if minutes_text.isdigit():
+                        stats["minutes_played"] = int(minutes_text)
+
+            # Determine if player is a regular starter (>1000 minutes = ~11 full games)
+            stats["is_starter"] = stats["minutes_played"] >= 900
+
+            return stats
+        except Exception as e:
+            logger.debug(f"Failed to get stats for {slug}: {e}")
+            return {
+                "minutes_played": 0,
+                "appearances": 0,
+                "goals": 0,
+                "assists": 0,
+                "is_starter": False,
+            }
+
     def get_player_age(self, slug: str, player_id: str) -> Optional[int]:
         """
         Get player's age from their profile page.
@@ -284,12 +362,13 @@ class TransfermarktScraper:
             logger.debug(f"Failed to get age for {slug}: {e}")
             return None
 
-    def fetch_player_injuries(self, player_name: str) -> Optional[Dict]:
+    def fetch_player_injuries(self, player_name: str, include_stats: bool = True) -> Optional[Dict]:
         """
         Fetch complete injury history for a player by name.
 
         Args:
             player_name: Full player name (e.g., "Erling Haaland")
+            include_stats: Whether to also fetch season stats (minutes played)
 
         Returns:
             Dict with:
@@ -300,6 +379,8 @@ class TransfermarktScraper:
                 - last_injury_date: Most recent injury date
                 - days_since_last: Days since last injury
                 - age: Player's current age
+                - minutes_played: Season minutes (if include_stats=True)
+                - is_starter: Whether player is a regular starter
         """
         # Search for player
         player = self.search_player(player_name)
@@ -309,6 +390,11 @@ class TransfermarktScraper:
 
         # Get player age from profile page
         age = self.get_player_age(player["slug"], player["player_id"])
+
+        # Get season stats (minutes played)
+        stats = {}
+        if include_stats:
+            stats = self.get_player_stats(player["slug"], player["player_id"])
 
         # Get injury history
         injuries = self.get_injury_history(player["slug"], player["player_id"])
@@ -322,7 +408,10 @@ class TransfermarktScraper:
                 "total_injuries": 0,
                 "total_days_out": 0,
                 "last_injury_date": None,
-                "days_since_last": 365 * 5  # 5 years default for "never injured"
+                "days_since_last": 365 * 5,  # 5 years default for "never injured"
+                "minutes_played": stats.get("minutes_played", 0),
+                "appearances": stats.get("appearances", 0),
+                "is_starter": stats.get("is_starter", False),
             }
 
         # Calculate stats
@@ -348,7 +437,10 @@ class TransfermarktScraper:
             "total_injuries": len(injuries),
             "total_days_out": total_days,
             "last_injury_date": last_date.strftime("%Y-%m-%d") if last_date else None,
-            "days_since_last": max(0, days_since)
+            "days_since_last": max(0, days_since),
+            "minutes_played": stats.get("minutes_played", 0),
+            "appearances": stats.get("appearances", 0),
+            "is_starter": stats.get("is_starter", False),
         }
 
 

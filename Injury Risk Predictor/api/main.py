@@ -21,6 +21,7 @@ from src.inference.story_generator import (
     generate_risk_factors_list,
     get_recommendation_text,
 )
+from src.data_loaders.fpl_api import FPLClient, get_fpl_insights
 
 app = FastAPI(
     title="EPL Injury Risk Predictor API",
@@ -69,6 +70,8 @@ class PlayerSummary(BaseModel):
     risk_level: str
     risk_probability: float
     archetype: str
+    minutes_played: int = 0
+    is_starter: bool = False
 
 
 class RiskFactors(BaseModel):
@@ -124,6 +127,38 @@ class HealthCheck(BaseModel):
     status: str
     models_loaded: bool
     player_count: int
+
+
+class LeagueStanding(BaseModel):
+    id: int
+    name: str
+    short_name: str
+    position: int
+    played: int
+    wins: int
+    draws: int
+    losses: int
+    points: int
+    form: Optional[str]
+    strength: int
+
+
+class GameweekSummary(BaseModel):
+    gameweek: int
+    name: str
+    deadline: Optional[str]
+    is_current: bool
+    is_next: bool
+    fixture_count: int
+    double_gameweek_teams: List[str]
+    featured_matches: List[str]
+
+
+class FPLInsights(BaseModel):
+    current_gameweek: Optional[int]
+    standings: List[LeagueStanding]
+    upcoming_gameweeks: List[GameweekSummary]
+    has_double_gameweek: bool
 
 
 # ============================================================
@@ -293,6 +328,7 @@ async def list_players(team: Optional[str] = None, risk_level: Optional[str] = N
     players = []
     for _, row in df.iterrows():
         prob = row.get("ensemble_prob", 0.5)
+        minutes = int(row.get("minutes_played", 0))
         players.append(PlayerSummary(
             name=row.get("name", "Unknown"),
             team=row.get("team", "Unknown"),
@@ -300,6 +336,8 @@ async def list_players(team: Optional[str] = None, risk_level: Optional[str] = N
             risk_level=get_risk_level(prob),
             risk_probability=round(prob, 3),
             archetype=row.get("archetype", "Unknown"),
+            minutes_played=minutes,
+            is_starter=minutes >= 900,  # ~10 full games = regular starter
         ))
 
     return players
@@ -367,6 +405,7 @@ async def get_team_overview(team_name: str):
     players = []
     for _, row in team_df.iterrows():
         prob = row.get("ensemble_prob", 0.5)
+        minutes = int(row.get("minutes_played", 0))
         players.append(PlayerSummary(
             name=row.get("name", "Unknown"),
             team=row.get("team", "Unknown"),
@@ -374,6 +413,8 @@ async def get_team_overview(team_name: str):
             risk_level=get_risk_level(prob),
             risk_probability=round(prob, 3),
             archetype=row.get("archetype", "Unknown"),
+            minutes_played=minutes,
+            is_starter=minutes >= 900,
         ))
 
     return TeamOverview(
@@ -391,6 +432,65 @@ async def get_team_overview(team_name: str):
 async def list_archetypes():
     """List all player archetypes with descriptions."""
     return ARCHETYPE_DESCRIPTIONS
+
+
+@app.get("/api/fpl/insights", response_model=FPLInsights)
+async def get_fpl_insights_endpoint():
+    """
+    Get FPL insights including standings, fixtures, and double gameweeks.
+
+    Useful for understanding the context of injury risk:
+    - Teams with double gameweeks = higher injury risk but FPL upside
+    - Top teams = higher stakes matches
+    - Current form = confidence in predictions
+    """
+    try:
+        client = FPLClient()
+        standings = client.get_standings()
+        upcoming = client.get_upcoming_fixtures_summary(3)
+        current_gw = client.get_current_gameweek()
+
+        return FPLInsights(
+            current_gameweek=current_gw.get("id") if current_gw else None,
+            standings=[LeagueStanding(**s) for s in standings],
+            upcoming_gameweeks=[GameweekSummary(**gw) for gw in upcoming],
+            has_double_gameweek=any(gw.get("double_gameweek_teams") for gw in upcoming),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"FPL API error: {str(e)}")
+
+
+@app.get("/api/fpl/standings", response_model=List[LeagueStanding])
+async def get_league_standings():
+    """Get current Premier League standings."""
+    try:
+        client = FPLClient()
+        standings = client.get_standings()
+        return [LeagueStanding(**s) for s in standings]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"FPL API error: {str(e)}")
+
+
+@app.get("/api/fpl/double-gameweeks")
+async def get_double_gameweeks():
+    """
+    Get teams with upcoming double gameweeks.
+
+    Returns mapping of gameweek -> list of team names with 2+ fixtures.
+    FPL insight: These players have higher ceiling but also fatigue risk.
+    """
+    try:
+        client = FPLClient()
+        teams = {t["id"]: t["name"] for t in client.get_teams()}
+        double_gws = client.get_double_gameweek_teams()
+
+        result = {}
+        for gw, team_ids in double_gws.items():
+            result[str(gw)] = [teams.get(tid, "Unknown") for tid in team_ids]
+
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"FPL API error: {str(e)}")
 
 
 if __name__ == "__main__":

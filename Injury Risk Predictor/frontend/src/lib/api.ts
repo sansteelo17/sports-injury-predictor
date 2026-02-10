@@ -1,4 +1,4 @@
-import { PlayerSummary, PlayerRisk, TeamOverview } from '@/types/api';
+import { PlayerSummary, PlayerRisk, TeamOverview, FPLInsights, LeagueStanding } from '@/types/api';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL
   ? `${process.env.NEXT_PUBLIC_API_URL}/api`
@@ -35,4 +35,17 @@ export async function getTeamOverview(teamName: string): Promise<TeamOverview> {
 
 export async function getArchetypes(): Promise<Record<string, string>> {
   return fetchAPI<Record<string, string>>('/archetypes');
+}
+
+// FPL API functions
+export async function getFPLInsights(): Promise<FPLInsights> {
+  return fetchAPI<FPLInsights>('/fpl/insights');
+}
+
+export async function getLeagueStandings(): Promise<LeagueStanding[]> {
+  return fetchAPI<LeagueStanding[]>('/fpl/standings');
+}
+
+export async function getDoubleGameweeks(): Promise<Record<string, string[]>> {
+  return fetchAPI<Record<string, string[]>>('/fpl/double-gameweeks');
 }

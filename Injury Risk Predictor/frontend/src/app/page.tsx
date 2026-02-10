@@ -1,12 +1,13 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { getTeams, getTeamOverview, getPlayerRisk } from '@/lib/api';
-import { TeamOverview as TeamOverviewType, PlayerRisk } from '@/types/api';
+import { getTeams, getTeamOverview, getPlayerRisk, getFPLInsights } from '@/lib/api';
+import { TeamOverview as TeamOverviewType, PlayerRisk, FPLInsights as FPLInsightsType } from '@/types/api';
 import { TeamSelector } from '@/components/TeamSelector';
 import { TeamOverview } from '@/components/TeamOverview';
 import { PlayerList } from '@/components/PlayerList';
 import { PlayerCard } from '@/components/PlayerCard';
+import { FPLInsights } from '@/components/FPLInsights';
 import { Activity, Shield, Info, Moon, Sun, Zap } from 'lucide-react';
 
 export default function Home() {
@@ -15,15 +16,20 @@ export default function Home() {
   const [teamOverview, setTeamOverview] = useState<TeamOverviewType | null>(null);
   const [selectedPlayer, setSelectedPlayer] = useState<string | null>(null);
   const [playerRisk, setPlayerRisk] = useState<PlayerRisk | null>(null);
+  const [fplInsights, setFplInsights] = useState<FPLInsightsType | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [darkMode, setDarkMode] = useState(true);
 
-  // Load teams on mount
+  // Load teams and FPL data on mount
   useEffect(() => {
     getTeams()
       .then(setTeams)
       .catch((err) => setError('Failed to load teams. Is the API running?'));
+
+    getFPLInsights()
+      .then(setFplInsights)
+      .catch((err) => console.log('FPL insights unavailable'));
   }, []);
 
   // Load team overview when team selected
@@ -144,6 +150,14 @@ export default function Home() {
             {/* Left Column - Team Overview & Player List */}
             <div className="lg:col-span-1 space-y-6">
               <TeamOverview team={teamOverview} darkMode={darkMode} />
+
+              {fplInsights && (
+                <FPLInsights
+                  insights={fplInsights}
+                  selectedTeam={selectedTeam}
+                  darkMode={darkMode}
+                />
+              )}
 
               <div className={`${cardClass} border rounded-xl p-4`}>
                 <h3 className={`font-semibold mb-3 flex items-center gap-2 ${textClass}`}>
