@@ -155,10 +155,9 @@ cython_debug/
 *.h5
 *.hdf5
 
-# Model files (use Git LFS or cloud storage for these)
-models/*.pkl
-models/*.joblib
-models/*.h5
+# Model files - allow our trained models for deployment
+# (only ~9MB total, acceptable for git)
+!models/*.pkl
 
 # Logs
 logs/
