@@ -8,7 +8,8 @@ services:
     runtime: python
     region: oregon
     plan: free
-    buildCommand: pip install -r api/requirements.txt && pip install pandas numpy scikit-learn catboost lightgbm xgboost joblib beautifulsoup4 requests
+    rootDir: Injury Risk Predictor
+    buildCommand: pip install -r api/requirements.txt
     startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
@@ -21,8 +22,9 @@ services:
     runtime: node
     region: oregon
     plan: free
-    buildCommand: cd frontend && npm install && npm run build
-    startCommand: cd frontend && npm run start
+    rootDir: Injury Risk Predictor/frontend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
     envVars:
       - key: NODE_VERSION
         value: "20"
