@@ -23,7 +23,7 @@ export function RiskBadge({ level, probability, size = 'md', darkMode = true }: 
     },
     Low: {
       dark: 'bg-[#86efac]/20 text-[#86efac] border-[#86efac]/30',
-      light: 'bg-green-100 text-green-800 border-green-200',
+      light: 'bg-emerald-100 text-emerald-700 border-emerald-200',
       icon: CheckCircle,
     },
   };

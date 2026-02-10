@@ -85,6 +85,14 @@ class ModelPredictions(BaseModel):
     catboost: float
 
 
+class ImpliedOdds(BaseModel):
+    """Betting odds derived from injury probability."""
+    american: str  # e.g., "-150" or "+200"
+    decimal: float  # e.g., 1.67
+    fractional: str  # e.g., "2/3"
+    implied_prob: float  # The probability used
+
+
 class PlayerRisk(BaseModel):
     name: str
     team: str
@@ -98,6 +106,7 @@ class PlayerRisk(BaseModel):
     model_predictions: ModelPredictions
     recommendations: List[str]
     story: str  # Personalized narrative
+    implied_odds: ImpliedOdds  # Betting odds representation
     last_injury_date: Optional[str]
 
 
@@ -138,6 +147,47 @@ def get_risk_level(prob: float) -> str:
     elif prob >= 0.35:
         return "Medium"
     return "Low"
+
+
+def calculate_implied_odds(prob: float) -> ImpliedOdds:
+    """
+    Convert probability to betting odds formats.
+
+    This shows what odds a bookmaker would offer if injury markets existed.
+    Higher probability = shorter odds (less payout).
+    """
+    # Clamp probability to avoid division issues
+    prob = max(0.01, min(0.99, prob))
+
+    # Decimal odds: 1 / probability
+    decimal_odds = round(1 / prob, 2)
+
+    # American odds
+    if prob >= 0.5:
+        # Favorite: negative odds (how much to bet to win $100)
+        american = int(-100 * prob / (1 - prob))
+        american_str = str(american)
+    else:
+        # Underdog: positive odds (how much you win on $100 bet)
+        american = int(100 * (1 - prob) / prob)
+        american_str = f"+{american}"
+
+    # Fractional odds (simplified)
+    # Convert decimal to fraction
+    if decimal_odds >= 2:
+        numerator = int(round((decimal_odds - 1) * 1))
+        fractional = f"{numerator}/1"
+    else:
+        # For odds like 1.5, show as 1/2
+        denominator = int(round(1 / (decimal_odds - 1)))
+        fractional = f"1/{denominator}"
+
+    return ImpliedOdds(
+        american=american_str,
+        decimal=decimal_odds,
+        fractional=fractional,
+        implied_prob=round(prob, 3),
+    )
 
 
 def get_personalized_insights(row: dict) -> List[str]:
@@ -196,6 +246,7 @@ def player_row_to_risk(row) -> PlayerRisk:
         ),
         recommendations=get_personalized_insights(row),
         story=story,
+        implied_odds=calculate_implied_odds(prob),
         last_injury_date=str(row.get("last_injury_date")) if row.get("last_injury_date") else None,
     )
 

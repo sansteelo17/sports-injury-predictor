@@ -18,7 +18,7 @@ export function TeamSelector({ teams, selectedTeam, onSelectTeam, darkMode = tru
         className={`w-full appearance-none border-2 rounded-xl px-4 py-3 pr-10 font-medium focus:outline-none transition-colors cursor-pointer ${
           darkMode
             ? 'bg-[#141414] border-[#1f1f1f] text-white focus:border-[#86efac]'
-            : 'bg-white border-gray-200 text-gray-900 focus:border-green-500'
+            : 'bg-white border-gray-200 text-gray-900 focus:border-emerald-500'
         }`}
       >
         <option value="">Select a team...</option>

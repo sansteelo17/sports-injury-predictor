@@ -73,12 +73,12 @@ export default function Home() {
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="relative">
-              <Activity size={32} className="text-[#86efac]" />
-              <Zap size={14} className="absolute -top-1 -right-1 text-[#86efac]" />
+              <Activity size={32} className={darkMode ? 'text-[#86efac]' : 'text-emerald-600'} />
+              <Zap size={14} className={`absolute -top-1 -right-1 ${darkMode ? 'text-[#86efac]' : 'text-emerald-600'}`} />
             </div>
             <div>
               <h1 className="text-xl font-bold tracking-tight">
-                Injury<span className="text-[#86efac]">Watch</span>
+                Injury<span className={darkMode ? 'text-[#86efac]' : 'text-emerald-600'}>Watch</span>
               </h1>
               <p className={`text-xs ${mutedClass}`}>
                 ML-powered injury prediction
@@ -101,11 +101,11 @@ export default function Home() {
       {/* Main Content */}
       <main className="max-w-6xl mx-auto px-4 py-8">
         {/* League Notice */}
-        <div className={`${darkMode ? 'bg-[#86efac]/10 border-[#86efac]/30' : 'bg-green-50 border-green-200'} border rounded-xl p-4 mb-6`}>
+        <div className={`${darkMode ? 'bg-[#86efac]/10 border-[#86efac]/30' : 'bg-emerald-50 border-emerald-200'} border rounded-xl p-4 mb-6`}>
           <div className="flex items-start gap-3">
-            <Info className="text-[#86efac] flex-shrink-0 mt-0.5" size={18} />
+            <Info className={darkMode ? 'text-[#86efac]' : 'text-emerald-600'} size={18} />
             <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-              <strong className="text-[#86efac]">Currently covering Premier League.</strong>
+              <strong className={darkMode ? 'text-[#86efac]' : 'text-emerald-600'}>Currently covering Premier League.</strong>
               {' '}More leagues coming soon. Our ML model analyzes injury history, recovery patterns, and severity to predict injury risk over the next 2 weeks.
             </div>
           </div>
@@ -134,7 +134,7 @@ export default function Home() {
         {/* Loading State */}
         {loading && (
           <div className="flex items-center justify-center py-12">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#86efac]"></div>
+            <div className={`animate-spin rounded-full h-8 w-8 border-b-2 ${darkMode ? 'border-[#86efac]' : 'border-emerald-600'}`}></div>
           </div>
         )}
 
@@ -147,7 +147,7 @@ export default function Home() {
 
               <div className={`${cardClass} border rounded-xl p-4`}>
                 <h3 className={`font-semibold mb-3 flex items-center gap-2 ${textClass}`}>
-                  <Shield size={18} className="text-[#86efac]" />
+                  <Shield size={18} className={darkMode ? 'text-[#86efac]' : 'text-emerald-600'} />
                   Squad
                 </h3>
                 <div className="max-h-96 overflow-y-auto">
@@ -185,7 +185,7 @@ export default function Home() {
           <div className="text-center py-16">
             <div className="relative inline-block mb-6">
               <Activity size={64} className={darkMode ? 'text-[#1f1f1f]' : 'text-gray-200'} />
-              <Zap size={24} className="absolute -top-2 -right-2 text-[#86efac] animate-pulse" />
+              <Zap size={24} className={`absolute -top-2 -right-2 animate-pulse ${darkMode ? 'text-[#86efac]' : 'text-emerald-600'}`} />
             </div>
             <h2 className={`text-xl font-semibold mb-2 ${textClass}`}>
               Welcome to InjuryWatch

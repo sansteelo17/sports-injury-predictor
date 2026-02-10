@@ -21,10 +21,10 @@ export function PlayerList({ players, onSelectPlayer, selectedPlayer, darkMode =
             selectedPlayer === player.name
               ? darkMode
                 ? 'bg-[#86efac]/10 border-2 border-[#86efac]/50'
-                : 'bg-purple-100 border-2 border-purple-500'
+                : 'bg-emerald-50 border-2 border-emerald-500'
               : darkMode
                 ? 'bg-[#141414] hover:bg-[#1f1f1f] border-2 border-transparent hover:border-[#86efac]/30'
-                : 'bg-white hover:bg-gray-50 border-2 border-transparent'
+                : 'bg-white hover:bg-gray-50 border-2 border-transparent hover:border-emerald-300'
           }`}
         >
           <div className="flex items-center justify-between">

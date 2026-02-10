@@ -12,7 +12,8 @@ import {
   Shield,
   AlertCircle,
   ChevronRight,
-  FileText
+  FileText,
+  Coins
 } from 'lucide-react';
 
 interface PlayerCardProps {
@@ -68,12 +69,12 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
       <div className={`px-6 py-6 ${
         darkMode
           ? 'bg-gradient-to-r from-[#1f1f1f] to-[#141414] border-b border-[#1f1f1f]'
-          : 'bg-gradient-to-r from-purple-600 to-purple-900 text-white'
+          : 'bg-gradient-to-r from-emerald-600 to-emerald-800 text-white'
       }`}>
         <div className="flex justify-between items-start">
           <div>
             <h2 className={`text-2xl font-bold ${darkMode ? 'text-white' : ''}`}>{player.name}</h2>
-            <div className={`flex items-center gap-2 mt-1 ${darkMode ? 'text-gray-400' : 'text-purple-200'}`}>
+            <div className={`flex items-center gap-2 mt-1 ${darkMode ? 'text-gray-400' : 'text-emerald-100'}`}>
               <span>{player.team}</span>
               <span>•</span>
               <span>{player.position}</span>
@@ -140,12 +141,60 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
       {player.story && (
         <div className={`px-6 py-4 ${darkMode ? 'border-b border-[#1f1f1f]' : 'border-b border-gray-100'}`}>
           <div className="flex items-start gap-3">
-            <FileText className={darkMode ? 'text-[#86efac] mt-0.5' : 'text-green-500 mt-0.5'} size={20} />
+            <FileText className={darkMode ? 'text-[#86efac] mt-0.5' : 'text-emerald-600 mt-0.5'} size={20} />
             <div className="flex-1">
               <span className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>Risk Analysis</span>
               <p className={`text-sm mt-2 leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
                 {player.story}
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Implied Odds */}
+      {player.implied_odds && (
+        <div className={`px-6 py-4 ${darkMode ? 'border-b border-[#1f1f1f]' : 'border-b border-gray-100'}`}>
+          <div className="flex items-start gap-3">
+            <Coins className={darkMode ? 'text-amber-400 mt-0.5' : 'text-amber-600 mt-0.5'} size={20} />
+            <div className="flex-1">
+              <div className="flex items-center gap-2 mb-3">
+                <span className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>Market Odds</span>
+                <span className={`text-xs px-2 py-0.5 rounded-full ${
+                  darkMode ? 'bg-amber-500/20 text-amber-400' : 'bg-amber-100 text-amber-700'
+                }`}>
+                  Implied
+                </span>
+              </div>
+              <p className={`text-xs mb-3 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                If bookmakers offered injury markets, these would be the odds for this player getting injured in the next 2 weeks:
+              </p>
+              <div className="grid grid-cols-3 gap-4">
+                <div className={`text-center p-3 rounded-lg ${
+                  darkMode ? 'bg-[#0a0a0a] border border-[#1f1f1f]' : 'bg-gray-50 border border-gray-200'
+                }`}>
+                  <div className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    {player.implied_odds.american}
+                  </div>
+                  <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>American</div>
+                </div>
+                <div className={`text-center p-3 rounded-lg ${
+                  darkMode ? 'bg-[#0a0a0a] border border-[#1f1f1f]' : 'bg-gray-50 border border-gray-200'
+                }`}>
+                  <div className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    {player.implied_odds.decimal}
+                  </div>
+                  <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>Decimal</div>
+                </div>
+                <div className={`text-center p-3 rounded-lg ${
+                  darkMode ? 'bg-[#0a0a0a] border border-[#1f1f1f]' : 'bg-gray-50 border border-gray-200'
+                }`}>
+                  <div className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    {player.implied_odds.fractional}
+                  </div>
+                  <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>Fractional</div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -160,7 +209,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
         <ul className="space-y-2">
           {player.recommendations.map((rec, i) => (
             <li key={i} className={`flex items-start gap-2 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              <ChevronRight className={`mt-0.5 flex-shrink-0 ${darkMode ? 'text-[#86efac]' : 'text-gray-400'}`} size={16} />
+              <ChevronRight className={`mt-0.5 flex-shrink-0 ${darkMode ? 'text-[#86efac]' : 'text-emerald-600'}`} size={16} />
               <span>{rec}</span>
             </li>
           ))}

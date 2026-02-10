@@ -21,6 +21,13 @@ export interface ModelPredictions {
   catboost: number;
 }
 
+export interface ImpliedOdds {
+  american: string;     // e.g., "-150" or "+200"
+  decimal: number;      // e.g., 1.67
+  fractional: string;   // e.g., "2/3"
+  implied_prob: number; // The probability used
+}
+
 export interface PlayerRisk {
   name: string;
   team: string;
@@ -34,6 +41,7 @@ export interface PlayerRisk {
   model_predictions: ModelPredictions;
   recommendations: string[];
   story: string;  // Personalized risk narrative
+  implied_odds: ImpliedOdds;  // Betting odds representation
   last_injury_date: string | null;
 }
 
