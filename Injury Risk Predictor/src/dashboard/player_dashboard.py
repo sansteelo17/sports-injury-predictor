@@ -29,8 +29,16 @@ def get_latest_snapshot(inference_df, player_name):
     """
     if "name" not in inference_df.columns:
         raise KeyError("inference_df must have a 'name' column")
-    if "match_date" not in inference_df.columns:
-        raise KeyError("inference_df must have a 'match_date' column")
+
+    # Support both historical (match_date) and live (snapshot_date/injury_datetime) data
+    date_col = None
+    for col in ["match_date", "snapshot_date", "injury_datetime"]:
+        if col in inference_df.columns:
+            date_col = col
+            break
+
+    if date_col is None:
+        raise KeyError("inference_df must have a date column (match_date, snapshot_date, or injury_datetime)")
 
     pdf = inference_df[inference_df["name"] == player_name]
 
@@ -41,7 +49,7 @@ def get_latest_snapshot(inference_df, player_name):
             f"Available players (first 10): {list(available_players)}"
         )
 
-    return pdf.sort_values("match_date").iloc[-1]
+    return pdf.sort_values(date_col).iloc[-1]
 
 
 def _get_safe_value(row, col, default=None):
@@ -148,21 +156,56 @@ def panel_injury_risk(row):
 
 
 def panel_severity_projection(row):
-    sev = float(row["severity_days"])
+    """
+    Build severity projection panel.
 
-    if sev >= 30:
-        level = "Catastrophic"
-    elif sev >= 14:
-        level = "Major"
-    elif sev >= 7:
-        level = "Moderate"
+    Works with both:
+    - Ground truth data (has 'severity_days')
+    - Inference data (has 'predicted_severity_class')
+    """
+    # Check if we have ground truth or predicted severity
+    if "severity_days" in row.index and pd.notna(row.get("severity_days")):
+        sev = float(row["severity_days"])
+
+        if sev >= 60:
+            level = "Catastrophic"
+        elif sev >= 21:
+            level = "Major"
+        elif sev >= 7:
+            level = "Moderate"
+        else:
+            level = "Minor"
+
+        return {
+            "projected_days_lost": round(sev, 1),
+            "severity_category": level,
+            "source": "actual"
+        }
+
+    elif "predicted_severity_class" in row.index:
+        # Map predicted class to estimated days and category
+        pred_class = row["predicted_severity_class"]
+        class_mapping = {
+            "short": {"days": "0-21", "category": "Minor/Moderate", "midpoint": 10},
+            "medium": {"days": "21-60", "category": "Major", "midpoint": 40},
+            "long": {"days": "60+", "category": "Catastrophic", "midpoint": 90},
+        }
+
+        info = class_mapping.get(pred_class, class_mapping["short"])
+
+        return {
+            "projected_days_lost": info["days"],
+            "severity_category": info["category"],
+            "predicted_class": pred_class,
+            "source": "predicted"
+        }
+
     else:
-        level = "Minor"
-
-    return {
-        "projected_days_lost": round(sev, 1),
-        "severity_category": level
-    }
+        return {
+            "projected_days_lost": "Unknown",
+            "severity_category": "Unknown",
+            "source": "missing"
+        }
 
 
 def panel_archetype(archetype):
@@ -194,28 +237,84 @@ def panel_archetype(archetype):
 # Top SHAP Drivers
 # ------------------------------------------------------------
 def panel_top_drivers(row, top_n=5):
+    """
+    Extract top SHAP drivers from the row.
+
+    If shap_values column is missing (e.g., inference without SHAP computation),
+    falls back to showing key risk factors from available columns.
+    """
+    # Check if shap_values exists
+    if "shap_values" not in row.index or row["shap_values"] is None:
+        # Fallback: generate synthetic drivers from key risk features
+        return _fallback_risk_drivers(row, top_n)
+
     shap_vals = row["shap_values"]
-    feature_names = row.index.tolist()
 
-    # Pair and sort
-    pairs = list(zip(feature_names, shap_vals))
-    pairs = sorted(pairs, key=lambda x: abs(x[1]), reverse=True)
+    # Handle case where shap_vals is not iterable (e.g., NaN or scalar)
+    try:
+        if hasattr(shap_vals, '__len__') and len(shap_vals) > 0:
+            feature_names = row.index.tolist()
+            pairs = list(zip(feature_names, shap_vals))
+            pairs = sorted(pairs, key=lambda x: abs(x[1]), reverse=True)
 
-    # Keep only model features
-    model_features = [
-        p for p in pairs
-        if p[0] not in ["match_date", "player_team", "name", "position"]
+            # Keep only model features
+            model_features = [
+                p for p in pairs
+                if p[0] not in ["match_date", "player_team", "name", "position", "shap_values"]
+            ]
+
+            top = []
+            for feat, val in model_features[:top_n]:
+                top.append({
+                    "feature": feat,
+                    "impact": round(float(val), 4),
+                    "direction": "increase_risk" if val > 0 else "decrease_risk"
+                })
+            return top
+    except (TypeError, ValueError):
+        pass
+
+    # If we get here, shap_values exists but isn't usable
+    return _fallback_risk_drivers(row, top_n)
+
+
+def _fallback_risk_drivers(row, top_n=5):
+    """
+    Generate risk drivers from key features when SHAP values aren't available.
+    """
+    drivers = []
+
+    # Key features that typically drive injury risk
+    risk_features = [
+        ("acwr", "Acute:Chronic Workload Ratio", lambda v: v > 1.3),
+        ("acute_load", "Recent Match Load", lambda v: v > 3),
+        ("age", "Age Factor", lambda v: v > 30),
+        ("previous_injuries", "Previous Injury Count", lambda v: v > 2),
+        ("fatigue_index", "Fatigue Index", lambda v: v > 1),
+        ("spike_flag", "Workload Spike", lambda v: v == 1),
+        ("strain", "Training Strain", lambda v: v > 10),
+        ("monotony", "Training Monotony", lambda v: v > 2),
+        ("days_since_last_injury", "Days Since Last Injury", lambda v: v < 60),
+        ("reinjury_rate", "Re-injury Rate", lambda v: v > 0.1),
     ]
 
-    top = []
-    for feat, val in model_features[:top_n]:
-        top.append({
-            "feature": feat,
-            "impact": round(float(val), 4),
-            "direction": "increase_risk" if val > 0 else "decrease_risk"
-        })
+    for col, display_name, is_elevated in risk_features:
+        if col in row.index:
+            val = row[col]
+            try:
+                val = float(val)
+                elevated = is_elevated(val)
+                drivers.append({
+                    "feature": display_name,
+                    "impact": round(val, 4),
+                    "direction": "increase_risk" if elevated else "decrease_risk"
+                })
+            except (TypeError, ValueError):
+                continue
 
-    return top
+    # Sort by absolute impact and return top N
+    drivers = sorted(drivers, key=lambda x: abs(x["impact"]), reverse=True)
+    return drivers[:top_n]
 
 # ------------------------------------------------------------
 # Training Flag System
@@ -258,10 +357,10 @@ def panel_minutes_guidance(row):
     archetype = _get_safe_value(row, "archetype", "Unknown")
 
     if risk >= 0.60:
-        if archetype == "High-Risk Frequent":
+        if archetype == "Injury Prone":
             guidance = "Limit exposure; avoid full matches."
             max_minutes = 60
-        elif archetype == "Catastrophic + Re-aggravation":
+        elif archetype == "Fragile":
             guidance = "Very limited minutes; control tightly."
             max_minutes = 30
         else:

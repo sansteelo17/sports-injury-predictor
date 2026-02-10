@@ -1,12 +1,17 @@
 """Inference pipeline for injury risk prediction."""
 
 from .inference_pipeline import (
+    # Feature engineering
+    apply_all_feature_engineering,
     build_inference_features,
     add_model_predictions,
     add_ensemble_predictions,
     # Severity prediction (recommended)
     predict_severity_class,
     add_archetype,
+    # Player history (for inference-time features)
+    build_player_history_lookup,
+    add_player_history_features,
     # Legacy (deprecated - uses ground truth)
     add_severity_and_archetype,
     add_shap_values,
@@ -65,7 +70,8 @@ def build_player_dashboard(inference_df, player_name):
 
 
 __all__ = [
-    # Feature building
+    # Feature engineering
+    "apply_all_feature_engineering",
     "build_inference_features",
     # Risk predictions
     "add_model_predictions",
@@ -73,6 +79,9 @@ __all__ = [
     # Severity prediction (recommended)
     "predict_severity_class",
     "add_archetype",
+    # Player history (for inference-time features)
+    "build_player_history_lookup",
+    "add_player_history_features",
     # Legacy (deprecated - uses ground truth)
     "add_severity_and_archetype",
     "add_shap_values",

@@ -175,3 +175,16 @@ Thumbs.db
 
 # Claude Code
 .claude/
+
+# Data files (too large for git)
+data/
+
+# Scratchpad
+scratchpad/
+
+# CatBoost training artifacts
+notebooks/catboost_info/
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/.next/

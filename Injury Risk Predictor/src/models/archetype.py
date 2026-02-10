@@ -66,12 +66,11 @@ import matplotlib.pyplot as plt
 # =====================================================================
 
 ARCHETYPE_DEFINITIONS = {
-    "High-Risk Frequent Responder": {
-        "short_name": "High-Risk Frequent",
+    "Injury Prone": {
+        "short_name": "Injury Prone",
         "description": (
-            "Accumulates micro-trauma quickly; poor recovery-to-load ratio; "
-            "sensitive to repeated high-intensity sessions. These players "
-            "experience frequent injuries but typically of lower severity."
+            "Gets injured frequently. Accumulates injuries over time "
+            "but usually not catastrophic - lots of minor-to-moderate issues."
         ),
         "key_characteristics": [
             "High total injury count",
@@ -80,24 +79,24 @@ ARCHETYPE_DEFINITIONS = {
             "Responds poorly to fixture congestion"
         ],
         "training_focus": (
-            "Reduce high-intensity exposure; introduce controlled workloads; "
-            "avoid consecutive heavy days; emphasize recovery modalities."
+            "Reduce high-intensity exposure; controlled workloads; "
+            "avoid consecutive heavy days; focus on recovery."
         ),
-        "minutes_strategy": "Limit extended match minutes; avoid late-game fatigue exposure.",
+        "minutes_strategy": "Limit extended match minutes; avoid late-game fatigue.",
         "risk_level": "high",
         # Feature thresholds for classification
         "indicators": {
-            "total_injuries": ("high", 0.7),  # Above 70th percentile
-            "avg_days_between_injuries": ("low", 0.3),  # Below 30th percentile
-            "avg_severity": ("low_to_medium", 0.5),  # Below 50th percentile
+            "total_injuries": ("high", 0.5),  # Above median
+            "avg_days_between_injuries": ("low", 0.5),  # Below median
+            "avg_severity": ("low_to_medium", 0.6),  # Not catastrophic
         }
     },
 
-    "Catastrophic Vulnerability Profile": {
-        "short_name": "Catastrophic + Re-aggravation",
+    "Fragile": {
+        "short_name": "Fragile",
         "description": (
-            "High vulnerability to severe injuries and relapse. Tissue tolerance "
-            "threshold is low, with a pattern of major injuries when they occur."
+            "When injuries happen, they're serious. High risk of tears, "
+            "ligament damage, and long recovery times."
         ),
         "key_characteristics": [
             "High severity when injured",
@@ -106,8 +105,8 @@ ARCHETYPE_DEFINITIONS = {
             "History of re-aggravation"
         ],
         "training_focus": (
-            "Avoid overload; apply controlled, rehab-influenced microcycles; "
-            "monitor RPE closely; extended warm-up protocols."
+            "Avoid overload; controlled rehab-style training; "
+            "monitor closely; extended warm-up protocols."
         ),
         "minutes_strategy": "Avoid full match exposure; minutes must be tightly controlled.",
         "risk_level": "critical",
@@ -118,11 +117,11 @@ ARCHETYPE_DEFINITIONS = {
         }
     },
 
-    "Load-Sensitive Variable Responder": {
-        "short_name": "Moderate-Load High-Variance",
+    "Unpredictable": {
+        "short_name": "Unpredictable",
         "description": (
-            "Large fluctuations in weekly load tolerance; inconsistent adaptive response. "
-            "Injury patterns are unpredictable, making management challenging."
+            "Injury patterns vary wildly - different body parts, different severities. "
+            "Can range from minor to serious. Hard to predict and manage."
         ),
         "key_characteristics": [
             "High variability in injury severity",
@@ -131,23 +130,23 @@ ARCHETYPE_DEFINITIONS = {
             "Requires careful monitoring"
         ],
         "training_focus": (
-            "Stabilize weekly structure; reduce peaks and troughs; maintain "
-            "predictable loading for several weeks; consistent recovery protocols."
+            "Stabilize weekly structure; avoid peaks and troughs; "
+            "maintain consistent loading; regular recovery protocols."
         ),
         "minutes_strategy": "Manage playing time to avoid sudden increases.",
         "risk_level": "moderate",
         "indicators": {
-            "severity_cv": ("high", 0.7),
-            "std_severity": ("high", 0.6),
-            "body_area_entropy": ("high", 0.6),
+            "severity_cv": ("high", 0.6),  # High variability
+            "std_severity": ("high", 0.5),  # Wide range of severity
+            "avg_severity": ("high", 0.5),  # Not minor injuries
         }
     },
 
-    "Recurrent Pattern Profile": {
-        "short_name": "Moderate-Risk Recurrent",
+    "Recurring Issues": {
+        "short_name": "Recurring Issues",
         "description": (
-            "History of recurring issues to specific body areas; sensitive to sudden "
-            "reductions in chronic load; requires training continuity."
+            "Same body parts keep getting re-injured. Needs targeted "
+            "prehab work on weak spots. Getting worse over time."
         ),
         "key_characteristics": [
             "Repeated injuries to same areas",
@@ -156,29 +155,29 @@ ARCHETYPE_DEFINITIONS = {
             "Worsening severity over time"
         ],
         "training_focus": (
-            "Maintain progressive overload; reinforce previous injury sites; "
-            "avoid long gaps between sessions; targeted prehab work."
+            "Maintain progressive overload; strengthen previous injury sites; "
+            "avoid long gaps between sessions; targeted prehab."
         ),
         "minutes_strategy": "Keep match minutes steady without abrupt changes.",
         "risk_level": "moderate",
         "indicators": {
-            "reinjury_rate": ("high", 0.7),
-            "body_area_entropy": ("low", 0.4),
-            "severity_trend": ("positive", 0),  # Positive slope
+            "reinjury_rate": ("high", 0.5),  # Above median reinjury
+            "severity_trend": ("positive", 0),  # Getting worse
+            "body_area_entropy": ("low", 0.5),  # Concentrated injury sites
         }
     },
 
-    "Stable Resilient Profile": {
-        "short_name": "Low-Severity Stable",
+    "Durable": {
+        "short_name": "Durable",
         "description": (
-            "Consistent responder with good load tolerance. When injuries occur, "
-            "they are typically minor with quick recovery."
+            "Doesn't get injured often. When injuries happen, "
+            "they're typically isolated incidents with good recovery."
         ),
         "key_characteristics": [
-            "Low injury severity",
-            "Good recovery between injuries",
-            "Predictable response to training",
-            "High tissue tolerance"
+            "Low injury frequency",
+            "Long gaps between injuries",
+            "No recurring patterns",
+            "Good tissue tolerance"
         ],
         "training_focus": (
             "Maintain current training structure; adjust only if risk increases; "
@@ -187,9 +186,9 @@ ARCHETYPE_DEFINITIONS = {
         "minutes_strategy": "Full availability under standard rotation.",
         "risk_level": "low",
         "indicators": {
-            "avg_severity": ("low", 0.3),
-            "avg_days_between_injuries": ("high", 0.7),
-            "reinjury_rate": ("low", 0.3),
+            "total_injuries": ("low", 0.4),  # Low injury count is key
+            "avg_days_between_injuries": ("high", 0.5),  # Long gaps
+            "reinjury_rate": ("low", 0.5),  # No recurring issues
         }
     }
 }
@@ -411,16 +410,18 @@ def apply_hybrid_cluster(hdbscan_labels, kmeans_labels):
 # 5. MASTER PIPELINE: HDBSCAN + KMEANS (HYBRID)
 # =====================================================================
 
-def cluster_players(df_features: pd.DataFrame, k_fallback=5, use_recommended_features=True):
+def cluster_players(df_features: pd.DataFrame, k_fallback=5, use_recommended_features=True,
+                    min_injuries=2):
     """
     Full hybrid clustering pipeline for player archetype assignment.
 
     Pipeline Steps:
-      1. Prepare and scale features
-      2. Run HDBSCAN (primary - finds natural clusters)
-      3. Run KMeans (fallback - ensures all players assigned)
-      4. Combine labels using hybrid logic
-      5. Compute cluster profiles for archetype naming
+      1. Filter players with insufficient injury history
+      2. Prepare and scale features
+      3. Run HDBSCAN (primary - finds natural clusters)
+      4. Run KMeans (fallback - ensures all players assigned)
+      5. Combine labels using hybrid logic
+      6. Compute cluster profiles for archetype naming
 
     Parameters
     ----------
@@ -431,6 +432,10 @@ def cluster_players(df_features: pd.DataFrame, k_fallback=5, use_recommended_fea
         Number of clusters for KMeans fallback (default: 5)
     use_recommended_features : bool
         If True, uses curated feature subset for better archetype separation
+    min_injuries : int
+        Minimum number of injuries required for clustering (default: 2).
+        Players with fewer injuries will be excluded from clustering and
+        should receive "Unknown Profile" during the merge step.
 
     Returns
     -------
@@ -441,16 +446,29 @@ def cluster_players(df_features: pd.DataFrame, k_fallback=5, use_recommended_fea
         - kmeans_model: fitted KMeans
         - hdbscan_silhouette: HDBSCAN silhouette score
         - kmeans_silhouette: KMeans silhouette score
-        - df: DataFrame with cluster assignments
+        - df: DataFrame with cluster assignments (only players with >= min_injuries)
         - labels: final cluster labels
         - assignment_source: 'hdbscan' or 'kmeans' for each player
         - cluster_profiles: statistics for each cluster
         - X_scaled: scaled feature matrix (for visualization)
+        - excluded_players: list of player names excluded due to insufficient history
     """
+    # Filter players with insufficient injury history
+    if "total_injuries" in df_features.columns:
+        mask = df_features["total_injuries"] >= min_injuries
+        excluded_players = df_features[~mask]["name"].tolist() if "name" in df_features.columns else []
+        df_filtered = df_features[mask].copy()
+        print(f"Clustering: {len(df_filtered)} players with >= {min_injuries} injuries")
+        print(f"Excluded: {len(excluded_players)} players with insufficient injury history")
+    else:
+        df_filtered = df_features.copy()
+        excluded_players = []
+        print("Warning: 'total_injuries' column not found, clustering all players")
+
     # Select features
     feature_subset = get_recommended_clustering_features() if use_recommended_features else None
 
-    X_scaled, scaler, feat_cols = prepare_archetype_features(df_features, feature_subset)
+    X_scaled, scaler, feat_cols = prepare_archetype_features(df_filtered, feature_subset)
 
     # Primary clustering
     hdb = run_hdbscan(X_scaled)
@@ -461,8 +479,8 @@ def cluster_players(df_features: pd.DataFrame, k_fallback=5, use_recommended_fea
     # Combine labels
     final_labels, assignment_source = apply_hybrid_cluster(hdb["labels"], kmeans["labels"])
 
-    # Add to dataframe
-    df_out = df_features.copy()
+    # Add to dataframe (use filtered dataframe, not original)
+    df_out = df_filtered.copy()
     df_out["cluster"] = final_labels
     df_out["assignment_source"] = assignment_source
 
@@ -482,8 +500,30 @@ def cluster_players(df_features: pd.DataFrame, k_fallback=5, use_recommended_fea
         "labels": final_labels,
         "assignment_source": assignment_source,
         "cluster_profiles": cluster_profiles,
-        "X_scaled": X_scaled
+        "X_scaled": X_scaled,
+        "excluded_players": excluded_players,
+        "min_injuries_threshold": min_injuries
     }
+
+
+def _unwrap_array_values(series: pd.Series) -> pd.Series:
+    """
+    Convert any 0-dimensional numpy arrays in a Series to plain scalars.
+
+    This handles cases where values got wrapped in numpy arrays during
+    feature computation (e.g., array(0.4) instead of 0.4).
+    """
+    def unwrap(val):
+        if isinstance(val, np.ndarray):
+            # 0-d array - extract scalar
+            if val.ndim == 0:
+                return float(val.item())
+            # 1-d array with single element
+            elif val.size == 1:
+                return float(val.flatten()[0])
+        return val
+
+    return series.apply(unwrap)
 
 
 def compute_cluster_profiles(df: pd.DataFrame, feature_cols: list) -> dict:
@@ -506,6 +546,12 @@ def compute_cluster_profiles(df: pd.DataFrame, feature_cols: list) -> dict:
         Cluster ID -> profile statistics
     """
     profiles = {}
+
+    # Sanitize feature columns - unwrap any numpy array values to scalars
+    df = df.copy()
+    for col in feature_cols:
+        if col in df.columns:
+            df[col] = _unwrap_array_values(df[col])
 
     # Compute global percentiles for each feature
     global_percentiles = {}

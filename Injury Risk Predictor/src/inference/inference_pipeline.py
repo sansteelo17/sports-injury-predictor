@@ -9,8 +9,150 @@ from .validation import (
     validate_dataframe_and_raise,
     ValidationError
 )
+from ..feature_engineering.temporal_features import (
+    add_temporal_features,
+    add_fixture_density_features
+)
+from ..feature_engineering.position_features import (
+    add_position_risk_features,
+    add_position_workload_interaction
+)
+from ..feature_engineering.severity import (
+    add_player_injury_history_features,
+    build_injury_features
+)
+from ..preprocessing.rename_finaldf_cols import rename_final_df_columns
 
 logger = get_logger(__name__)
+
+
+# ============================================================
+# 0. COMPLETE FEATURE ENGINEERING PIPELINE
+# ============================================================
+def apply_all_feature_engineering(
+    df: pd.DataFrame,
+    date_column: str = "injury_datetime",
+    position_column: str = "position",
+    team_column: str = "player_team"
+) -> pd.DataFrame:
+    """
+    Apply ALL feature engineering transformations to match training pipeline.
+
+    This is the missing link between raw data and model inference. The training
+    pipeline applies these transformations manually; this function ensures
+    inference data gets the same treatment.
+
+    Automatically cleans up merge artifacts (age_x → age, season_x → season).
+
+    Features added:
+        Temporal (from add_temporal_features):
+            - month, day_of_week, week_of_year
+            - is_preseason, is_midseason, is_endseason
+            - is_winter, is_christmas_period, is_season_crunch
+            - is_weekend_match, is_midweek_match
+            - season_week, season_fatigue_factor
+
+        Fixture density (from add_fixture_density_features):
+            - days_since_last_match
+            - short_recovery, minimal_recovery, normal_recovery, extended_rest
+
+        Position risk (from add_position_risk_features):
+            - position_normalized
+            - position_base_risk, position_sprint_risk, position_contact_risk
+            - is_forward, is_midfielder, is_defender, is_goalkeeper
+            - is_wide_position, is_central_position
+
+        Position-workload interactions (from add_position_workload_interaction):
+            - sprint_load_risk, contact_load_risk
+            - position_adjusted_acwr
+            - wide_player_congestion, defender_congestion
+            - age_forward_risk, age_defender_risk
+
+        Player injury history (from add_player_injury_history_features):
+            - player_injury_count: Total injuries for this player
+            - player_avg_severity: Player's average injury duration
+            - player_worst_injury: Longest injury for this player
+            - player_severity_std: Variability in injury severity
+            - is_injury_prone: 1 if player has 3+ injuries
+            - prev_injury_same_area: 1 if previous injury to same body area
+
+    Args:
+        df: DataFrame with raw features
+        date_column: Column containing datetime for temporal features
+        position_column: Column containing player position
+        team_column: Column containing team name for fixture density
+
+    Returns:
+        DataFrame with all engineered features added
+
+    Example:
+        >>> df_enriched = apply_all_feature_engineering(
+        ...     final_df,
+        ...     date_column="date_of_injury",
+        ...     position_column="position",
+        ...     team_column="player_team"
+        ... )
+    """
+    df = df.copy()
+    logger.info("Applying complete feature engineering pipeline...")
+
+    # 0. Clean up merge artifacts (age_x → age, season_x → season, etc.)
+    df = rename_final_df_columns(df)
+    logger.debug("Cleaned up merge artifact columns (age_x → age, etc.)")
+
+    # 1. Temporal features
+    if date_column in df.columns:
+        df = add_temporal_features(df, date_column=date_column)
+        logger.debug(f"Added temporal features from '{date_column}'")
+    else:
+        logger.warning(f"Date column '{date_column}' not found. Skipping temporal features.")
+
+    # 2. Fixture density features
+    if date_column in df.columns and team_column in df.columns:
+        df = add_fixture_density_features(
+            df, date_column=date_column, team_column=team_column
+        )
+        logger.debug("Added fixture density features")
+    else:
+        logger.warning(
+            f"Columns '{date_column}' or '{team_column}' not found. "
+            "Skipping fixture density features."
+        )
+
+    # 3. Position risk features
+    if position_column in df.columns:
+        df = add_position_risk_features(df, position_column=position_column)
+        logger.debug(f"Added position risk features from '{position_column}'")
+    else:
+        logger.warning(f"Position column '{position_column}' not found. Skipping position features.")
+
+    # 4. Position-workload interaction features (requires 'age' column)
+    if position_column in df.columns:
+        if "age" not in df.columns:
+            logger.warning("No 'age' column found. Age-based interactions will be skipped.")
+        df = add_position_workload_interaction(df, position_column=position_column)
+        logger.debug("Added position-workload interaction features")
+
+    # 5. Player injury history features (requires 'severity_days' and 'name')
+    if "severity_days" in df.columns and "name" in df.columns:
+        # First ensure injury_type and body_area exist for full history features
+        if "injury" in df.columns and "injury_type" not in df.columns:
+            df = build_injury_features(df)
+            logger.debug("Added injury classification features (body_area, injury_type)")
+
+        df = add_player_injury_history_features(df)
+        logger.debug("Added player injury history features (is_injury_prone, player_injury_count, etc.)")
+    else:
+        missing = []
+        if "severity_days" not in df.columns:
+            missing.append("severity_days")
+        if "name" not in df.columns:
+            missing.append("name")
+        logger.warning(f"Missing {missing}. Skipping player injury history features.")
+
+    logger.info(f"Feature engineering complete. DataFrame now has {len(df.columns)} columns.")
+
+    return df
 
 
 # ============================================================
@@ -281,13 +423,14 @@ def predict_severity_class(df, severity_classifier, feature_cols=None):
     return df
 
 
-def add_archetype(df, archetype_df):
+def add_archetype(df, archetype_df, default_archetype="Unknown Profile"):
     """
     Merge archetype assignments from clustering.
 
     Args:
         df: Inference DataFrame
         archetype_df: DataFrame with 'name' and 'archetype' columns
+        default_archetype: Fallback for players not in clustering (e.g., insufficient injury history)
 
     Returns:
         DataFrame with archetype column added
@@ -305,6 +448,131 @@ def add_archetype(df, archetype_df):
         on="name",
         how="left"
     )
+
+    # Fill missing archetypes (players not in clustering due to insufficient injury data)
+    missing_count = df["archetype"].isna().sum()
+    if missing_count > 0:
+        df["archetype"] = df["archetype"].fillna(default_archetype)
+        logger.info(f"Assigned '{default_archetype}' to {missing_count} players not in clustering")
+
+    return df
+
+
+def build_player_history_lookup(historical_injury_df):
+    """
+    Build a player history lookup table from historical injury data.
+
+    This function aggregates injury history statistics per player that can be
+    used at inference time. Call this ONCE on your training/historical injury
+    data that has severity_days computed.
+
+    Args:
+        historical_injury_df: DataFrame with historical injuries containing:
+            - name: Player name
+            - severity_days: Duration of each injury
+            - body_area (optional): For same-area recurrence tracking
+
+    Returns:
+        DataFrame with one row per player containing:
+            - player_injury_count: Total injuries for this player
+            - player_avg_severity: Average injury duration
+            - player_worst_injury: Longest injury
+            - player_severity_std: Variability in injury duration
+            - is_injury_prone: 1 if player has 3+ injuries
+
+    Example:
+        >>> player_history = build_player_history_lookup(severity_final)
+        >>> inference_df = add_player_history_features(inference_df, player_history)
+    """
+    df = historical_injury_df.copy()
+
+    if 'name' not in df.columns:
+        raise ValueError("historical_injury_df must have 'name' column")
+
+    if 'severity_days' not in df.columns:
+        raise ValueError("historical_injury_df must have 'severity_days' column")
+
+    # Aggregate player-level statistics
+    player_stats = df.groupby('name').agg({
+        'severity_days': ['count', 'mean', 'max', 'std']
+    }).reset_index()
+    player_stats.columns = ['name', 'player_injury_count', 'player_avg_severity',
+                            'player_worst_injury', 'player_severity_std']
+
+    # Fill NaN std (players with only 1 injury)
+    player_stats['player_severity_std'] = player_stats['player_severity_std'].fillna(0)
+
+    # Injury-prone flag (3+ injuries)
+    player_stats['is_injury_prone'] = (player_stats['player_injury_count'] >= 3).astype(int)
+
+    logger.info(f"Built player history lookup for {len(player_stats)} players")
+    logger.info(f"  Injury-prone players (3+ injuries): {player_stats['is_injury_prone'].sum()}")
+
+    return player_stats
+
+
+def add_player_history_features(df, player_history_lookup):
+    """
+    Merge pre-computed player history features into inference dataframe.
+
+    Use this at inference time to add player history features that were
+    computed from historical injury data.
+
+    Args:
+        df: Inference DataFrame with 'name' column
+        player_history_lookup: DataFrame from build_player_history_lookup()
+
+    Returns:
+        DataFrame with player history features added
+
+    Example:
+        >>> # During training/data prep
+        >>> player_history = build_player_history_lookup(severity_final)
+        >>>
+        >>> # At inference time
+        >>> inference_df = add_player_history_features(inference_df, player_history)
+    """
+    if 'name' not in df.columns:
+        logger.warning("No 'name' column in inference df, skipping player history merge")
+        return df
+
+    history_cols = ['name', 'player_injury_count', 'player_avg_severity',
+                    'player_worst_injury', 'player_severity_std', 'is_injury_prone']
+
+    # Only merge columns that exist in the lookup
+    available_cols = [c for c in history_cols if c in player_history_lookup.columns]
+
+    # Drop any pre-existing player history columns to avoid _x/_y suffixes
+    cols_to_merge = [c for c in available_cols if c != 'name']
+    existing = [c for c in cols_to_merge if c in df.columns]
+    if existing:
+        logger.debug(f"Dropping {len(existing)} existing player history columns to replace with lookup values")
+        df = df.drop(columns=existing)
+
+    df = df.merge(
+        player_history_lookup[available_cols].drop_duplicates(subset=['name']),
+        on='name',
+        how='left'
+    )
+
+    # Fill missing values for players not in historical data
+    fill_values = {
+        'player_injury_count': 0,
+        'player_avg_severity': 0,
+        'player_worst_injury': 0,
+        'player_severity_std': 0,
+        'is_injury_prone': 0
+    }
+
+    for col, default in fill_values.items():
+        if col in df.columns:
+            missing = df[col].isna().sum()
+            if missing > 0:
+                df[col] = df[col].fillna(default)
+                logger.debug(f"Filled {missing} missing '{col}' values with {default}")
+
+    logger.info(f"Added player history features from lookup")
+
     return df
 
 
@@ -453,8 +721,12 @@ def build_inference_df_with_ensemble(
     ensemble,
     severity_classifier=None,
     severity_feature_cols=None,
+    player_history_lookup=None,
     validate_input=True,
-    strict=True
+    strict=True,
+    date_column="injury_datetime",
+    position_column="position",
+    team_column="player_team"
 ):
     """
     Inference pipeline using StackingEnsemble model with proper severity prediction.
@@ -463,6 +735,9 @@ def build_inference_df_with_ensemble(
     - StackingEnsemble for injury RISK classification (will they get injured?)
     - Severity classifier for injury DURATION prediction (short/medium/long)
     - Archetype clustering for player profiling
+    - Player history lookup for historical injury patterns
+
+    Automatically cleans up merge artifacts (age_x → age, season_x → season).
 
     Args:
         all_matches: DataFrame with match and player data
@@ -471,8 +746,13 @@ def build_inference_df_with_ensemble(
         ensemble: Trained StackingEnsemble instance for risk classification
         severity_classifier: Optional trained severity classifier for duration prediction
         severity_feature_cols: Feature columns for severity prediction (uses model's if not provided)
+        player_history_lookup: Optional DataFrame from build_player_history_lookup() with
+            pre-computed player injury history features (player_injury_count, is_injury_prone, etc.)
         validate_input: If True, validate input data before inference
         strict: If True, raise errors on validation failures
+        date_column: Column name for datetime (for temporal features)
+        position_column: Column name for player position
+        team_column: Column name for team (for fixture density)
 
     Returns:
         DataFrame with:
@@ -481,43 +761,73 @@ def build_inference_df_with_ensemble(
         - agreement, confidence: Model agreement metrics
         - predicted_severity_class: Predicted injury duration (if severity_classifier provided)
         - archetype: Player archetype from clustering
+        - player_injury_count, is_injury_prone, etc.: Player history features (if lookup provided)
 
     Example:
         >>> from src.models import StackingEnsemble, train_stacking_ensemble
         >>> ensemble = train_stacking_ensemble(X_train, y_train, X_test, y_test)
         >>> severity_clf = train_severity_classifier(X_sev_train, y_sev_train, ...)
+        >>> player_history = build_player_history_lookup(severity_final)
         >>> inference_df = build_inference_df_with_ensemble(
         ...     all_matches, player_info, archetype_df,
-        ...     ensemble, severity_classifier=severity_clf
+        ...     ensemble, severity_classifier=severity_clf,
+        ...     player_history_lookup=player_history,
+        ...     date_column="date_of_injury"
         ... )
     """
     logger.info(f"Starting ensemble inference pipeline for {len(all_matches)} matches")
 
     try:
-        # 1. Build feature table with validation
+        # 1. Build basic feature table with validation
         df = build_inference_features(
             all_matches,
             player_metadata,
             validate_input=validate_input,
             strict=strict
         )
-        logger.debug(f"Built inference features: {df.shape}")
+        logger.debug(f"Built basic inference features: {df.shape}")
 
-        # 2. Get feature columns from ensemble
+        # 2. Apply ALL feature engineering (temporal, position, interactions)
+        #    This also cleans up merge artifacts (age_x → age, etc.)
+        df = apply_all_feature_engineering(
+            df,
+            date_column=date_column,
+            position_column=position_column,
+            team_column=team_column
+        )
+        logger.debug(f"Applied feature engineering: {df.shape}")
+
+        # 3. Get feature columns from ensemble and validate
         feature_cols = ensemble.feature_names_
+        missing_features = [c for c in feature_cols if c not in df.columns]
+        if missing_features:
+            logger.warning(
+                f"Missing {len(missing_features)} expected features after engineering: "
+                f"{missing_features[:10]}{'...' if len(missing_features) > 10 else ''}"
+            )
+            # Fill missing with zeros (may affect prediction quality)
+            for col in missing_features:
+                df[col] = 0
 
-        # 3. Add ensemble predictions (injury RISK)
+        # 4. Add ensemble predictions (injury RISK)
         df = add_ensemble_predictions(df, ensemble, feature_cols)
         logger.info(f"Generated ensemble risk predictions for {len(df)} records")
 
-        # 4. Add severity predictions (injury DURATION) if classifier provided
+        # 5. Add severity predictions (injury DURATION) if classifier provided
         if severity_classifier is not None:
             df = predict_severity_class(df, severity_classifier, severity_feature_cols)
             logger.info("Added severity class predictions")
         else:
             logger.info("No severity classifier provided, skipping severity prediction")
 
-        # 5. Add archetype from clustering
+        # 6. Add player history features from lookup (if provided)
+        if player_history_lookup is not None:
+            df = add_player_history_features(df, player_history_lookup)
+            logger.info("Added player history features from lookup")
+        else:
+            logger.info("No player history lookup provided, skipping player history features")
+
+        # 7. Add archetype from clustering
         df = add_archetype(df, archetype_df)
         logger.debug("Merged archetype data")
 

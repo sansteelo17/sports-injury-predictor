@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground-rgb: 0, 0, 0;
+  --background-start-rgb: 248, 250, 252;
+  --background-end-rgb: 241, 245, 249;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: linear-gradient(
+      to bottom,
+      transparent,
+      rgb(var(--background-end-rgb))
+    )
+    rgb(var(--background-start-rgb));
+  min-height: 100vh;
+}
+
+/* Risk level badges */
+.risk-badge {
+  @apply inline-flex items-center px-3 py-1 rounded-full text-sm font-semibold;
+}
+
+.risk-badge-high {
+  @apply bg-red-100 text-red-800;
+}
+
+.risk-badge-medium {
+  @apply bg-amber-100 text-amber-800;
+}
+
+.risk-badge-low {
+  @apply bg-green-100 text-green-800;
+}
+
+/* Card hover effects */
+.player-card {
+  @apply transition-all duration-200 ease-in-out;
+}
+
+.player-card:hover {
+  @apply shadow-lg -translate-y-1;
+}
+
+/* Risk meter */
+.risk-meter {
+  @apply h-2 rounded-full overflow-hidden bg-gray-200;
+}
+
+.risk-meter-fill {
+  @apply h-full transition-all duration-500 ease-out;
+}

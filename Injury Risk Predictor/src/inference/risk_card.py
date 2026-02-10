@@ -152,6 +152,68 @@ def _get_safe_value(player_row, col, default=None):
     return default
 
 
+def _extract_key_risk_factors(player_row, top_k=5):
+    """
+    Extract key risk factors when SHAP values aren't available.
+
+    Uses domain knowledge to identify which features are elevated
+    and contributing to injury risk.
+    """
+    factors = []
+
+    # Define risk features with thresholds and display names
+    risk_features = [
+        # (column, display_name, threshold_for_elevated, higher_is_worse)
+        ("acwr", "Acute:Chronic Workload Ratio", 1.3, True),
+        ("acute_load", "Recent Match Load (7 days)", 3, True),
+        ("fatigue_index", "Fatigue Index", 1.0, True),
+        ("spike_flag", "Workload Spike Detected", 0.5, True),
+        ("strain", "Training Strain", 10, True),
+        ("monotony", "Training Monotony", 2.0, True),
+        ("previous_injuries", "Previous Injury Count", 2, True),
+        ("is_injury_prone", "Injury-Prone Flag", 0.5, True),
+        ("age", "Age Factor", 30, True),
+        ("days_since_last_injury", "Days Since Last Injury", 60, False),  # Lower is worse
+        ("chronic_load", "Chronic Load (28 days)", 4, True),
+        ("matches_last_7", "Matches Last 7 Days", 2, True),
+        ("matches_last_14", "Matches Last 14 Days", 4, True),
+        ("player_injury_count", "Total Career Injuries", 3, True),
+    ]
+
+    for col, display_name, threshold, higher_is_worse in risk_features:
+        if col in player_row.index:
+            val = player_row[col]
+            try:
+                val = float(val)
+                if pd.isna(val):
+                    continue
+
+                # Determine if this factor is elevated (contributing to risk)
+                if higher_is_worse:
+                    is_elevated = val >= threshold
+                else:
+                    is_elevated = val <= threshold
+
+                # Calculate relative impact (how far from threshold)
+                if higher_is_worse:
+                    impact = (val - threshold) / max(threshold, 1)
+                else:
+                    impact = (threshold - val) / max(threshold, 1)
+
+                factors.append({
+                    "feature": display_name,
+                    "value": round(val, 2),
+                    "impact": round(impact, 3),
+                    "direction": "increase_risk" if is_elevated else "decrease_risk"
+                })
+            except (TypeError, ValueError):
+                continue
+
+    # Sort by absolute impact and return top_k
+    factors = sorted(factors, key=lambda x: abs(x["impact"]), reverse=True)
+    return factors[:top_k]
+
+
 def build_risk_card(player_row, feature_cols=None, top_k=5):
     """
     Builds a comprehensive player risk card from the inference dataframe row.
@@ -223,9 +285,11 @@ def build_risk_card(player_row, feature_cols=None, top_k=5):
     }
 
     # -----------------------------
-    # 3. Top SHAP factors (if available)
+    # 3. Top risk factors (SHAP if available, otherwise key features)
     # -----------------------------
     top_factors = None
+
+    # Try SHAP values first
     if feature_cols is not None and "shap_values" in player_row.index:
         shap_vals = player_row["shap_values"]
         if shap_vals is not None:
@@ -243,6 +307,10 @@ def build_risk_card(player_row, feature_cols=None, top_k=5):
                 }
                 for feat, val in pairs[:top_k]
             ]
+
+    # Fallback: generate from key risk features if no SHAP
+    if top_factors is None:
+        top_factors = _extract_key_risk_factors(player_row, top_k)
 
     # -----------------------------
     # 4. Training Flag (RAG status)

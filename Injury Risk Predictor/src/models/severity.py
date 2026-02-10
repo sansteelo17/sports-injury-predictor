@@ -551,6 +551,7 @@ def train_severity_classifier(X_train, y_train, X_val, y_val, model_type="lightg
             learning_rate=0.05,
             depth=6,
             loss_function='MultiClass',
+            auto_class_weights='Balanced',  # Handle imbalanced classes
             random_seed=42,
             verbose=0
         )
@@ -608,8 +609,11 @@ def evaluate_severity_classifier(model, X_test, y_test):
     print(cm_df)
 
     # Adjacent accuracy (within one category)
-    adjacent = np.sum(np.abs(y_test_enc - y_pred_enc) <= 1)
-    adjacent_acc = adjacent / len(y_test_enc)
+    # Flatten and cast to int - CatBoost returns shape (n, 1) not (n,)
+    y_test_int = np.array(y_test_enc).flatten().astype(int)
+    y_pred_int = np.array(y_pred_enc).flatten().astype(int)
+    adjacent = np.sum(np.abs(y_test_int - y_pred_int) <= 1)
+    adjacent_acc = adjacent / len(y_test_int)
     print(f"\nAdjacent Accuracy (within 1 category): {adjacent_acc:.1%}")
 
     return {
@@ -878,3 +882,721 @@ def diagnose_severity_target(y_train, y_test, X_test=None):
     print(cuts.value_counts().sort_index())
 
     return result
+
+
+# ============================================================================
+# OPTUNA HYPERPARAMETER TUNING FOR SEVERITY CLASSIFIER
+# ============================================================================
+
+def _catboost_classifier_objective(trial, X_train, y_train, X_val, y_val, cat_features):
+    """Optuna objective for CatBoost classification hyperparameter tuning."""
+    from catboost import CatBoostClassifier
+    from sklearn.metrics import f1_score
+
+    params = {
+        "iterations": trial.suggest_int("iterations", 200, 1000),
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+        "depth": trial.suggest_int("depth", 4, 10),
+        "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1e-3, 10, log=True),
+        "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
+        "loss_function": "MultiClass",
+        "auto_class_weights": "Balanced",
+        "random_seed": 42,
+        "verbose": False
+    }
+
+    model = CatBoostClassifier(**params)
+    model.fit(X_train, y_train, eval_set=(X_val, y_val),
+              cat_features=cat_features, early_stopping_rounds=50, verbose=False)
+
+    y_pred = model.predict(X_val).flatten()
+
+    # Optimize for macro F1 (balances all classes)
+    f1 = f1_score(y_val, y_pred, average='macro')
+    return f1
+
+
+def tune_severity_classifier(X_train, y_train, X_val, y_val, n_trials=30):
+    """
+    Tune CatBoost severity classifier with Optuna.
+
+    Args:
+        X_train, y_train: Training data (y should be label-encoded)
+        X_val, y_val: Validation data
+        n_trials: Number of Optuna trials
+
+    Returns:
+        dict: Best hyperparameters found
+    """
+    from sklearn.preprocessing import LabelEncoder
+
+    logger.info(f"Starting CatBoost classifier tuning with {n_trials} trials")
+
+    # Encode labels if needed
+    le = LabelEncoder()
+    if hasattr(y_train, 'dtype') and y_train.dtype == 'object':
+        y_train_enc = le.fit_transform(y_train)
+        y_val_enc = le.transform(y_val)
+    else:
+        y_train_enc = np.array(y_train)
+        y_val_enc = np.array(y_val)
+
+    X_train_cb, cat_features = _prepare_catboost_data(X_train)
+    X_val_cb, _ = _prepare_catboost_data(X_val)
+
+    study = optuna.create_study(direction="maximize")  # Maximize F1
+    study.optimize(
+        lambda trial: _catboost_classifier_objective(
+            trial, X_train_cb, y_train_enc, X_val_cb, y_val_enc, cat_features
+        ),
+        n_trials=n_trials
+    )
+
+    logger.info(f"Tuning completed - Best macro F1: {study.best_value:.3f}")
+    print(f"\n🎯 Best CatBoost Classifier Params:")
+    print(study.best_params)
+    print(f"Best macro F1 = {study.best_value:.3f}")
+
+    return study.best_params
+
+
+def train_tuned_severity_classifier(X_train, y_train, X_val, y_val, X_test, y_test, n_trials=30):
+    """
+    Full pipeline: tune hyperparameters, train final model, evaluate.
+
+    Args:
+        X_train, y_train: Training data
+        X_val, y_val: Validation data for tuning
+        X_test, y_test: Test data for final evaluation
+        n_trials: Number of Optuna trials
+
+    Returns:
+        model: Trained CatBoost classifier with best params
+        results: Evaluation results dict
+    """
+    from sklearn.preprocessing import LabelEncoder
+    from catboost import CatBoostClassifier
+
+    # Encode labels
+    le = LabelEncoder()
+    y_train_enc = le.fit_transform(y_train)
+    y_val_enc = le.transform(y_val)
+    y_test_enc = le.transform(y_test)
+
+    # Tune hyperparameters
+    best_params = tune_severity_classifier(
+        X_train, y_train_enc, X_val, y_val_enc, n_trials=n_trials
+    )
+
+    # Train final model with best params on train+val
+    X_trainval = pd.concat([X_train, X_val], ignore_index=True)
+    y_trainval = np.concatenate([y_train_enc, y_val_enc])
+
+    X_trainval_cb, cat_features = _prepare_catboost_data(X_trainval)
+    X_test_cb, _ = _prepare_catboost_data(X_test)
+
+    final_params = best_params.copy()
+    final_params.update({
+        "loss_function": "MultiClass",
+        "auto_class_weights": "Balanced",
+        "random_seed": 42,
+        "verbose": 100
+    })
+
+    model = CatBoostClassifier(**final_params)
+    model.fit(X_trainval_cb, y_trainval, cat_features=cat_features)
+
+    # Store label encoder
+    model._label_encoder = le
+    model._classes = le.classes_
+
+    # Evaluate
+    print("\n" + "="*60)
+    print("TUNED MODEL EVALUATION")
+    print("="*60)
+    results = evaluate_severity_classifier(model, X_test, y_test)
+
+    return model, results
+
+
+# ============================================================================
+# ORDINAL REGRESSION FOR SEVERITY
+# ============================================================================
+#
+# Ordinal regression respects the natural ordering: short < medium < long
+# Instead of treating classes as independent, it learns cumulative thresholds.
+# This often improves adjacent accuracy and reduces catastrophic errors.
+#
+# ============================================================================
+
+class OrdinalClassifier:
+    """
+    Ordinal classifier using cumulative link approach.
+
+    Trains K-1 binary classifiers for K ordered classes:
+    - Classifier 1: P(class > 0) = P(class >= 1) → short vs (medium, long)
+    - Classifier 2: P(class > 1) = P(class >= 2) → (short, medium) vs long
+
+    Final prediction uses the cumulative probabilities.
+    """
+
+    def __init__(self, base_estimator=None):
+        """
+        Args:
+            base_estimator: Base binary classifier (default: LightGBM)
+        """
+        self.base_estimator = base_estimator
+        self.classifiers_ = []
+        self.n_classes_ = None
+        self._label_encoder = None
+
+    def fit(self, X, y, cat_features=None):
+        """
+        Fit ordinal classifier.
+
+        Args:
+            X: Features (DataFrame)
+            y: Ordinal labels (0, 1, 2, ...) or categorical
+            cat_features: List of categorical feature names/indices for CatBoost
+        """
+        from lightgbm import LGBMClassifier
+        from sklearn.preprocessing import LabelEncoder
+
+        # Encode labels if categorical
+        if hasattr(y, 'dtype') and (y.dtype == 'object' or str(y.dtype) == 'category'):
+            self._label_encoder = LabelEncoder()
+            y_enc = self._label_encoder.fit_transform(y)
+        else:
+            y_enc = np.array(y).flatten()
+
+        self.n_classes_ = len(np.unique(y_enc))
+        self.classifiers_ = []
+
+        # Prepare data
+        X_prep = _sanitize_column_names(X.copy())
+        for col in X_prep.select_dtypes(include=['object', 'category']).columns:
+            X_prep[col] = X_prep[col].astype('category').cat.codes
+
+        # Train K-1 binary classifiers
+        for k in range(self.n_classes_ - 1):
+            # Binary target: 1 if class > k, 0 otherwise
+            y_binary = (y_enc > k).astype(int)
+
+            if self.base_estimator is not None:
+                clf = self.base_estimator
+            else:
+                clf = LGBMClassifier(
+                    n_estimators=300,
+                    learning_rate=0.05,
+                    max_depth=6,
+                    class_weight='balanced',
+                    random_state=42,
+                    verbose=-1
+                )
+
+            clf.fit(X_prep, y_binary)
+            self.classifiers_.append(clf)
+
+        return self
+
+    def predict_proba(self, X):
+        """
+        Predict class probabilities using cumulative approach.
+
+        Returns:
+            Array of shape (n_samples, n_classes) with probabilities
+        """
+        X_prep = _sanitize_column_names(X.copy())
+        for col in X_prep.select_dtypes(include=['object', 'category']).columns:
+            X_prep[col] = X_prep[col].astype('category').cat.codes
+
+        n_samples = len(X)
+
+        # Get cumulative probabilities P(class > k)
+        cumprobs = np.zeros((n_samples, self.n_classes_ - 1))
+        for k, clf in enumerate(self.classifiers_):
+            cumprobs[:, k] = clf.predict_proba(X_prep)[:, 1]
+
+        # Convert to class probabilities
+        # P(class = 0) = 1 - P(class > 0)
+        # P(class = k) = P(class > k-1) - P(class > k)
+        # P(class = K-1) = P(class > K-2)
+
+        probs = np.zeros((n_samples, self.n_classes_))
+        probs[:, 0] = 1 - cumprobs[:, 0]
+        for k in range(1, self.n_classes_ - 1):
+            probs[:, k] = cumprobs[:, k-1] - cumprobs[:, k]
+        probs[:, -1] = cumprobs[:, -1]
+
+        # Clip to valid range and normalize
+        probs = np.clip(probs, 0, 1)
+        probs = probs / probs.sum(axis=1, keepdims=True)
+
+        return probs
+
+    def predict(self, X):
+        """Predict class labels."""
+        probs = self.predict_proba(X)
+        y_pred = np.argmax(probs, axis=1)
+
+        if self._label_encoder is not None:
+            return self._label_encoder.inverse_transform(y_pred)
+        return y_pred
+
+
+def train_ordinal_severity_classifier(X_train, y_train, X_val, y_val):
+    """
+    Train ordinal classifier for severity prediction.
+
+    Ordinal regression respects the natural ordering (short < medium < long)
+    and typically achieves better adjacent accuracy.
+
+    Args:
+        X_train, y_train: Training data
+        X_val, y_val: Validation data (used for reporting, not early stopping)
+
+    Returns:
+        Trained OrdinalClassifier
+    """
+    from sklearn.preprocessing import LabelEncoder
+
+    print("Training ordinal severity classifier...")
+    print("  (respects ordering: short < medium < long)")
+
+    model = OrdinalClassifier()
+    model.fit(X_train, y_train)
+
+    # Store label encoder for compatibility
+    if model._label_encoder is None:
+        le = LabelEncoder()
+        le.fit(y_train)
+        model._label_encoder = le
+    model._classes = model._label_encoder.classes_
+
+    return model
+
+
+def evaluate_ordinal_classifier(model, X_test, y_test):
+    """
+    Evaluate ordinal classifier with standard and ordinal-specific metrics.
+    """
+    from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+
+    y_pred = model.predict(X_test)
+
+    # Encode for metrics
+    le = model._label_encoder
+    y_test_enc = le.transform(y_test)
+    y_pred_enc = le.transform(y_pred)
+
+    accuracy = accuracy_score(y_test_enc, y_pred_enc)
+
+    print("\n📊 Ordinal Severity Classification Results:")
+    print(f"Accuracy: {accuracy:.1%}")
+    print("\nClassification Report:")
+    print(classification_report(y_test, y_pred, target_names=SEVERITY_LABELS))
+
+    print("\nConfusion Matrix:")
+    cm = confusion_matrix(y_test_enc, y_pred_enc)
+    cm_df = pd.DataFrame(cm, index=SEVERITY_LABELS, columns=SEVERITY_LABELS)
+    print(cm_df)
+
+    # Adjacent accuracy
+    y_test_int = np.array(y_test_enc).flatten().astype(int)
+    y_pred_int = np.array(y_pred_enc).flatten().astype(int)
+    adjacent = np.sum(np.abs(y_test_int - y_pred_int) <= 1)
+    adjacent_acc = adjacent / len(y_test_int)
+    print(f"\nAdjacent Accuracy (within 1 category): {adjacent_acc:.1%}")
+
+    # Mean Absolute Error in classes (ordinal-specific)
+    mae_classes = np.mean(np.abs(y_test_int - y_pred_int))
+    print(f"Mean Absolute Error (classes): {mae_classes:.2f}")
+
+    return {
+        "accuracy": accuracy,
+        "adjacent_accuracy": adjacent_acc,
+        "mae_classes": mae_classes,
+        "predictions": y_pred,
+        "confusion_matrix": cm_df
+    }
+
+
+def _ordinal_objective(trial, X_train, y_train, X_val, y_val):
+    """Optuna objective for ordinal classifier hyperparameter tuning."""
+    from lightgbm import LGBMClassifier
+    from sklearn.preprocessing import LabelEncoder
+    from sklearn.metrics import f1_score
+
+    # Encode labels
+    le = LabelEncoder()
+    if hasattr(y_train, 'dtype') and (y_train.dtype == 'object' or str(y_train.dtype) == 'category'):
+        y_train_enc = le.fit_transform(y_train)
+        y_val_enc = le.transform(y_val)
+    else:
+        y_train_enc = np.array(y_train).flatten()
+        y_val_enc = np.array(y_val).flatten()
+
+    # Hyperparameters to tune
+    params = {
+        "n_estimators": trial.suggest_int("n_estimators", 100, 500),
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
+        "max_depth": trial.suggest_int("max_depth", 3, 10),
+        "num_leaves": trial.suggest_int("num_leaves", 15, 127),
+        "min_child_samples": trial.suggest_int("min_child_samples", 5, 50),
+        "reg_alpha": trial.suggest_float("reg_alpha", 1e-4, 10, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10, log=True),
+        "class_weight": "balanced",
+        "random_state": 42,
+        "verbose": -1
+    }
+
+    # Create base estimator with tuned params
+    def create_base():
+        return LGBMClassifier(**params)
+
+    # Train ordinal classifier with this base estimator
+    n_classes = len(np.unique(y_train_enc))
+    classifiers = []
+
+    X_prep = _sanitize_column_names(X_train.copy())
+    for col in X_prep.select_dtypes(include=['object', 'category']).columns:
+        X_prep[col] = X_prep[col].astype('category').cat.codes
+
+    X_val_prep = _sanitize_column_names(X_val.copy())
+    for col in X_val_prep.select_dtypes(include=['object', 'category']).columns:
+        X_val_prep[col] = X_val_prep[col].astype('category').cat.codes
+
+    for k in range(n_classes - 1):
+        y_binary = (y_train_enc > k).astype(int)
+        clf = create_base()
+        clf.fit(X_prep, y_binary)
+        classifiers.append(clf)
+
+    # Predict on validation
+    cumprobs = np.zeros((len(X_val), n_classes - 1))
+    for k, clf in enumerate(classifiers):
+        cumprobs[:, k] = clf.predict_proba(X_val_prep)[:, 1]
+
+    probs = np.zeros((len(X_val), n_classes))
+    probs[:, 0] = 1 - cumprobs[:, 0]
+    for k in range(1, n_classes - 1):
+        probs[:, k] = cumprobs[:, k-1] - cumprobs[:, k]
+    probs[:, -1] = cumprobs[:, -1]
+
+    probs = np.clip(probs, 0, 1)
+    probs = probs / probs.sum(axis=1, keepdims=True)
+    y_pred = np.argmax(probs, axis=1)
+
+    # Optimize for macro F1
+    f1 = f1_score(y_val_enc, y_pred, average='macro')
+    return f1
+
+
+def tune_ordinal_classifier(X_train, y_train, X_val, y_val, n_trials=30):
+    """
+    Tune ordinal classifier hyperparameters with Optuna.
+
+    Args:
+        X_train, y_train: Training data
+        X_val, y_val: Validation data
+        n_trials: Number of Optuna trials
+
+    Returns:
+        dict: Best hyperparameters found
+    """
+    logger.info(f"Starting ordinal classifier tuning with {n_trials} trials")
+
+    study = optuna.create_study(direction="maximize")  # Maximize F1
+    study.optimize(
+        lambda trial: _ordinal_objective(trial, X_train, y_train, X_val, y_val),
+        n_trials=n_trials
+    )
+
+    logger.info(f"Tuning completed - Best macro F1: {study.best_value:.3f}")
+    print(f"\n🎯 Best Ordinal Classifier Params:")
+    print(study.best_params)
+    print(f"Best macro F1 = {study.best_value:.3f}")
+
+    return study.best_params
+
+
+def train_tuned_ordinal_classifier(X_train, y_train, X_val, y_val, X_test, y_test, n_trials=30):
+    """
+    Full pipeline: tune hyperparameters, train final ordinal model, evaluate.
+
+    Args:
+        X_train, y_train: Training data
+        X_val, y_val: Validation data for tuning
+        X_test, y_test: Test data for final evaluation
+        n_trials: Number of Optuna trials
+
+    Returns:
+        model: Trained OrdinalClassifier with best params
+        results: Evaluation results dict
+    """
+    from lightgbm import LGBMClassifier
+    from sklearn.preprocessing import LabelEncoder
+
+    # Tune hyperparameters
+    best_params = tune_ordinal_classifier(X_train, y_train, X_val, y_val, n_trials=n_trials)
+
+    # Create tuned base estimator
+    lgb_params = best_params.copy()
+    lgb_params["class_weight"] = "balanced"
+    lgb_params["random_state"] = 42
+    lgb_params["verbose"] = -1
+
+    def create_tuned_base():
+        return LGBMClassifier(**lgb_params)
+
+    # Train final model on train+val
+    X_trainval = pd.concat([X_train, X_val], ignore_index=True)
+    y_trainval = pd.concat([y_train, y_val], ignore_index=True) if hasattr(y_train, 'reset_index') else np.concatenate([y_train, y_val])
+
+    print("\nTraining final ordinal model with tuned parameters...")
+
+    # Build ordinal classifier with tuned base
+    model = OrdinalClassifier()
+
+    # Encode labels
+    if hasattr(y_trainval, 'dtype') and (y_trainval.dtype == 'object' or str(y_trainval.dtype) == 'category'):
+        model._label_encoder = LabelEncoder()
+        y_enc = model._label_encoder.fit_transform(y_trainval)
+    else:
+        le = LabelEncoder()
+        le.fit(y_train)
+        model._label_encoder = le
+        y_enc = np.array(y_trainval).flatten()
+
+    model.n_classes_ = len(np.unique(y_enc))
+    model.classifiers_ = []
+
+    X_prep = _sanitize_column_names(X_trainval.copy())
+    for col in X_prep.select_dtypes(include=['object', 'category']).columns:
+        X_prep[col] = X_prep[col].astype('category').cat.codes
+
+    for k in range(model.n_classes_ - 1):
+        y_binary = (y_enc > k).astype(int)
+        clf = create_tuned_base()
+        clf.fit(X_prep, y_binary)
+        model.classifiers_.append(clf)
+
+    model._classes = model._label_encoder.classes_
+
+    # Evaluate
+    print("\n" + "="*60)
+    print("TUNED ORDINAL MODEL EVALUATION")
+    print("="*60)
+    results = evaluate_ordinal_classifier(model, X_test, y_test)
+
+    return model, results
+
+
+# ============================================================================
+# ENSEMBLE: COMBINE CATBOOST + ORDINAL
+# ============================================================================
+
+class SeverityEnsemble:
+    """
+    Weighted ensemble combining CatBoost multiclass and Ordinal regression.
+
+    Combines predictions via weighted averaging of probabilities.
+    When models agree, confidence is high. When they disagree, uses weights.
+
+    Drawbacks:
+    - Slower inference (2 models)
+    - More complex to maintain
+    - Harder to interpret individual predictions
+
+    Benefits:
+    - More robust predictions
+    - Combines CatBoost accuracy with Ordinal ordering awareness
+    - Agreement provides confidence signal
+    """
+
+    def __init__(self, catboost_model=None, ordinal_model=None, weight_catboost=0.5):
+        """
+        Args:
+            catboost_model: Trained CatBoost severity classifier
+            ordinal_model: Trained OrdinalClassifier
+            weight_catboost: Weight for CatBoost (0-1). Ordinal gets (1 - weight).
+        """
+        self.catboost_model = catboost_model
+        self.ordinal_model = ordinal_model
+        self.weight_catboost = weight_catboost
+        self._label_encoder = None
+        self._classes = None
+
+    def fit(self, X_train, y_train, X_val, y_val, tune=False, n_trials=20):
+        """
+        Train both models.
+
+        Args:
+            X_train, y_train: Training data
+            X_val, y_val: Validation data
+            tune: If True, use Optuna tuning for both models
+            n_trials: Number of Optuna trials per model
+        """
+        from sklearn.preprocessing import LabelEncoder
+
+        # Store label encoder
+        le = LabelEncoder()
+        le.fit(y_train)
+        self._label_encoder = le
+        self._classes = le.classes_
+
+        print("="*60)
+        print("TRAINING SEVERITY ENSEMBLE")
+        print("="*60)
+        print(f"Weights: CatBoost={self.weight_catboost:.0%}, Ordinal={1-self.weight_catboost:.0%}\n")
+
+        # Train CatBoost
+        print("--- Training CatBoost ---")
+        self.catboost_model = train_severity_classifier(
+            X_train, y_train, X_val, y_val, model_type="catboost"
+        )
+
+        # Train Ordinal
+        print("\n--- Training Ordinal ---")
+        if tune:
+            best_params = tune_ordinal_classifier(X_train, y_train, X_val, y_val, n_trials=n_trials)
+        self.ordinal_model = train_ordinal_severity_classifier(X_train, y_train, X_val, y_val)
+
+        return self
+
+    def predict_proba(self, X):
+        """
+        Get weighted ensemble probabilities.
+
+        Returns:
+            Array of shape (n_samples, n_classes)
+        """
+        # CatBoost probabilities
+        X_cb, _ = _prepare_catboost_data(X)
+        cat_probs = self.catboost_model.predict_proba(X_cb)
+
+        # Ordinal probabilities
+        ord_probs = self.ordinal_model.predict_proba(X)
+
+        # Weighted average
+        ensemble_probs = (
+            self.weight_catboost * cat_probs +
+            (1 - self.weight_catboost) * ord_probs
+        )
+
+        return ensemble_probs
+
+    def predict(self, X):
+        """Predict class labels."""
+        probs = self.predict_proba(X)
+        y_pred_idx = np.argmax(probs, axis=1)
+        return self._label_encoder.inverse_transform(y_pred_idx)
+
+    def predict_with_confidence(self, X):
+        """
+        Predict with confidence based on model agreement.
+
+        Returns:
+            predictions: Class labels
+            confidence: 'high' if models agree, 'medium' if adjacent, 'low' if disagree
+            agreement_score: 0-2 (0=disagree, 1=adjacent, 2=exact match)
+        """
+        # Get individual predictions
+        X_cb, _ = _prepare_catboost_data(X)
+        cat_pred_idx = np.argmax(self.catboost_model.predict_proba(X_cb), axis=1)
+        ord_pred_idx = np.argmax(self.ordinal_model.predict_proba(X), axis=1)
+
+        # Ensemble prediction
+        predictions = self.predict(X)
+
+        # Agreement score
+        diff = np.abs(cat_pred_idx - ord_pred_idx)
+        agreement_score = 2 - np.minimum(diff, 2)  # 2=exact, 1=adjacent, 0=far
+
+        confidence = np.where(
+            agreement_score == 2, 'high',
+            np.where(agreement_score == 1, 'medium', 'low')
+        )
+
+        return predictions, confidence, agreement_score
+
+
+def train_severity_ensemble(X_train, y_train, X_val, y_val, weight_catboost=0.5, tune=False, n_trials=20):
+    """
+    Train a severity ensemble combining CatBoost and Ordinal classifiers.
+
+    Args:
+        X_train, y_train: Training data
+        X_val, y_val: Validation data
+        weight_catboost: Weight for CatBoost predictions (0-1)
+        tune: If True, tune ordinal model with Optuna
+        n_trials: Optuna trials if tuning
+
+    Returns:
+        Trained SeverityEnsemble
+    """
+    ensemble = SeverityEnsemble(weight_catboost=weight_catboost)
+    ensemble.fit(X_train, y_train, X_val, y_val, tune=tune, n_trials=n_trials)
+    return ensemble
+
+
+def evaluate_severity_ensemble(ensemble, X_test, y_test):
+    """
+    Evaluate severity ensemble with detailed metrics.
+    """
+    from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+
+    predictions, confidence, agreement = ensemble.predict_with_confidence(X_test)
+
+    le = ensemble._label_encoder
+    y_test_enc = le.transform(y_test)
+    y_pred_enc = le.transform(predictions)
+
+    accuracy = accuracy_score(y_test_enc, y_pred_enc)
+
+    print("\n📊 Severity Ensemble Results:")
+    print(f"Accuracy: {accuracy:.1%}")
+    print(f"Weights: CatBoost={ensemble.weight_catboost:.0%}, Ordinal={1-ensemble.weight_catboost:.0%}")
+
+    print("\nClassification Report:")
+    print(classification_report(y_test, predictions, target_names=SEVERITY_LABELS))
+
+    print("\nConfusion Matrix:")
+    cm = confusion_matrix(y_test_enc, y_pred_enc)
+    cm_df = pd.DataFrame(cm, index=SEVERITY_LABELS, columns=SEVERITY_LABELS)
+    print(cm_df)
+
+    # Adjacent accuracy
+    y_test_int = np.array(y_test_enc).flatten().astype(int)
+    y_pred_int = np.array(y_pred_enc).flatten().astype(int)
+    adjacent = np.sum(np.abs(y_test_int - y_pred_int) <= 1)
+    adjacent_acc = adjacent / len(y_test_int)
+    print(f"\nAdjacent Accuracy (within 1 category): {adjacent_acc:.1%}")
+
+    # MAE classes
+    mae_classes = np.mean(np.abs(y_test_int - y_pred_int))
+    print(f"Mean Absolute Error (classes): {mae_classes:.2f}")
+
+    # Confidence distribution
+    print(f"\nModel Agreement (confidence):")
+    unique, counts = np.unique(confidence, return_counts=True)
+    for conf, cnt in zip(unique, counts):
+        print(f"  {conf}: {cnt} ({cnt/len(confidence):.1%})")
+
+    # Accuracy by confidence
+    print("\nAccuracy by Confidence Level:")
+    for conf_level in ['high', 'medium', 'low']:
+        mask = confidence == conf_level
+        if mask.sum() > 0:
+            conf_acc = accuracy_score(y_test_enc[mask], y_pred_enc[mask])
+            print(f"  {conf_level}: {conf_acc:.1%} (n={mask.sum()})")
+
+    return {
+        "accuracy": accuracy,
+        "adjacent_accuracy": adjacent_acc,
+        "mae_classes": mae_classes,
+        "predictions": predictions,
+        "confidence": confidence,
+        "agreement_score": agreement,
+        "confusion_matrix": cm_df
+    }

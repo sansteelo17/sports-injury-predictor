@@ -67,16 +67,27 @@ def add_workload_metrics(team_matches: pd.DataFrame,
     # -----------------------------
     # 4️⃣ MONOTONY = mean / std (14D window)
     # -----------------------------
+    # Monotony measures training regularity. Higher = more consistent schedule.
+    # When std is very low (consistent schedule), monotony would explode.
+    # Cap at reasonable maximum (typical range: 1-5 in sports science).
+    def safe_monotony(x):
+        mean_val = np.mean(x)
+        std_val = np.std(x)
+        if std_val < 0.1:  # Very consistent schedule
+            return min(mean_val / 0.1, 5.0)  # Cap at 5
+        return min(mean_val / std_val, 5.0)
+
     df["monotony"] = (
         groups["dummy_load"]
         .rolling("14D")
-        .apply(lambda x: np.mean(x) / (np.std(x) + 1e-9))
+        .apply(safe_monotony)
         .reset_index(level=0, drop=True)
     )
 
     # -----------------------------
     # 5️⃣ STRAIN = load * monotony
     # -----------------------------
+    # Strain = weekly load × monotony. Typical range: 0-50 in sports science.
     df["strain"] = df["acute_load"] * df["monotony"]
 
     # -----------------------------
