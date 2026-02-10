@@ -1,4 +1,4 @@
-import { PlayerSummary, PlayerRisk, TeamOverview, FPLInsights, LeagueStanding } from '@/types/api';
+import { PlayerSummary, PlayerRisk, TeamOverview, FPLInsights, LeagueStanding, StandingsSummary } from '@/types/api';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL
   ? `${process.env.NEXT_PUBLIC_API_URL}/api`
@@ -48,4 +48,9 @@ export async function getLeagueStandings(): Promise<LeagueStanding[]> {
 
 export async function getDoubleGameweeks(): Promise<Record<string, string[]>> {
   return fetchAPI<Record<string, string[]>>('/fpl/double-gameweeks');
+}
+
+export async function getStandingsSummary(team?: string): Promise<StandingsSummary> {
+  const query = team ? `?team=${encodeURIComponent(team)}` : '';
+  return fetchAPI<StandingsSummary>(`/standings/summary${query}`);
 }

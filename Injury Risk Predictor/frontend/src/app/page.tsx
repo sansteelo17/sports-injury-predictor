@@ -1,13 +1,14 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { getTeams, getTeamOverview, getPlayerRisk, getFPLInsights } from '@/lib/api';
-import { TeamOverview as TeamOverviewType, PlayerRisk, FPLInsights as FPLInsightsType } from '@/types/api';
+import { getTeams, getTeamOverview, getPlayerRisk, getFPLInsights, getStandingsSummary } from '@/lib/api';
+import { TeamOverview as TeamOverviewType, PlayerRisk, FPLInsights as FPLInsightsType, StandingsSummary } from '@/types/api';
 import { TeamSelector } from '@/components/TeamSelector';
 import { TeamOverview } from '@/components/TeamOverview';
 import { PlayerList } from '@/components/PlayerList';
 import { PlayerCard } from '@/components/PlayerCard';
 import { FPLInsights } from '@/components/FPLInsights';
+import { StandingsCards } from '@/components/StandingsCards';
 import { Activity, Shield, Info, Moon, Sun, Zap } from 'lucide-react';
 
 export default function Home() {
@@ -17,6 +18,7 @@ export default function Home() {
   const [selectedPlayer, setSelectedPlayer] = useState<string | null>(null);
   const [playerRisk, setPlayerRisk] = useState<PlayerRisk | null>(null);
   const [fplInsights, setFplInsights] = useState<FPLInsightsType | null>(null);
+  const [standings, setStandings] = useState<StandingsSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [darkMode, setDarkMode] = useState(true);
@@ -43,9 +45,15 @@ export default function Home() {
 
     setLoading(true);
     setError(null);
-    getTeamOverview(selectedTeam)
-      .then((data) => {
-        setTeamOverview(data);
+
+    // Fetch team overview and standings in parallel
+    Promise.all([
+      getTeamOverview(selectedTeam),
+      getStandingsSummary(selectedTeam).catch(() => null),
+    ])
+      .then(([teamData, standingsData]) => {
+        setTeamOverview(teamData);
+        setStandings(standingsData);
         setSelectedPlayer(null);
         setPlayerRisk(null);
       })
@@ -141,6 +149,13 @@ export default function Home() {
         {loading && (
           <div className="flex items-center justify-center py-12">
             <div className={`animate-spin rounded-full h-8 w-8 border-b-2 ${darkMode ? 'border-[#86efac]' : 'border-emerald-600'}`}></div>
+          </div>
+        )}
+
+        {/* Standings Cards */}
+        {standings && !loading && (
+          <div className="mb-6">
+            <StandingsCards standings={standings} darkMode={darkMode} />
           </div>
         )}
 

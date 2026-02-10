@@ -89,3 +89,21 @@ export interface FPLInsights {
   upcoming_gameweeks: GameweekSummary[];
   has_double_gameweek: boolean;
 }
+
+// Real League Standings
+export interface TeamStanding {
+  name: string;
+  short_name: string;
+  position?: number;
+  points: number;
+  played: number;
+  form?: string;
+  distance_from_top?: number;
+}
+
+export interface StandingsSummary {
+  leader: TeamStanding;
+  second: TeamStanding;
+  gap_to_second: number;
+  selected_team?: TeamStanding;
+}

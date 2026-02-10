@@ -22,6 +22,7 @@ from src.inference.story_generator import (
     get_recommendation_text,
 )
 from src.data_loaders.fpl_api import FPLClient, get_fpl_insights
+from src.data_loaders.football_data_api import FootballDataClient, get_standings_summary
 
 app = FastAPI(
     title="EPL Injury Risk Predictor API",
@@ -159,6 +160,23 @@ class FPLInsights(BaseModel):
     standings: List[LeagueStanding]
     upcoming_gameweeks: List[GameweekSummary]
     has_double_gameweek: bool
+
+
+class TeamStanding(BaseModel):
+    name: str
+    short_name: str
+    position: Optional[int] = None
+    points: int
+    played: int
+    form: Optional[str] = None
+    distance_from_top: Optional[int] = None
+
+
+class StandingsSummary(BaseModel):
+    leader: TeamStanding
+    second: TeamStanding
+    gap_to_second: int
+    selected_team: Optional[TeamStanding] = None
 
 
 # ============================================================
@@ -469,6 +487,34 @@ async def get_league_standings():
         return [LeagueStanding(**s) for s in standings]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"FPL API error: {str(e)}")
+
+
+@app.get("/api/standings/summary")
+async def get_standings_summary_endpoint(team: Optional[str] = None):
+    """
+    Get Premier League standings summary.
+
+    Args:
+        team: Optional team name to include position for
+
+    Returns:
+        Leader, second place, gap, and optionally selected team's position
+    """
+    try:
+        summary = get_standings_summary(team)
+        if not summary:
+            raise HTTPException(status_code=503, detail="Standings unavailable")
+
+        return StandingsSummary(
+            leader=TeamStanding(**summary["leader"]),
+            second=TeamStanding(**summary["second"]),
+            gap_to_second=summary["gap_to_second"],
+            selected_team=TeamStanding(**summary["selected_team"]) if summary.get("selected_team") else None,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Standings error: {str(e)}")
 
 
 @app.get("/api/fpl/double-gameweeks")
