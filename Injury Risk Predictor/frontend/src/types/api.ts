@@ -33,6 +33,7 @@ export interface PlayerRisk {
   factors: RiskFactors;
   model_predictions: ModelPredictions;
   recommendations: string[];
+  story: string;  // Personalized risk narrative
   last_injury_date: string | null;
 }
 

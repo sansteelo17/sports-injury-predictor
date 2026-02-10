@@ -16,6 +16,11 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 from src.utils.model_io import load_artifacts
+from src.inference.story_generator import (
+    generate_player_story,
+    generate_risk_factors_list,
+    get_recommendation_text,
+)
 
 app = FastAPI(
     title="EPL Injury Risk Predictor API",
@@ -23,10 +28,15 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS for React frontend
+# CORS for React frontend (local dev + Render deployment)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://epl-injury-frontend.onrender.com",
+        "https://injurywatch.onrender.com",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -87,6 +97,7 @@ class PlayerRisk(BaseModel):
     factors: RiskFactors
     model_predictions: ModelPredictions
     recommendations: List[str]
+    story: str  # Personalized narrative
     last_injury_date: Optional[str]
 
 
@@ -129,37 +140,26 @@ def get_risk_level(prob: float) -> str:
     return "Low"
 
 
-def get_recommendations(row: dict) -> List[str]:
-    recommendations = []
-    archetype = row.get("archetype", "")
-    days_since = row.get("days_since_last_injury", 365)
-    prev_injuries = row.get("previous_injuries", 0)
+def get_personalized_insights(row: dict) -> List[str]:
+    """Generate personalized insights using the story generator."""
+    # Get risk factors from the story generator
+    risk_factors = generate_risk_factors_list(row)
 
-    if days_since < 60:
-        recommendations.append("Gradual return-to-play protocol recommended")
-        recommendations.append("Monitor workload carefully for 4-6 weeks")
+    insights = []
 
-    if archetype == "Fragile":
-        recommendations.append("Consider reduced match minutes")
-        recommendations.append("Prioritize recovery between fixtures")
-    elif archetype == "Injury Prone":
-        recommendations.append("Regular physiotherapy sessions advised")
-        recommendations.append("Track training load closely")
-    elif archetype == "Currently Vulnerable":
-        recommendations.append("Avoid fixture congestion periods")
-        recommendations.append("Consider rotation with backup players")
-    elif archetype == "Recurring":
-        recommendations.append("Address underlying movement patterns")
-        recommendations.append("Strength and conditioning focus")
+    # Add the main recommendation
+    main_rec = get_recommendation_text(row)
+    if main_rec:
+        insights.append(main_rec)
 
-    if prev_injuries >= 10:
-        recommendations.append("Comprehensive injury prevention program")
+    # Add key risk factor descriptions
+    for factor in risk_factors[:2]:  # Top 2 risk factors
+        if factor["impact"] in ["high_risk", "moderate_risk"]:
+            insights.append(f"{factor['factor']}: {factor['description']}")
+        elif factor["impact"] == "protective":
+            insights.append(f"{factor['factor']}: {factor['description']}")
 
-    if not recommendations:
-        recommendations.append("Maintain current fitness regime")
-        recommendations.append("Standard monitoring protocols")
-
-    return recommendations[:4]  # Max 4 recommendations
+    return insights[:4]  # Max 4 insights
 
 
 def player_row_to_risk(row) -> PlayerRisk:
@@ -167,6 +167,9 @@ def player_row_to_risk(row) -> PlayerRisk:
     prob = row.get("ensemble_prob", row.get("calibrated_prob", 0.5))
     prev_injuries = row.get("previous_injuries", 0)
     total_days = row.get("total_days_lost", 0)
+
+    # Generate personalized story
+    story = generate_player_story(row)
 
     return PlayerRisk(
         name=row.get("name", "Unknown"),
@@ -191,7 +194,8 @@ def player_row_to_risk(row) -> PlayerRisk:
             xgb=round(row.get("xgb_prob", prob), 3),
             catboost=round(row.get("catboost_prob", prob), 3),
         ),
-        recommendations=get_recommendations(row),
+        recommendations=get_personalized_insights(row),
+        story=story,
         last_injury_date=str(row.get("last_injury_date")) if row.get("last_injury_date") else None,
     )
 

@@ -6,26 +6,24 @@ interface RiskBadgeProps {
   level: 'High' | 'Medium' | 'Low';
   probability?: number;
   size?: 'sm' | 'md' | 'lg';
+  darkMode?: boolean;
 }
 
-export function RiskBadge({ level, probability, size = 'md' }: RiskBadgeProps) {
+export function RiskBadge({ level, probability, size = 'md', darkMode = true }: RiskBadgeProps) {
   const config = {
     High: {
-      bg: 'bg-red-100',
-      text: 'text-red-800',
-      border: 'border-red-200',
+      dark: 'bg-red-500/20 text-red-400 border-red-500/30',
+      light: 'bg-red-100 text-red-800 border-red-200',
       icon: AlertTriangle,
     },
     Medium: {
-      bg: 'bg-amber-100',
-      text: 'text-amber-800',
-      border: 'border-amber-200',
+      dark: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+      light: 'bg-amber-100 text-amber-800 border-amber-200',
       icon: AlertCircle,
     },
     Low: {
-      bg: 'bg-green-100',
-      text: 'text-green-800',
-      border: 'border-green-200',
+      dark: 'bg-[#86efac]/20 text-[#86efac] border-[#86efac]/30',
+      light: 'bg-green-100 text-green-800 border-green-200',
       icon: CheckCircle,
     },
   };
@@ -42,11 +40,12 @@ export function RiskBadge({ level, probability, size = 'md' }: RiskBadgeProps) {
     lg: 18,
   };
 
-  const { bg, text, border, icon: Icon } = config[level];
+  const { dark, light, icon: Icon } = config[level];
+  const colorClasses = darkMode ? dark : light;
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 font-semibold rounded-full border ${bg} ${text} ${border} ${sizeClasses[size]}`}
+      className={`inline-flex items-center gap-1.5 font-semibold rounded-full border ${colorClasses} ${sizeClasses[size]}`}
     >
       <Icon size={iconSizes[size]} />
       {level} Risk

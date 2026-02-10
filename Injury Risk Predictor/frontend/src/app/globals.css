@@ -3,53 +3,93 @@
 @tailwind utilities;
 
 :root {
-  --foreground-rgb: 0, 0, 0;
-  --background-start-rgb: 248, 250, 252;
-  --background-end-rgb: 241, 245, 249;
+  --foreground: 255, 255, 255;
+  --background: 10, 10, 10;
+  --card-bg: 20, 20, 20;
+  --card-border: 31, 31, 31;
+  --brand-green: 134, 239, 172;
 }
 
 body {
-  color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-      to bottom,
-      transparent,
-      rgb(var(--background-end-rgb))
-    )
-    rgb(var(--background-start-rgb));
+  color: rgb(var(--foreground));
+  background: rgb(var(--background));
   min-height: 100vh;
 }
 
-/* Risk level badges */
+/* Dark theme by default */
+.dark {
+  --foreground: 255, 255, 255;
+  --background: 10, 10, 10;
+}
+
+/* Light mode override */
+.light {
+  --foreground: 10, 10, 10;
+  --background: 248, 250, 252;
+  --card-bg: 255, 255, 255;
+  --card-border: 229, 231, 235;
+}
+
+/* Risk level badges - dark theme */
 .risk-badge {
   @apply inline-flex items-center px-3 py-1 rounded-full text-sm font-semibold;
 }
 
 .risk-badge-high {
-  @apply bg-red-100 text-red-800;
+  @apply bg-red-500/20 text-red-400 border border-red-500/30;
 }
 
 .risk-badge-medium {
-  @apply bg-amber-100 text-amber-800;
+  @apply bg-amber-500/20 text-amber-400 border border-amber-500/30;
 }
 
 .risk-badge-low {
-  @apply bg-green-100 text-green-800;
+  @apply bg-brand-green/20 text-brand-green border border-brand-green/30;
 }
 
-/* Card hover effects */
+/* Card styles */
+.card {
+  @apply bg-brand-dark border border-brand-gray rounded-xl;
+}
+
 .player-card {
   @apply transition-all duration-200 ease-in-out;
 }
 
 .player-card:hover {
-  @apply shadow-lg -translate-y-1;
+  @apply border-brand-green/50 shadow-lg shadow-brand-green/10;
 }
 
-/* Risk meter */
+/* Risk meter - dark theme */
 .risk-meter {
-  @apply h-2 rounded-full overflow-hidden bg-gray-200;
+  @apply h-3 rounded-full overflow-hidden bg-brand-gray;
 }
 
 .risk-meter-fill {
   @apply h-full transition-all duration-500 ease-out;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #141414;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #444;
+}
+
+/* Selection */
+::selection {
+  background: rgba(134, 239, 172, 0.3);
+  color: white;
 }

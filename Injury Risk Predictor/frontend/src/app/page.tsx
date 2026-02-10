@@ -7,7 +7,7 @@ import { TeamSelector } from '@/components/TeamSelector';
 import { TeamOverview } from '@/components/TeamOverview';
 import { PlayerList } from '@/components/PlayerList';
 import { PlayerCard } from '@/components/PlayerCard';
-import { Activity, Shield, Info } from 'lucide-react';
+import { Activity, Shield, Info, Moon, Sun, Zap } from 'lucide-react';
 
 export default function Home() {
   const [teams, setTeams] = useState<string[]>([]);
@@ -17,6 +17,7 @@ export default function Home() {
   const [playerRisk, setPlayerRisk] = useState<PlayerRisk | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [darkMode, setDarkMode] = useState(true);
 
   // Load teams on mount
   useEffect(() => {
@@ -60,48 +61,72 @@ export default function Home() {
       .finally(() => setLoading(false));
   }, [selectedPlayer]);
 
+  const bgClass = darkMode ? 'bg-[#0a0a0a]' : 'bg-gray-50';
+  const textClass = darkMode ? 'text-white' : 'text-gray-900';
+  const mutedClass = darkMode ? 'text-gray-500' : 'text-gray-500';
+  const cardClass = darkMode ? 'bg-[#141414] border-[#1f1f1f]' : 'bg-white border-gray-200';
+
   return (
-    <div className="min-h-screen">
+    <div className={`min-h-screen ${bgClass} ${textClass}`}>
       {/* Header */}
-      <header className="bg-gradient-to-r from-pl-purple to-purple-800 text-white py-6 px-4 shadow-lg">
-        <div className="max-w-6xl mx-auto">
+      <header className={`${darkMode ? 'bg-[#141414] border-b border-[#1f1f1f]' : 'bg-white border-b border-gray-200'} py-4 px-4`}>
+        <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Activity size={32} className="text-pl-green" />
+            <div className="relative">
+              <Activity size={32} className="text-[#86efac]" />
+              <Zap size={14} className="absolute -top-1 -right-1 text-[#86efac]" />
+            </div>
             <div>
-              <h1 className="text-2xl font-bold">EPL Injury Predictor</h1>
-              <p className="text-purple-200 text-sm">ML-powered risk analysis for Premier League players</p>
+              <h1 className="text-xl font-bold tracking-tight">
+                Injury<span className="text-[#86efac]">Watch</span>
+              </h1>
+              <p className={`text-xs ${mutedClass}`}>
+                ML-powered injury prediction
+              </p>
             </div>
           </div>
+
+          {/* Dark mode toggle */}
+          <button
+            onClick={() => setDarkMode(!darkMode)}
+            className={`p-2 rounded-lg transition-colors ${
+              darkMode ? 'bg-[#1f1f1f] hover:bg-[#86efac]/20' : 'bg-gray-100 hover:bg-gray-200'
+            }`}
+          >
+            {darkMode ? <Sun size={20} className="text-[#86efac]" /> : <Moon size={20} />}
+          </button>
         </div>
       </header>
 
       {/* Main Content */}
       <main className="max-w-6xl mx-auto px-4 py-8">
-        {/* How it Works Banner */}
-        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6 flex items-start gap-3">
-          <Info className="text-blue-500 flex-shrink-0 mt-0.5" size={20} />
-          <div className="text-sm text-blue-800">
-            <strong>How it works:</strong> Our ML model analyzes injury history patterns,
-            recovery times, and injury severity to predict injury risk over the <strong>next 2 weeks</strong>.
-            Select a team to see squad analysis, then click any player for detailed insights.
+        {/* League Notice */}
+        <div className={`${darkMode ? 'bg-[#86efac]/10 border-[#86efac]/30' : 'bg-green-50 border-green-200'} border rounded-xl p-4 mb-6`}>
+          <div className="flex items-start gap-3">
+            <Info className="text-[#86efac] flex-shrink-0 mt-0.5" size={18} />
+            <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+              <strong className="text-[#86efac]">Currently covering Premier League.</strong>
+              {' '}More leagues coming soon. Our ML model analyzes injury history, recovery patterns, and severity to predict injury risk over the next 2 weeks.
+            </div>
           </div>
         </div>
 
         {/* Team Selector */}
         <div className="mb-6">
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Choose a Premier League Team
+          <label className={`block text-sm font-medium mb-2 ${mutedClass}`}>
+            Select Team
           </label>
           <TeamSelector
             teams={teams}
             selectedTeam={selectedTeam}
             onSelectTeam={setSelectedTeam}
+            darkMode={darkMode}
           />
         </div>
 
         {/* Error State */}
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6 text-red-700">
+          <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 mb-6 text-red-400">
             {error}
           </div>
         )}
@@ -109,7 +134,7 @@ export default function Home() {
         {/* Loading State */}
         {loading && (
           <div className="flex items-center justify-center py-12">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#86efac]"></div>
           </div>
         )}
 
@@ -118,18 +143,19 @@ export default function Home() {
           <div className="grid lg:grid-cols-3 gap-6">
             {/* Left Column - Team Overview & Player List */}
             <div className="lg:col-span-1 space-y-6">
-              <TeamOverview team={teamOverview} />
+              <TeamOverview team={teamOverview} darkMode={darkMode} />
 
-              <div className="bg-white rounded-xl shadow-lg p-4">
-                <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                  <Shield size={18} className="text-gray-400" />
-                  Squad Players
+              <div className={`${cardClass} border rounded-xl p-4`}>
+                <h3 className={`font-semibold mb-3 flex items-center gap-2 ${textClass}`}>
+                  <Shield size={18} className="text-[#86efac]" />
+                  Squad
                 </h3>
                 <div className="max-h-96 overflow-y-auto">
                   <PlayerList
                     players={teamOverview.players}
                     onSelectPlayer={setSelectedPlayer}
                     selectedPlayer={selectedPlayer || undefined}
+                    darkMode={darkMode}
                   />
                 </div>
               </div>
@@ -138,15 +164,15 @@ export default function Home() {
             {/* Right Column - Player Card */}
             <div className="lg:col-span-2">
               {playerRisk ? (
-                <PlayerCard player={playerRisk} />
+                <PlayerCard player={playerRisk} darkMode={darkMode} />
               ) : (
-                <div className="bg-white rounded-2xl shadow-lg p-12 text-center">
-                  <Shield size={48} className="mx-auto text-gray-300 mb-4" />
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">
+                <div className={`${cardClass} border rounded-2xl p-12 text-center`}>
+                  <Shield size={48} className={`mx-auto mb-4 ${darkMode ? 'text-[#1f1f1f]' : 'text-gray-300'}`} />
+                  <h3 className={`text-lg font-medium mb-2 ${textClass}`}>
                     Select a Player
                   </h3>
-                  <p className="text-gray-500">
-                    Click on any player from the squad list to view their detailed injury risk analysis
+                  <p className={mutedClass}>
+                    Click on any player to view their injury risk analysis
                   </p>
                 </div>
               )}
@@ -157,24 +183,26 @@ export default function Home() {
         {/* Empty State */}
         {!selectedTeam && !loading && (
           <div className="text-center py-16">
-            <Activity size={64} className="mx-auto text-gray-300 mb-4" />
-            <h2 className="text-xl font-semibold text-gray-700 mb-2">
-              Welcome to EPL Injury Predictor
+            <div className="relative inline-block mb-6">
+              <Activity size={64} className={darkMode ? 'text-[#1f1f1f]' : 'text-gray-200'} />
+              <Zap size={24} className="absolute -top-2 -right-2 text-[#86efac] animate-pulse" />
+            </div>
+            <h2 className={`text-xl font-semibold mb-2 ${textClass}`}>
+              Welcome to InjuryWatch
             </h2>
-            <p className="text-gray-500 max-w-md mx-auto">
-              Select a Premier League team above to view squad injury risk analysis
-              and individual player predictions.
+            <p className={`max-w-md mx-auto ${mutedClass}`}>
+              Select a Premier League team to view squad injury risk analysis and player predictions.
             </p>
           </div>
         )}
       </main>
 
       {/* Footer */}
-      <footer className="bg-gray-100 border-t border-gray-200 py-6 mt-12">
-        <div className="max-w-6xl mx-auto px-4 text-center text-sm text-gray-500">
-          <p>
-            Predictions estimate injury probability over the next 2 weeks based on historical patterns.
-            Powered by ensemble ML models (CatBoost, LightGBM, XGBoost). For educational purposes only.
+      <footer className={`${darkMode ? 'bg-[#141414] border-t border-[#1f1f1f]' : 'bg-gray-100 border-t border-gray-200'} py-6 mt-12`}>
+        <div className="max-w-6xl mx-auto px-4 text-center">
+          <p className={`text-sm ${darkMode ? 'text-gray-600' : 'text-gray-500'}`}>
+            Predictions estimate injury probability over the next 2 weeks.
+            Powered by ensemble ML models. For educational purposes only.
           </p>
         </div>
       </footer>

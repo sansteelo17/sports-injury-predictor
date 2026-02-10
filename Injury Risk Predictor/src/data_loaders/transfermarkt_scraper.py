@@ -234,6 +234,56 @@ class TransfermarktScraper:
                 continue
         return None
 
+    def get_player_age(self, slug: str, player_id: str) -> Optional[int]:
+        """
+        Get player's age from their profile page.
+
+        Args:
+            slug: Player URL slug
+            player_id: Transfermarkt player ID
+
+        Returns:
+            Age as integer, or None if not found
+        """
+        url = f"{BASE_URL}/{slug}/profil/spieler/{player_id}"
+
+        try:
+            html = self._fetch(url)
+            soup = BeautifulSoup(html, "html.parser")
+
+            # Look for age in the player info box
+            # Format: "Age: 24" or in data-header
+            info_table = soup.select("span.info-table__content")
+            for span in info_table:
+                text = span.get_text(strip=True)
+                if text.isdigit():
+                    age = int(text)
+                    if 15 <= age <= 45:
+                        return age
+
+            # Alternative: look in header data
+            header = soup.select_one("[data-header-datum]")
+            if header:
+                text = header.get_text()
+                age_match = re.search(r"(\d{1,2})\s*years?", text, re.IGNORECASE)
+                if age_match:
+                    return int(age_match.group(1))
+
+            # Alternative: parse from birth date
+            birth_span = soup.select_one("span[itemprop='birthDate']")
+            if birth_span:
+                birth_text = birth_span.get_text(strip=True)
+                birth_date = self._parse_date(birth_text)
+                if birth_date:
+                    age = (datetime.now() - birth_date).days // 365
+                    if 15 <= age <= 45:
+                        return age
+
+            return None
+        except Exception as e:
+            logger.debug(f"Failed to get age for {slug}: {e}")
+            return None
+
     def fetch_player_injuries(self, player_name: str) -> Optional[Dict]:
         """
         Fetch complete injury history for a player by name.
@@ -249,12 +299,16 @@ class TransfermarktScraper:
                 - total_days_out: Sum of days missed
                 - last_injury_date: Most recent injury date
                 - days_since_last: Days since last injury
+                - age: Player's current age
         """
         # Search for player
         player = self.search_player(player_name)
         if not player:
             logger.debug(f"Player not found: {player_name}")
             return None
+
+        # Get player age from profile page
+        age = self.get_player_age(player["slug"], player["player_id"])
 
         # Get injury history
         injuries = self.get_injury_history(player["slug"], player["player_id"])
@@ -263,6 +317,7 @@ class TransfermarktScraper:
             return {
                 "name": player["name"],
                 "team": player["team"],
+                "age": age,
                 "injuries": [],
                 "total_injuries": 0,
                 "total_days_out": 0,
@@ -288,6 +343,7 @@ class TransfermarktScraper:
         return {
             "name": player["name"],
             "team": player["team"],
+            "age": age,
             "injuries": injuries,
             "total_injuries": len(injuries),
             "total_days_out": total_days,

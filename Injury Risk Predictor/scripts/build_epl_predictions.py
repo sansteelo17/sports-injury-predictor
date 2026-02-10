@@ -139,11 +139,13 @@ def main():
             injury_data = scraper.fetch_player_injuries(player["name"])
 
             if injury_data:
+                # Use age from profile page if available, fall back to squad page
+                age = injury_data.get("age") or player["age"]
                 players_data.append({
                     "name": injury_data["name"],
                     "team": player["team"],
                     "position": player["position"],
-                    "age": player["age"],
+                    "age": age,
                     "previous_injuries": injury_data["total_injuries"],
                     "total_days_lost": injury_data.get("total_days_out", 0),
                     "days_since_last_injury": injury_data["days_since_last"],
@@ -155,7 +157,7 @@ def main():
                     "name": player["name"],
                     "team": player["team"],
                     "position": player["position"],
-                    "age": player["age"],
+                    "age": 25,  # Default age when unknown
                     "previous_injuries": 0,
                     "total_days_lost": 0,
                     "days_since_last_injury": 365 * 3,
@@ -166,7 +168,7 @@ def main():
                 "name": player["name"],
                 "team": player["team"],
                 "position": player["position"],
-                "age": player["age"],
+                "age": 25,  # Default age when unknown
                 "previous_injuries": 0,
                 "total_days_lost": 0,
                 "days_since_last_injury": 365 * 3,
