@@ -13,9 +13,6 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
   const medPct = Math.round((team.medium_risk_count / team.total_players) * 100);
   const lowPct = Math.round((team.low_risk_count / team.total_players) * 100);
 
-  // Get regular starters (players with significant minutes)
-  const starters = team.players.filter(p => p.is_starter);
-
   // Key positions that typically affect match odds (attackers & midfielders)
   const isKeyPosition = (position: string) => {
     const pos = position.toLowerCase();
@@ -26,34 +23,34 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
            pos.includes('midfield');
   };
 
-  // Get starters at high risk (prioritize key positions, but include all starters)
-  const startersAtRisk = starters
+  // Get regular starters - use minutes if available, otherwise use key positions as proxy
+  const hasMinutesData = team.players.some(p => p.minutes_played > 0);
+  const keyPlayers = hasMinutesData
+    ? team.players.filter(p => p.is_starter)
+    : team.players.filter(p => isKeyPosition(p.position));
+
+  // Get key players at high risk
+  const keyPlayersAtRisk = keyPlayers
     .filter(p => p.risk_level === 'High')
-    .sort((a, b) => {
-      // Sort key positions first, then by minutes
-      const aKey = isKeyPosition(a.position) ? 1 : 0;
-      const bKey = isKeyPosition(b.position) ? 1 : 0;
-      if (aKey !== bKey) return bKey - aKey;
-      return b.minutes_played - a.minutes_played;
-    })
+    .sort((a, b) => b.risk_probability - a.risk_probability)
     .slice(0, 3)
     .map(p => p.name.split(' ').pop()); // Get last name
 
-  // Get healthy starters (low risk)
-  const startersHealthy = starters
+  // Get healthy key players (low risk)
+  const keyPlayersHealthy = keyPlayers
     .filter(p => p.risk_level === 'Low')
-    .sort((a, b) => b.minutes_played - a.minutes_played)
+    .sort((a, b) => a.risk_probability - b.risk_probability)
     .slice(0, 3)
     .map(p => p.name.split(' ').pop());
 
-  // Show negative insight if 2+ regular starters are at high risk
-  const showNegativeInsight = startersAtRisk.length >= 2;
+  // Show negative insight if 2+ key players are at high risk
+  const showNegativeInsight = keyPlayersAtRisk.length >= 2;
 
-  // Show positive insight if most starters are healthy
-  const healthyStarterCount = starters.filter(p => p.risk_level === 'Low').length;
+  // Show positive insight if most key players are healthy
+  const healthyKeyCount = keyPlayers.filter(p => p.risk_level === 'Low').length;
   const showPositiveInsight = !showNegativeInsight &&
-    healthyStarterCount >= Math.ceil(starters.length * 0.6) &&
-    startersHealthy.length >= 2;
+    healthyKeyCount >= Math.ceil(keyPlayers.length * 0.5) &&
+    keyPlayersHealthy.length >= 2;
 
   return (
     <div className={`rounded-2xl overflow-hidden ${
@@ -151,7 +148,7 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
         </span>
       </div>
 
-      {/* Market Insight Banner - Negative (starters at risk) */}
+      {/* Market Insight Banner - Negative (key players at risk) */}
       {showNegativeInsight && (
         <div className={`px-4 py-3 ${
           darkMode ? 'bg-amber-500/10 border-t border-amber-500/20' : 'bg-amber-50 border-t border-amber-200'
@@ -160,14 +157,14 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
             <TrendingDown className="text-amber-500 flex-shrink-0 mt-0.5" size={16} />
             <p className={`text-xs ${darkMode ? 'text-amber-200' : 'text-amber-800'}`}>
               <span className="font-semibold">Market Insight:</span>{' '}
-              Regular starters {startersAtRisk.join(', ')} at elevated injury risk — could affect{' '}
+              Key players {keyPlayersAtRisk.join(', ')} at elevated injury risk — could affect{' '}
               {team.team}&apos;s match odds.
             </p>
           </div>
         </div>
       )}
 
-      {/* Market Insight Banner - Positive (starters healthy) */}
+      {/* Market Insight Banner - Positive (key players healthy) */}
       {showPositiveInsight && (
         <div className={`px-4 py-3 ${
           darkMode ? 'bg-[#86efac]/10 border-t border-[#86efac]/20' : 'bg-emerald-50 border-t border-emerald-200'
@@ -176,7 +173,7 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
             <TrendingUp className={darkMode ? 'text-[#86efac]' : 'text-emerald-600'} size={16} />
             <p className={`text-xs ${darkMode ? 'text-[#86efac]' : 'text-emerald-700'}`}>
               <span className="font-semibold">Market Insight:</span>{' '}
-              Key starters {startersHealthy.join(', ')} all low risk.{' '}
+              Key players {keyPlayersHealthy.join(', ')} all low risk.{' '}
               Strong availability may favor {team.team} in upcoming fixtures.
             </p>
           </div>
