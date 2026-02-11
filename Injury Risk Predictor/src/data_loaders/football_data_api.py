@@ -16,6 +16,30 @@ logger = get_logger(__name__)
 ESPN_API_URL = "https://site.api.espn.com/apis/v2/sports/soccer/eng.1/standings"
 CACHE_DIR = Path(__file__).parent.parent.parent / "data" / "cache"
 
+# Team nickname aliases for matching
+TEAM_ALIASES = {
+    # Common abbreviations
+    "man city": "manchester city",
+    "man united": "manchester united",
+    "man utd": "manchester united",
+    # Nicknames
+    "wolves": "wolverhampton",
+    "spurs": "tottenham",
+    "palace": "crystal palace",
+    "villa": "aston villa",
+    "forest": "nottingham",
+    "hammers": "west ham",
+    "toon": "newcastle",
+    "saints": "southampton",
+    "black cats": "sunderland",
+    "seagulls": "brighton",
+    "bees": "brentford",
+    "cherries": "bournemouth",
+    "toffees": "everton",
+    "foxes": "leicester",
+    "magpies": "newcastle",
+}
+
 def safe_team(team: Dict, leader_points: int = 0, safety_points: int = 0) -> Dict:
     """Safely extract team fields with defaults, computing distance_from_top and distance_from_safety."""
     position = team.get("position")
@@ -132,7 +156,7 @@ class FootballDataClient:
         Get a specific team's standing.
 
         Args:
-            team_name: Team name (partial match supported)
+            team_name: Team name (partial match supported, aliases supported)
 
         Returns:
             Team standing dict or None
@@ -140,9 +164,12 @@ class FootballDataClient:
         standings = self.get_standings()
         team_lower = team_name.lower()
 
+        # Check if it's a known alias
+        search_term = TEAM_ALIASES.get(team_lower, team_lower)
+
         for team in standings:
-            if (team_lower in team["name"].lower() or
-                team_lower in team["short_name"].lower()):
+            if (search_term in team["name"].lower() or
+                search_term in team["short_name"].lower()):
                 return team
 
         return None
