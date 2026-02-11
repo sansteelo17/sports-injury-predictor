@@ -45,6 +45,7 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "https://epl-injury-frontend.onrender.com",
         "https://injurywatch.onrender.com",
+        "https://yara-sports-frontend.onrender.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],
