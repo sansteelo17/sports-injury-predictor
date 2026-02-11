@@ -1,6 +1,7 @@
 """Inference pipeline for injury risk prediction."""
 
 _PIPELINE_IMPORT_ERROR = None
+_RISK_CARD_IMPORT_ERROR = None
 
 try:
     from .inference_pipeline import (
@@ -27,7 +28,10 @@ except ModuleNotFoundError as e:
     # optional heavy deps like shap are not installed in runtime environments.
     _PIPELINE_IMPORT_ERROR = e
 
-from .risk_card import build_risk_card
+try:
+    from .risk_card import build_risk_card
+except ModuleNotFoundError as e:
+    _RISK_CARD_IMPORT_ERROR = e
 
 
 def get_latest_snapshot(inference_df, player_name):
@@ -127,4 +131,10 @@ def __getattr__(name):
             f"dependency is missing: {_PIPELINE_IMPORT_ERROR}. "
             "Install API/runtime extras (e.g., shap) to use full inference pipeline."
         ) from _PIPELINE_IMPORT_ERROR
+    if name == "build_risk_card" and _RISK_CARD_IMPORT_ERROR is not None:
+        raise ModuleNotFoundError(
+            "Failed to import 'build_risk_card' from src.inference because optional "
+            f"dependency is missing: {_RISK_CARD_IMPORT_ERROR}. "
+            "Install training/runtime extras (e.g., imbalanced-learn) to use risk-card helpers."
+        ) from _RISK_CARD_IMPORT_ERROR
     raise AttributeError(name)
