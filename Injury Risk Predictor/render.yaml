@@ -29,7 +29,4 @@ services:
       - key: NODE_VERSION
         value: "20"
       - key: NEXT_PUBLIC_API_URL
-        fromService:
-          name: epl-injury-api
-          type: web
-          property: host
+        value: "https://yara-sports-api.onrender.com"
