@@ -396,12 +396,45 @@ async def get_player_risk(player_name: str):
 
 @app.get("/api/teams", response_model=List[str])
 async def list_teams():
-    """List all available teams."""
+    """List all available teams (filtered to current Premier League)."""
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
-    teams = sorted(inference_df["team"].unique().tolist())
-    return teams
+    # Get teams from our data
+    our_teams = inference_df["team"].unique().tolist()
+
+    # Get current Premier League teams from ESPN
+    try:
+        client = FootballDataClient()
+        standings = client.get_standings()
+        current_pl_teams = {t["name"].lower() for t in standings}
+        current_pl_short = {t["short_name"].lower() for t in standings}
+
+        # Filter to only teams in current PL (using alias matching)
+        from src.data_loaders.football_data_api import TEAM_ALIASES
+
+        filtered = []
+        for team in our_teams:
+            team_lower = team.lower()
+            search_term = TEAM_ALIASES.get(team_lower, team_lower)
+
+            # Check if team is in current PL
+            in_pl = any(
+                search_term in pl_team or pl_team in search_term
+                for pl_team in current_pl_teams
+            ) or any(
+                search_term in short or short in search_term
+                for short in current_pl_short
+            )
+
+            if in_pl:
+                filtered.append(team)
+
+        return sorted(filtered)
+    except Exception as e:
+        logger.warning(f"Failed to filter teams by current PL: {e}")
+        # Fallback to all teams if ESPN fails
+        return sorted(our_teams)
 
 
 @app.get("/api/teams/{team_name}/overview", response_model=TeamOverview)
