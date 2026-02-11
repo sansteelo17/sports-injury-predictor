@@ -1,24 +1,31 @@
 """Inference pipeline for injury risk prediction."""
 
-from .inference_pipeline import (
-    # Feature engineering
-    apply_all_feature_engineering,
-    build_inference_features,
-    add_model_predictions,
-    add_ensemble_predictions,
-    # Severity prediction (recommended)
-    predict_severity_class,
-    add_archetype,
-    # Player history (for inference-time features)
-    build_player_history_lookup,
-    add_player_history_features,
-    # Legacy (deprecated - uses ground truth)
-    add_severity_and_archetype,
-    add_shap_values,
-    build_full_inference_df,
-    build_inference_df_with_ensemble,
-    build_inference_df_legacy
-)
+_PIPELINE_IMPORT_ERROR = None
+
+try:
+    from .inference_pipeline import (
+        # Feature engineering
+        apply_all_feature_engineering,
+        build_inference_features,
+        add_model_predictions,
+        add_ensemble_predictions,
+        # Severity prediction (recommended)
+        predict_severity_class,
+        add_archetype,
+        # Player history (for inference-time features)
+        build_player_history_lookup,
+        add_player_history_features,
+        # Legacy (deprecated - uses ground truth)
+        add_severity_and_archetype,
+        add_shap_values,
+        build_full_inference_df,
+        build_inference_df_with_ensemble,
+        build_inference_df_legacy
+    )
+except ModuleNotFoundError as e:
+    # Keep lightweight modules (e.g., story_generator) importable even when
+    # optional heavy deps like shap are not installed in runtime environments.
+    _PIPELINE_IMPORT_ERROR = e
 
 from .risk_card import build_risk_card
 
@@ -95,3 +102,29 @@ __all__ = [
     "get_latest_snapshot",
     "build_player_dashboard",
 ]
+
+
+def __getattr__(name):
+    """Raise a clear error when pipeline symbols are requested without deps."""
+    pipeline_symbols = {
+        "apply_all_feature_engineering",
+        "build_inference_features",
+        "add_model_predictions",
+        "add_ensemble_predictions",
+        "predict_severity_class",
+        "add_archetype",
+        "build_player_history_lookup",
+        "add_player_history_features",
+        "add_severity_and_archetype",
+        "add_shap_values",
+        "build_full_inference_df",
+        "build_inference_df_with_ensemble",
+        "build_inference_df_legacy",
+    }
+    if name in pipeline_symbols and _PIPELINE_IMPORT_ERROR is not None:
+        raise ModuleNotFoundError(
+            f"Failed to import '{name}' from src.inference because optional "
+            f"dependency is missing: {_PIPELINE_IMPORT_ERROR}. "
+            "Install API/runtime extras (e.g., shap) to use full inference pipeline."
+        ) from _PIPELINE_IMPORT_ERROR
+    raise AttributeError(name)
