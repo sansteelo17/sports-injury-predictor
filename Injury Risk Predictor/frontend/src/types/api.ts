@@ -99,11 +99,13 @@ export interface TeamStanding {
   played: number;
   form?: string;
   distance_from_top?: number;
+  distance_from_safety?: number;  // For relegation zone teams (18-20)
 }
 
 export interface StandingsSummary {
   leader: TeamStanding;
   second: TeamStanding;
   gap_to_second: number;
+  safety_points: number;  // Points of 17th place team
   selected_team?: TeamStanding;
 }

@@ -16,6 +16,21 @@ logger = get_logger(__name__)
 ESPN_API_URL = "https://site.api.espn.com/apis/v2/sports/soccer/eng.1/standings"
 CACHE_DIR = Path(__file__).parent.parent.parent / "data" / "cache"
 
+def safe_team(team: Dict, leader_points: int = 0, safety_points: int = 0) -> Dict:
+    """Safely extract team fields with defaults, computing distance_from_top and distance_from_safety."""
+    position = team.get("position")
+    points = team.get("points", 0)
+    return {
+        "name": team.get("name", "Unknown"),
+        "short_name": team.get("short_name", "UNK"),
+        "position": position,
+        "points": points,
+        "played": team.get("played", 0),
+        "form": team.get("form", ""),
+        "distance_from_top": leader_points - points if leader_points else None,
+        "distance_from_safety": safety_points - points if safety_points and position and position >= 18 else None,
+    }
+
 
 class FootballDataClient:
     """Client for Premier League standings via ESPN."""
@@ -107,7 +122,8 @@ class FootballDataClient:
             return standings
 
         except Exception as e:
-            logger.warning(f"Failed to fetch standings: {e}")
+            logger.error(f"[ESPN_STANDINGS_ERROR] Exception: {repr(e)}")
+            logger.error(f"[ESPN_STANDINGS_ERROR] Raw response: {response.text if 'response' in locals() else 'NO RESPONSE'}")
             # Return cached data if available, even if expired
             return self._cache.get("standings", [])
 
@@ -148,36 +164,25 @@ class FootballDataClient:
 
         leader = standings[0]
         second = standings[1]
-        gap = leader["points"] - second["points"]
+        leader_points = leader.get("points", 0)
+        gap = leader_points - second.get("points", 0)
+
+        # Get safety line (17th place) for relegation calculation
+        safety_team = standings[16] if len(standings) >= 17 else None
+        safety_points = safety_team.get("points", 0) if safety_team else 0
 
         result = {
-            "leader": {
-                "name": leader["name"],
-                "short_name": leader["short_name"],
-                "points": leader["points"],
-                "played": leader["played"],
-            },
-            "second": {
-                "name": second["name"],
-                "short_name": second["short_name"],
-                "points": second["points"],
-            },
+            "leader": safe_team(leader, leader_points, safety_points),
+            "second": safe_team(second, leader_points, safety_points),
             "gap_to_second": gap,
+            "safety_points": safety_points,
         }
 
         # Add selected team's position if provided
         if team_name:
             team = self.get_team_position(team_name)
             if team:
-                result["selected_team"] = {
-                    "name": team["name"],
-                    "short_name": team["short_name"],
-                    "position": team["position"],
-                    "points": team["points"],
-                    "played": team["played"],
-                    "form": team["form"],
-                    "distance_from_top": leader["points"] - team["points"],
-                }
+                result["selected_team"] = safe_team(team, leader_points, safety_points)
 
         return result
 

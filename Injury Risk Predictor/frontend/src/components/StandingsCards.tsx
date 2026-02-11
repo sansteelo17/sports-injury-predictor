@@ -1,7 +1,7 @@
 'use client';
 
 import { StandingsSummary } from '@/types/api';
-import { Trophy, Medal, MapPin } from 'lucide-react';
+import { Trophy, Medal, MapPin, AlertTriangle } from 'lucide-react';
 
 interface StandingsCardsProps {
   standings: StandingsSummary;
@@ -69,28 +69,78 @@ export function StandingsCards({ standings, darkMode = true }: StandingsCardsPro
         </div>
       )}
 
-      {/* Title Race Gap */}
+      {/* Context card: Title Race (1-4), From Leaders (5-17), or Relegation (18-20) */}
       <div className={`rounded-xl p-3 ${
         darkMode ? 'bg-[#141414] border border-[#1f1f1f]' : 'bg-white shadow-sm border border-gray-100'
       }`}>
-        <div className="flex items-center gap-2 mb-2">
-          <Medal className="text-gray-400" size={16} />
-          <span className={`text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-            Title Race
-          </span>
-        </div>
-        <div className={`text-sm font-bold ${
-          standings.gap_to_second <= 3
-            ? 'text-red-500'
-            : standings.gap_to_second <= 6
-            ? 'text-amber-500'
-            : darkMode ? 'text-white' : 'text-gray-900'
-        }`}>
-          {standings.gap_to_second === 0 ? 'Level!' : `${standings.gap_to_second} pts`}
-        </div>
-        <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-          gap to 2nd
-        </div>
+        {(() => {
+          const position = standings.selected_team?.position || 0;
+
+          // Relegation zone (18-20)
+          if (position >= 18) {
+            const distanceFromSafety = standings.selected_team?.distance_from_safety || 0;
+            return (
+              <>
+                <div className="flex items-center gap-2 mb-2">
+                  <AlertTriangle className="text-red-500" size={16} />
+                  <span className={`text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                    Relegation
+                  </span>
+                </div>
+                <div className={`text-sm font-bold ${distanceFromSafety > 3 ? 'text-red-500' : 'text-amber-500'}`}>
+                  {distanceFromSafety === 0 ? 'On the line!' : `${distanceFromSafety} pts`}
+                </div>
+                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                  from safety
+                </div>
+              </>
+            );
+          }
+
+          // Mid-table (5-17): show distance from leaders
+          if (position > 4) {
+            return (
+              <>
+                <div className="flex items-center gap-2 mb-2">
+                  <Trophy className="text-amber-500" size={16} />
+                  <span className={`text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                    From Leaders
+                  </span>
+                </div>
+                <div className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                  {standings.selected_team?.distance_from_top || 0} pts
+                </div>
+                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                  behind {standings.leader.short_name}
+                </div>
+              </>
+            );
+          }
+
+          // Top 4: show title race gap
+          return (
+            <>
+              <div className="flex items-center gap-2 mb-2">
+                <Medal className="text-gray-400" size={16} />
+                <span className={`text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                  Title Race
+                </span>
+              </div>
+              <div className={`text-sm font-bold ${
+                standings.gap_to_second <= 3
+                  ? 'text-red-500'
+                  : standings.gap_to_second <= 6
+                  ? 'text-amber-500'
+                  : darkMode ? 'text-white' : 'text-gray-900'
+              }`}>
+                {standings.gap_to_second === 0 ? 'Level!' : `${standings.gap_to_second} pts`}
+              </div>
+              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                gap to 2nd
+              </div>
+            </>
+          );
+        })()}
       </div>
     </div>
   );

@@ -11,7 +11,14 @@ from typing import List, Optional, Dict, Any
 import sys
 import os
 
-# Add project root to path
+from pathlib import Path
+
+# Add project root to PYTHONPATH
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT))
+
+from src.utils.logger import get_logger
+logger = get_logger(__name__)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
@@ -170,12 +177,14 @@ class TeamStanding(BaseModel):
     played: int
     form: Optional[str] = None
     distance_from_top: Optional[int] = None
+    distance_from_safety: Optional[int] = None  # For relegation zone teams
 
 
 class StandingsSummary(BaseModel):
     leader: TeamStanding
     second: TeamStanding
     gap_to_second: int
+    safety_points: int = 0  # Points needed for safety (17th place)
     selected_team: Optional[TeamStanding] = None
 
 
@@ -505,15 +514,18 @@ async def get_standings_summary_endpoint(team: Optional[str] = None):
         if not summary:
             raise HTTPException(status_code=503, detail="Standings unavailable")
 
+        # Data is already formatted by get_standings_summary/safe_team
         return StandingsSummary(
             leader=TeamStanding(**summary["leader"]),
             second=TeamStanding(**summary["second"]),
             gap_to_second=summary["gap_to_second"],
+            safety_points=summary.get("safety_points", 0),
             selected_team=TeamStanding(**summary["selected_team"]) if summary.get("selected_team") else None,
         )
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"[API_STANDINGS_ERROR] {repr(e)}")
         raise HTTPException(status_code=500, detail=f"Standings error: {str(e)}")
 
 

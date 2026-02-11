@@ -152,19 +152,17 @@ export default function Home() {
           </div>
         )}
 
-        {/* Standings Cards */}
-        {standings && !loading && (
-          <div className="mb-6">
-            <StandingsCards standings={standings} darkMode={darkMode} />
-          </div>
-        )}
-
         {/* Content Grid */}
         {teamOverview && !loading && (
           <div className="grid lg:grid-cols-3 gap-6">
             {/* Left Column - Team Overview & Player List */}
             <div className="lg:col-span-1 space-y-6">
               <TeamOverview team={teamOverview} darkMode={darkMode} />
+
+              {/* Standings Cards */}
+              {standings && (
+                <StandingsCards standings={standings} darkMode={darkMode} />
+              )}
 
               {fplInsights && (
                 <FPLInsights
