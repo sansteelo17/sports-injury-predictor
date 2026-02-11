@@ -30,6 +30,6 @@ services:
         value: "20"
       - key: NEXT_PUBLIC_API_URL
         fromService:
-          name: epl-injury-api
+          name: yara-sports-api
           type: web
           property: host
