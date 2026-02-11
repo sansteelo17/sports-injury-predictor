@@ -20,13 +20,18 @@ from catboost import CatBoostClassifier, Pool
 
 import optuna
 import shap
-shap.initjs()
 import warnings
 warnings.filterwarnings("ignore")
 
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# SHAP JS is only needed in notebook environments.
+try:
+    shap.initjs()
+except Exception:
+    pass
 
 # ============================================================================
 # TEMPORAL VALIDATION (RECOMMENDED)
