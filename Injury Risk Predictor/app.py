@@ -415,7 +415,7 @@ def main():
     # Header
     header_col1, header_col2 = st.columns([3, 1])
     with header_col1:
-        st.title("⚽ EPL Injury Risk Predictor")
+        st.title("YaraSports Intelligence")
     with header_col2:
         st.caption(f"Data: {inference_df['name'].nunique()} players")
         if data_human:

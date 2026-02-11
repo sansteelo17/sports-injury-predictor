@@ -312,6 +312,89 @@ class TransfermarktScraper:
                 "is_starter": False,
             }
 
+    def get_current_team(self, player_name: str) -> Optional[str]:
+        """
+        Get player's current team from Transfermarkt.
+
+        This accounts for loans and recent transfers.
+
+        Args:
+            player_name: Player's full name
+
+        Returns:
+            Current team name or None if not found
+        """
+        player = self.search_player(player_name)
+        if player:
+            return player.get("team")
+        return None
+
+    def get_team_squad(self, team_slug: str, team_id: str) -> List[Dict]:
+        """
+        Get all players in a team's squad.
+
+        Args:
+            team_slug: Team URL slug (e.g., "fc-sunderland")
+            team_id: Transfermarkt team ID (e.g., "289")
+
+        Returns:
+            List of player dicts with name, slug, player_id, position, age
+        """
+        url = f"{BASE_URL}/{team_slug}/kader/verein/{team_id}/saison_id/2025/plus/1"
+
+        try:
+            html = self._fetch(url)
+            soup = BeautifulSoup(html, "html.parser")
+
+            players = []
+            # Find player rows in the squad table
+            rows = soup.select("table.items tbody tr.odd, table.items tbody tr.even")
+
+            for row in rows:
+                try:
+                    # Get player link
+                    player_link = row.select_one("td.hauptlink a")
+                    if not player_link:
+                        continue
+
+                    href = player_link.get("href", "")
+                    match = re.search(r"/([^/]+)/profil/spieler/(\d+)", href)
+                    if not match:
+                        continue
+
+                    slug, player_id = match.groups()
+                    name = player_link.get_text(strip=True)
+
+                    # Get position
+                    position_cell = row.select_one("td.posrela table tr:last-child td")
+                    position = position_cell.get_text(strip=True) if position_cell else "Unknown"
+
+                    # Get age from the row
+                    age = None
+                    cells = row.select("td.zentriert")
+                    for cell in cells:
+                        text = cell.get_text(strip=True)
+                        if text.isdigit() and 15 <= int(text) <= 45:
+                            age = int(text)
+                            break
+
+                    players.append({
+                        "name": name,
+                        "slug": slug,
+                        "player_id": player_id,
+                        "position": position,
+                        "age": age,
+                    })
+                except Exception as e:
+                    logger.debug(f"Failed to parse player row: {e}")
+                    continue
+
+            logger.info(f"Found {len(players)} players in squad")
+            return players
+        except Exception as e:
+            logger.warning(f"Failed to get squad for {team_slug}: {e}")
+            return []
+
     def get_player_age(self, slug: str, player_id: str) -> Optional[int]:
         """
         Get player's age from their profile page.
@@ -329,8 +412,18 @@ class TransfermarktScraper:
             html = self._fetch(url)
             soup = BeautifulSoup(html, "html.parser")
 
-            # Look for age in the player info box
-            # Format: "Age: 24" or in data-header
+            # Method 1: Look for age in info-table (format: "DD/MM/YYYY (age)")
+            info_items = soup.select(".info-table__content--bold")
+            for item in info_items:
+                text = item.get_text(strip=True)
+                # Match "DD/MM/YYYY (29)" or similar date with age in parens
+                age_match = re.search(r"\((\d{1,2})\)$", text)
+                if age_match:
+                    age = int(age_match.group(1))
+                    if 15 <= age <= 45:
+                        return age
+
+            # Method 2: Look for standalone age number
             info_table = soup.select("span.info-table__content")
             for span in info_table:
                 text = span.get_text(strip=True)
@@ -339,7 +432,7 @@ class TransfermarktScraper:
                     if 15 <= age <= 45:
                         return age
 
-            # Alternative: look in header data
+            # Method 3: Look in header data
             header = soup.select_one("[data-header-datum]")
             if header:
                 text = header.get_text()
@@ -347,7 +440,7 @@ class TransfermarktScraper:
                 if age_match:
                     return int(age_match.group(1))
 
-            # Alternative: parse from birth date
+            # Method 4: Parse from birth date
             birth_span = soup.select_one("span[itemprop='birthDate']")
             if birth_span:
                 birth_text = birth_span.get_text(strip=True)
@@ -495,3 +588,101 @@ def build_injury_lookup(player_names: List[str]) -> Dict[str, Dict]:
         }
 
     return lookup
+
+
+def update_players_from_transfermarkt(
+    df: pd.DataFrame,
+    player_col: str = "name",
+    team_col: str = "team",
+    age_col: str = "age",
+    update_teams: bool = True,
+    update_ages: bool = True,
+    progress_callback=None
+) -> pd.DataFrame:
+    """
+    Update player data (team, age) from Transfermarkt.
+
+    This accounts for loans, transfers, and current ages.
+
+    Args:
+        df: DataFrame with player names
+        player_col: Column containing player names
+        team_col: Column to update with current team
+        age_col: Column to update with current age
+        update_teams: Whether to update teams
+        update_ages: Whether to update ages
+        progress_callback: Optional callback(current, total, name) for progress updates
+
+    Returns:
+        DataFrame with updated columns
+    """
+    scraper = TransfermarktScraper()
+    df = df.copy()
+
+    unique_players = df[player_col].unique()
+    updates = {}
+
+    for i, name in enumerate(unique_players):
+        if progress_callback:
+            progress_callback(i + 1, len(unique_players), name)
+
+        # Use fetch_player_injuries which gets both team and age
+        data = scraper.fetch_player_injuries(name, include_stats=False)
+        if data:
+            updates[name] = {
+                "team": data.get("team"),
+                "age": data.get("age"),
+            }
+
+    # Apply updates
+    for player, info in updates.items():
+        if update_teams and info.get("team"):
+            df.loc[df[player_col] == player, team_col] = info["team"]
+        if update_ages and info.get("age"):
+            df.loc[df[player_col] == player, age_col] = info["age"]
+
+    logger.info(f"Updated {len(updates)}/{len(unique_players)} players from Transfermarkt")
+    return df
+
+
+def update_teams_from_transfermarkt(
+    df: pd.DataFrame,
+    player_col: str = "player",
+    team_col: str = "team",
+    progress_callback=None
+) -> pd.DataFrame:
+    """
+    Update team assignments in a DataFrame using current Transfermarkt data.
+
+    This accounts for loans and recent transfers.
+
+    Args:
+        df: DataFrame with player names
+        player_col: Column containing player names
+        team_col: Column to update with current team
+        progress_callback: Optional callback(current, total, name) for progress updates
+
+    Returns:
+        DataFrame with updated team column
+    """
+    scraper = TransfermarktScraper()
+    df = df.copy()
+
+    unique_players = df[player_col].unique()
+    team_updates = {}
+
+    for i, name in enumerate(unique_players):
+        if progress_callback:
+            progress_callback(i + 1, len(unique_players), name)
+
+        current_team = scraper.get_current_team(name)
+        if current_team:
+            team_updates[name] = current_team
+            logger.info(f"Updated team for {name}: {current_team}")
+
+    # Apply updates
+    for player, team in team_updates.items():
+        df.loc[df[player_col] == player, team_col] = team
+
+    logger.info(f"Updated teams for {len(team_updates)}/{len(unique_players)} players")
+    return df

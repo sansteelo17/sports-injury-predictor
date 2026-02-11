@@ -1,0 +1,35 @@
+# Render Blueprint - deploys both API and frontend
+# https://render.com/docs/blueprint-spec
+
+services:
+  # FastAPI Backend
+  - type: web
+    name: epl-injury-api
+    runtime: python
+    region: oregon
+    plan: free
+    rootDir: Injury Risk Predictor
+    buildCommand: pip install -r api/requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+    healthCheckPath: /api/health
+
+  # Next.js Frontend
+  - type: web
+    name: epl-injury-frontend
+    runtime: node
+    region: oregon
+    plan: free
+    rootDir: Injury Risk Predictor/frontend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: NEXT_PUBLIC_API_URL
+        fromService:
+          name: epl-injury-api
+          type: web
+          property: host
