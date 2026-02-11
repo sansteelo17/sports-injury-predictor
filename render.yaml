@@ -4,7 +4,7 @@
 services:
   # FastAPI Backend
   - type: web
-    name: epl-injury-api
+    name: yara-sports-api
     runtime: python
     region: oregon
     plan: free
@@ -18,7 +18,7 @@ services:
 
   # Next.js Frontend
   - type: web
-    name: epl-injury-frontend
+    name: yara-sports-frontend
     runtime: node
     region: oregon
     plan: free
