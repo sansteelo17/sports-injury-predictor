@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1600" viewBox="0 0 900 1600" fill="none">
+  <rect width="900" height="1600" fill="#040806"/>
+
+  <g stroke="#bff9db" stroke-opacity="0.58" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Sun symbol -->
+    <circle cx="450" cy="250" r="112"/>
+    <circle cx="450" cy="250" r="60"/>
+    <path d="M450 72 V18"/>
+    <path d="M450 482 V426"/>
+    <path d="M272 250 H216"/>
+    <path d="M684 250 H628"/>
+    <path d="M332 132 L288 88"/>
+    <path d="M568 368 L612 412"/>
+    <path d="M332 368 L288 412"/>
+    <path d="M568 132 L612 88"/>
+
+    <!-- Solstice horizon -->
+    <path d="M136 530 C246 430 654 430 764 530"/>
+    <path d="M116 584 C238 468 662 468 784 584"/>
+    <path d="M100 646 H800"/>
+
+    <!-- Serpent -->
+    <path d="M70 900 C180 780 282 1020 392 902 C502 784 612 1022 722 904 C774 850 812 850 850 878"/>
+    <path d="M844 878 L878 860 L868 896 Z"/>
+
+    <!-- Human carvings -->
+    <circle cx="220" cy="1180" r="28"/>
+    <path d="M220 1208 V1298"/>
+    <path d="M220 1242 L168 1276"/>
+    <path d="M220 1242 L272 1276"/>
+    <path d="M220 1298 L182 1360"/>
+    <path d="M220 1298 L258 1360"/>
+
+    <circle cx="450" cy="1140" r="24"/>
+    <path d="M450 1164 V1248"/>
+    <path d="M450 1198 L402 1224"/>
+    <path d="M450 1198 L498 1224"/>
+    <path d="M450 1248 L416 1306"/>
+    <path d="M450 1248 L484 1306"/>
+
+    <circle cx="680" cy="1180" r="28"/>
+    <path d="M680 1208 V1298"/>
+    <path d="M680 1242 L628 1276"/>
+    <path d="M680 1242 L732 1276"/>
+    <path d="M680 1298 L642 1360"/>
+    <path d="M680 1298 L718 1360"/>
+
+    <!-- Psychedelic spirals -->
+    <path d="M220 760 C250 720 326 726 352 774 C380 826 354 894 292 908 C224 924 150 876 144 808 C138 734 214 668 302 666"/>
+    <path d="M610 770 C640 730 716 736 742 784 C770 836 744 904 682 918 C614 934 540 886 534 818 C528 744 604 678 692 676"/>
+  </g>
+
+  <g stroke="#d9c487" stroke-opacity="0.4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M120 1456 H780"/>
+    <path d="M150 1418 H750"/>
+    <path d="M180 1382 H720"/>
+    <path d="M210 1346 H690"/>
+
+    <path d="M126 84 l36 -26 l36 26 l36 -26 l36 26 l36 -26 l36 26"/>
+    <path d="M522 84 l36 -26 l36 26 l36 -26 l36 26 l36 -26"/>
+  </g>
+</svg>

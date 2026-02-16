@@ -104,10 +104,10 @@ export default function Home() {
     : "bg-white border-gray-200";
 
   return (
-    <div className={`min-h-screen ${bgClass} ${textClass}`}>
+    <div className={`app-shell min-h-screen flex flex-col ${bgClass} ${textClass} ${darkMode ? "matrix-theme" : "light-theme"}`}>
       {/* Header */}
       <header
-        className={`${darkMode ? "bg-[#141414] border-b border-[#1f1f1f]" : "bg-white border-b border-gray-200"} py-3 sm:py-4 px-3 sm:px-4`}
+        className={`holo-header mobile-square-header ${darkMode ? "bg-[#141414] border-b border-[#1f1f1f]" : "bg-white border-b border-gray-200"} py-3 sm:py-4 px-3 sm:px-4`}
       >
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2 sm:gap-3">
@@ -130,7 +130,7 @@ export default function Home() {
                   Sports
                 </span>
               </h1>
-              <p className={`text-xs hidden sm:block ${mutedClass}`}>
+              <p className={`text-[10px] sm:text-xs leading-tight max-w-[170px] sm:max-w-none ${mutedClass}`}>
                 Risk-aware match intelligence for fans and analysts.
               </p>
             </div>
@@ -154,10 +154,10 @@ export default function Home() {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-6xl mx-auto px-3 sm:px-4 py-4 sm:py-8">
+      <main className="flex-1 max-w-6xl mx-auto w-full px-3 sm:px-4 py-4 sm:py-8">
         {/* League Notice */}
         <div
-          className={`${darkMode ? "bg-[#86efac]/10 border-[#86efac]/30" : "bg-emerald-50 border-emerald-200"} border rounded-xl p-3 sm:p-4 mb-4 sm:mb-6`}
+          className={`holo-panel mobile-square-league ${darkMode ? "bg-[#86efac]/10 border-[#86efac]/30" : "bg-emerald-50 border-emerald-200"} border rounded-xl p-3 sm:p-4 mb-4 sm:mb-6`}
         >
           <div className="flex items-start gap-2 sm:gap-3">
             <Info
@@ -233,7 +233,7 @@ export default function Home() {
                 />
               )}
 
-              <div className={`${cardClass} border rounded-xl p-3 sm:p-4`}>
+              <div className={`holo-panel ${cardClass} border rounded-xl p-3 sm:p-4`}>
                 <h3
                   className={`font-semibold mb-3 flex items-center gap-2 text-sm sm:text-base ${textClass}`}
                 >
@@ -259,7 +259,7 @@ export default function Home() {
               {playerRisk ? (
                 <div className="space-y-4">
                   {/* View Toggle */}
-                  <div className={`flex gap-1 p-1 rounded-xl ${darkMode ? 'bg-[#141414] border border-[#1f1f1f]' : 'bg-gray-100'}`}>
+                  <div className={`holo-panel flex gap-1 p-1 rounded-xl ${darkMode ? 'bg-[#141414] border border-[#1f1f1f]' : 'bg-gray-100'}`}>
                     <button
                       onClick={() => setView('overview')}
                       className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -293,7 +293,7 @@ export default function Home() {
                 </div>
               ) : (
                 <div
-                  className={`${cardClass} border rounded-2xl p-8 sm:p-12 text-center`}
+                  className={`holo-panel ${cardClass} border rounded-2xl p-8 sm:p-12 text-center`}
                 >
                   <Shield
                     size={48}
@@ -337,7 +337,7 @@ export default function Home() {
 
       {/* Footer */}
       <footer
-        className={`${darkMode ? "bg-[#141414] border-t border-[#1f1f1f]" : "bg-gray-100 border-t border-gray-200"} py-4 sm:py-6 mt-8 sm:mt-12`}
+        className={`holo-header mobile-square-header ${darkMode ? "bg-[#141414] border-t border-[#1f1f1f]" : "bg-gray-100 border-t border-gray-200"} py-4 sm:py-6`}
       >
         <div className="max-w-6xl mx-auto px-3 sm:px-4 text-center">
           <p

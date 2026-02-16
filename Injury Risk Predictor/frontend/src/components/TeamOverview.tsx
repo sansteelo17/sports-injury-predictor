@@ -52,8 +52,16 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
     healthyKeyCount >= Math.ceil(keyPlayers.length * 0.5) &&
     keyPlayersHealthy.length >= 2;
 
+  const bookmakerLogos: Record<string, string> = {
+    SkyBet: '/bookies/skybet.svg',
+    'Paddy Power': '/bookies/paddypower.svg',
+    Betway: '/bookies/betway.svg',
+  };
+
+  const moneylineRows = team.next_fixture?.moneyline_1x2 ?? [];
+
   return (
-    <div className={`rounded-2xl overflow-hidden ${
+    <div className={`holo-card rounded-2xl overflow-hidden ${
       darkMode ? 'bg-[#141414] border border-[#1f1f1f]' : 'bg-white shadow-lg'
     }`}>
       {/* Header */}
@@ -155,33 +163,88 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
 
       {/* Next Fixture */}
       {team.next_fixture && (
-        <div className={`px-4 py-3 flex items-center gap-3 ${
+        <div className={`px-4 py-3 ${
           darkMode ? 'bg-cyan-500/10 border-t border-cyan-500/20' : 'bg-cyan-50 border-t border-cyan-200'
         }`}>
-          <Calendar className="text-cyan-400 flex-shrink-0" size={16} />
-          <div className="flex-1 min-w-0">
-            <div className={`text-xs font-medium ${darkMode ? 'text-cyan-300' : 'text-cyan-700'}`}>
-              Next Match
+          <div className="flex items-center gap-3">
+            <Calendar className="text-cyan-400 flex-shrink-0" size={16} />
+            <div className="flex-1 min-w-0">
+              <div className={`text-xs font-medium ${darkMode ? 'text-cyan-300' : 'text-cyan-700'}`}>
+                Next Match
+              </div>
+              <div className={`text-sm font-bold truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                {team.next_fixture.is_home
+                  ? `vs ${team.next_fixture.opponent} (H)`
+                  : `@ ${team.next_fixture.opponent} (A)`}
+              </div>
+              {team.next_fixture.match_time && (
+                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                  {new Date(team.next_fixture.match_time).toLocaleDateString('en-GB', {
+                    weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
+                  })}
+                </div>
+              )}
             </div>
-            <div className={`text-sm font-bold truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              {team.next_fixture.is_home
-                ? `vs ${team.next_fixture.opponent} (H)`
-                : `@ ${team.next_fixture.opponent} (A)`}
-            </div>
-            {team.next_fixture.match_time && (
-              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                {new Date(team.next_fixture.match_time).toLocaleDateString('en-GB', {
-                  weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
-                })}
+            {team.next_fixture.win_probability != null && (
+              <div className="text-right flex-shrink-0">
+                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>Win</div>
+                <div className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                  {Math.round(team.next_fixture.win_probability * 100)}%
+                </div>
               </div>
             )}
           </div>
-          {team.next_fixture.win_probability != null && (
-            <div className="text-right flex-shrink-0">
-              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>Win</div>
-              <div className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                {Math.round(team.next_fixture.win_probability * 100)}%
+
+          {moneylineRows.length > 0 && (
+            <div className={`mt-3 rounded-lg p-3 ${
+              darkMode ? 'bg-[#0a0a0a] border border-[#1f1f1f]' : 'bg-white border border-cyan-100'
+            }`}>
+              <div className="flex items-center justify-between mb-2">
+                <div className={`text-[11px] uppercase tracking-wider ${darkMode ? 'text-cyan-300' : 'text-cyan-700'}`}>
+                  Moneyline (1X2)
+                </div>
+                <div className={`grid grid-cols-3 gap-3 text-[10px] uppercase tracking-wider ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                  <span className="text-center">1</span>
+                  <span className="text-center">X</span>
+                  <span className="text-center">2</span>
+                </div>
               </div>
+
+              <div className="space-y-2">
+                {moneylineRows.map((line) => (
+                  <div key={line.bookmaker} className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <img
+                        src={bookmakerLogos[line.bookmaker] ?? '/bookies/default.svg'}
+                        alt={line.bookmaker}
+                        className="w-6 h-6 rounded-md object-contain flex-shrink-0"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src = '/bookies/default.svg';
+                        }}
+                      />
+                      <div className="min-w-0">
+                        <div className={`text-xs font-medium truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>{line.bookmaker}</div>
+                        {line.source && (
+                          <div className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>{line.source}</div>
+                        )}
+                      </div>
+                    </div>
+                    <div className={`grid grid-cols-3 gap-3 text-xs font-semibold ${darkMode ? 'text-cyan-200' : 'text-cyan-700'}`}>
+                      <span className="text-center w-10">{line.home}</span>
+                      <span className="text-center w-10">{line.draw}</span>
+                      <span className="text-center w-10">{line.away}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {moneylineRows.length === 0 && (
+            <div className={`mt-3 text-xs ${
+              darkMode ? 'text-gray-400' : 'text-gray-600'
+            }`}>
+              No live 1X2 lines returned yet. Preferred books are SkyBet, Paddy Power, and Betway; fallback books are shown automatically when available.
             </div>
           )}
         </div>

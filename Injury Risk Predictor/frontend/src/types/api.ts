@@ -80,6 +80,23 @@ export interface YaraResponse {
   bookmaker: string | null;
 }
 
+export interface BookmakerOddsLine {
+  bookmaker: string;
+  decimal_odds: number;
+  implied_probability: number;
+  source: string | null;
+}
+
+export interface BookmakerConsensus {
+  market_type: 'score' | 'clean_sheet';
+  market_label: string;
+  average_decimal: number;
+  average_probability: number;
+  summary_text: string;
+  market_line: string;
+  lines: BookmakerOddsLine[];
+}
+
 export interface LabDriver {
   name: string;
   value: string | number;
@@ -119,6 +136,7 @@ export interface PlayerRisk {
   fpl_value: FPLValue | null;
   clean_sheet_odds: CleanSheetOdds | null;
   next_fixture: NextFixture | null;
+  bookmaker_consensus: BookmakerConsensus | null;
   yara_response: YaraResponse | null;
   lab_notes: LabNotes | null;
   risk_percentile: number | null;
@@ -133,6 +151,15 @@ export interface TeamNextFixture {
   clean_sheet_odds: string | null;
   win_probability: number | null;
   fixture_insight: string | null;
+  moneyline_1x2?: TeamMoneylineBook[];
+}
+
+export interface TeamMoneylineBook {
+  bookmaker: string;
+  home: string;
+  draw: string;
+  away: string;
+  source?: string;
 }
 
 export interface TeamOverview {

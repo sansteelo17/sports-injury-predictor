@@ -1,7 +1,7 @@
 'use client';
 
 import { PlayerRisk } from '@/types/api';
-import { Microscope, AlertTriangle, ShieldCheck, Minus } from 'lucide-react';
+import { Microscope, BrainCircuit, BarChart3, ScrollText } from 'lucide-react';
 
 interface LabNotesProps {
   player: PlayerRisk;
@@ -11,14 +11,19 @@ interface LabNotesProps {
 export function LabNotes({ player, darkMode = true }: LabNotesProps) {
   if (!player.lab_notes) return null;
 
-  const impactIcon = (impact: string) => {
-    if (impact === 'risk_increasing') return <AlertTriangle size={14} className="text-red-400" />;
-    if (impact === 'protective') return <ShieldCheck size={14} className="text-green-400" />;
-    return <Minus size={14} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />;
-  };
+  const drivers = player.lab_notes.key_drivers.slice(0, 4);
+  const marketOdds = player.bookmaker_consensus?.lines ?? [];
+  const hasMarketMovement = marketOdds.length >= 2;
+  const marketSpread = hasMarketMovement
+    ? Math.max(...marketOdds.map((line) => line.decimal_odds)) -
+      Math.min(...marketOdds.map((line) => line.decimal_odds))
+    : 0;
+
+  const featureRows = player.lab_notes.technical.feature_highlights.slice(0, 5);
+  const featureTotal = featureRows.reduce((sum, feat) => sum + Math.abs(Number(feat.value) || 0), 0);
 
   return (
-    <div className={`rounded-2xl overflow-hidden ${
+    <div className={`holo-card rounded-2xl overflow-hidden ${
       darkMode ? 'bg-[#141414] border border-[#1f1f1f]' : 'bg-white shadow-xl'
     }`}>
       {/* Header */}
@@ -35,116 +40,82 @@ export function LabNotes({ player, darkMode = true }: LabNotesProps) {
             Yara&apos;s Lab Notes
           </h2>
           <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-            Risk analysis for {player.name}
+            Structured explainability for {player.name}
           </p>
         </div>
       </div>
 
-      {/* Summary */}
-      <div className={`px-4 sm:px-6 py-4 ${darkMode ? 'border-b border-[#1f1f1f]' : 'border-b border-gray-100'}`}>
-        <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
-          {player.lab_notes.summary}
-        </p>
+      <div className={`px-4 sm:px-6 py-4 space-y-4 ${darkMode ? 'border-b border-[#1f1f1f]' : 'border-b border-gray-100'}`}>
+        <div className={`rounded-lg p-4 ${darkMode ? 'bg-[#0a0a0a] border border-[#1f1f1f]' : 'bg-gray-50 border border-gray-200'}`}>
+          <div className="flex items-center gap-2 mb-3">
+            <BrainCircuit size={16} className={darkMode ? 'text-cyan-300' : 'text-cyan-700'} />
+            <h3 className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              § Model Drivers This Week
+            </h3>
+          </div>
+          <ul className="space-y-2">
+            {drivers.map((driver, i) => (
+              <li key={i} className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                • {driver.name}: {driver.explanation}
+              </li>
+            ))}
+            {hasMarketMovement && (
+              <li className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                • Market odds movement (±): {marketSpread.toFixed(2)} decimal spread across tracked books.
+              </li>
+            )}
+          </ul>
+        </div>
+
+        <div className={`rounded-lg p-4 ${darkMode ? 'bg-[#0a0a0a] border border-[#1f1f1f]' : 'bg-gray-50 border border-gray-200'}`}>
+          <div className="flex items-center gap-2 mb-3">
+            <BarChart3 size={16} className={darkMode ? 'text-emerald-300' : 'text-emerald-700'} />
+            <h3 className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              § Feature Importance Snapshot
+            </h3>
+          </div>
+          <ul className="space-y-2">
+            {featureRows.map((feat, i) => {
+              const raw = Number(feat.value) || 0;
+              const weight = featureTotal > 0 ? Math.abs(raw) / featureTotal : 0;
+              return (
+                <li key={i} className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  • {feat.name}: {weight.toFixed(2)} weight
+                </li>
+              );
+            })}
+            {featureRows.length === 0 && (
+              <li className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                • Feature-level weights are unavailable for this player snapshot.
+              </li>
+            )}
+          </ul>
+          <p className={`text-xs mt-3 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+            Model agreement: {Math.round(player.lab_notes.technical.model_agreement * 100)}%
+          </p>
+        </div>
+
+        <div className={`rounded-lg p-4 ${darkMode ? 'bg-[#0a0a0a] border border-[#1f1f1f]' : 'bg-gray-50 border border-gray-200'}`}>
+          <div className="flex items-center gap-2 mb-2">
+            <ScrollText size={16} className={darkMode ? 'text-amber-300' : 'text-amber-700'} />
+            <h3 className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              § Transparency Note
+            </h3>
+          </div>
+          <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+            This model does not use medical records or private data. It uses publicly available match and performance data.
+          </p>
+          <p className={`text-xs mt-3 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+            {player.lab_notes.summary}
+          </p>
+        </div>
       </div>
 
-      {/* Key Drivers */}
-      {player.lab_notes.key_drivers.length > 0 && (
-        <div className={`px-4 sm:px-6 py-4 ${darkMode ? 'border-b border-[#1f1f1f]' : 'border-b border-gray-100'}`}>
-          <h3 className={`text-sm font-semibold mb-3 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-            Key Drivers
-          </h3>
-          <div className="space-y-3">
-            {player.lab_notes.key_drivers.map((driver, i) => (
-              <div key={i} className={`rounded-lg p-3 ${
-                driver.impact === 'risk_increasing'
-                  ? darkMode ? 'bg-red-500/10 border border-red-500/20' : 'bg-red-50 border border-red-100'
-                  : driver.impact === 'protective'
-                  ? darkMode ? 'bg-green-500/10 border border-green-500/20' : 'bg-green-50 border border-green-100'
-                  : darkMode ? 'bg-[#0a0a0a] border border-[#1f1f1f]' : 'bg-gray-50 border border-gray-100'
-              }`}>
-                <div className="flex items-center justify-between mb-1">
-                  <div className="flex items-center gap-2">
-                    {impactIcon(driver.impact)}
-                    <span className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                      {driver.name}
-                    </span>
-                  </div>
-                  <span className={`text-sm font-mono font-bold ${
-                    driver.impact === 'risk_increasing'
-                      ? darkMode ? 'text-red-400' : 'text-red-600'
-                      : driver.impact === 'protective'
-                      ? darkMode ? 'text-green-400' : 'text-green-600'
-                      : darkMode ? 'text-gray-300' : 'text-gray-700'
-                  }`}>
-                    {driver.value}
-                  </span>
-                </div>
-                <p className={`text-xs leading-relaxed ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                  {driver.explanation}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Technical Details */}
-      {player.lab_notes.technical && (
+      {player.lab_notes.technical?.methodology && (
         <div className="px-4 sm:px-6 py-4">
-          <h3 className={`text-sm font-semibold mb-3 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-            Technical Details
-          </h3>
-
-          {/* Model Agreement */}
-          <div className={`rounded-lg p-3 mb-3 ${
-            darkMode ? 'bg-[#0a0a0a] border border-[#1f1f1f]' : 'bg-gray-50 border border-gray-100'
-          }`}>
-            <div className="flex items-center justify-between mb-2">
-              <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Model Agreement</span>
-              <span className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                {Math.round(player.lab_notes.technical.model_agreement * 100)}%
-              </span>
-            </div>
-            <div className={`w-full h-1.5 rounded-full ${darkMode ? 'bg-[#1f1f1f]' : 'bg-gray-200'}`}>
-              <div
-                className={`h-full rounded-full ${
-                  player.lab_notes.technical.model_agreement >= 0.8
-                    ? 'bg-green-500'
-                    : player.lab_notes.technical.model_agreement >= 0.6
-                    ? 'bg-yellow-500'
-                    : 'bg-red-500'
-                }`}
-                style={{ width: `${Math.round(player.lab_notes.technical.model_agreement * 100)}%` }}
-              />
-            </div>
-          </div>
-
-          {/* Methodology */}
-          <p className={`text-xs leading-relaxed mb-3 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+          <p className={`text-xs leading-relaxed ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
             {player.lab_notes.technical.methodology}
           </p>
-
-          {/* Feature Highlights */}
-          {player.lab_notes.technical.feature_highlights.length > 0 && (
-            <div className={`rounded-lg overflow-hidden ${
-              darkMode ? 'border border-[#1f1f1f]' : 'border border-gray-200'
-            }`}>
-              <div className={`grid grid-cols-2 gap-px ${darkMode ? 'bg-[#1f1f1f]' : 'bg-gray-200'}`}>
-                {player.lab_notes.technical.feature_highlights.map((feat, i) => (
-                  <div key={i} className={`flex justify-between items-center px-3 py-2 ${
-                    darkMode ? 'bg-[#0a0a0a]' : 'bg-white'
-                  }`}>
-                    <span className={`text-xs truncate mr-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      {feat.name}
-                    </span>
-                    <span className={`text-xs font-mono font-medium flex-shrink-0 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                      {typeof feat.value === 'number' ? feat.value.toFixed(2) : feat.value}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       )}
     </div>

@@ -1,0 +1,6 @@
+<svg width="120" height="120" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Betway">
+  <rect x="4" y="4" width="112" height="112" rx="24" fill="#111827"/>
+  <rect x="14" y="14" width="92" height="92" rx="16" fill="#1f2937"/>
+  <text x="60" y="66" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" font-weight="800" fill="#f3f4f6">BETWAY</text>
+  <path d="M25 82h70" stroke="#9ca3af" stroke-width="3" stroke-linecap="round"/>
+</svg>

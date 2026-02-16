@@ -98,3 +98,283 @@ body {
   background: rgba(134, 239, 172, 0.3);
   color: white;
 }
+
+/* Futuristic matrix shell */
+.app-shell {
+  position: relative;
+  min-height: 100vh;
+  isolation: isolate;
+}
+
+.matrix-theme {
+  background:
+    radial-gradient(900px 420px at 20% -10%, rgba(255, 255, 255, 0.04), transparent 65%),
+    radial-gradient(900px 420px at 80% 0%, rgba(255, 255, 255, 0.03), transparent 68%),
+    #0a0a0a;
+}
+
+.matrix-theme::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    url("/art/legend-layer.svg"),
+    url("/art/mural-shapes.svg");
+  background-repeat: repeat, repeat;
+  background-size: 1600px 1000px, 1400px 900px;
+  filter:
+    grayscale(18%)
+    saturate(165%)
+    contrast(116%)
+    brightness(94%)
+    blur(0.2px)
+    drop-shadow(0 0 24px rgba(167, 243, 208, 0.26));
+  mix-blend-mode: screen;
+  opacity: 0.44;
+  transform-origin: 50% 50%;
+  animation:
+    art-pan-a 48s linear infinite,
+    art-float-a 16s ease-in-out infinite alternate,
+    art-pulse-a 7.2s ease-in-out infinite;
+}
+
+.matrix-theme::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    url("/art/psychedelic-weave.svg"),
+    url("/art/carvings-layer.svg");
+  background-repeat: repeat, repeat;
+  background-size: 1600px 1000px, 1200px 800px;
+  filter:
+    grayscale(24%)
+    saturate(185%)
+    contrast(120%)
+    brightness(92%)
+    blur(0.15px)
+    drop-shadow(0 0 18px rgba(134, 239, 172, 0.22));
+  mix-blend-mode: soft-light;
+  opacity: 0.36;
+  transform-origin: 50% 50%;
+  animation:
+    art-pan-b 38s ease-in-out infinite alternate,
+    art-float-b 14s ease-in-out infinite alternate,
+    art-pulse-b 6.5s ease-in-out infinite;
+}
+
+.matrix-theme > * {
+  position: relative;
+  z-index: 1;
+}
+
+.matrix-theme .holo-header,
+.matrix-theme .holo-panel,
+.matrix-theme .holo-card {
+  background: rgba(20, 20, 20, 0.92);
+  border-color: rgba(31, 31, 31, 1) !important;
+  box-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.28);
+}
+
+.matrix-theme .holo-panel,
+.matrix-theme .holo-card {
+  overflow: hidden;
+}
+
+.matrix-theme .holo-panel::before,
+.matrix-theme .holo-card::before,
+.matrix-theme .holo-card::after {
+  content: none;
+}
+
+@keyframes art-pan-a {
+  from {
+    background-position: 0 0, 0 0;
+  }
+  to {
+    background-position: 280px -120px, 180px -96px;
+  }
+}
+
+@keyframes art-pan-b {
+  from {
+    background-position: 0 0, 0 0;
+  }
+  to {
+    background-position: -240px 96px, -140px 68px;
+  }
+}
+
+@keyframes art-float-a {
+  0% {
+    transform: translate3d(-1%, -1%, 0) scale(1) rotate(0deg);
+  }
+  100% {
+    transform: translate3d(1.5%, 1%, 0) scale(1.045) rotate(1deg);
+  }
+}
+
+@keyframes art-float-b {
+  0% {
+    transform: translate3d(1%, -1.2%, 0) scale(1) rotate(0deg);
+  }
+  100% {
+    transform: translate3d(-1.2%, 1.4%, 0) scale(1.05) rotate(-1.2deg);
+  }
+}
+
+@keyframes art-pulse-a {
+  0%,
+  100% {
+    opacity: 0.34;
+  }
+  50% {
+    opacity: 0.54;
+  }
+}
+
+@keyframes art-pulse-b {
+  0%,
+  100% {
+    opacity: 0.28;
+  }
+  50% {
+    opacity: 0.44;
+  }
+}
+
+@keyframes mobile-art-core {
+  0% {
+    background-position: 50% 0%, 0 0;
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+  100% {
+    background-position: 50% -10%, 120px -80px;
+    transform: scale(1.05) translate3d(0, 1.2%, 0);
+  }
+}
+
+@keyframes mobile-art-swirl {
+  0% {
+    background-position: 0 0, center;
+    transform: translate3d(0, 0, 0);
+    opacity: 0.4;
+  }
+  50% {
+    background-position: -110px 80px, center;
+    transform: translate3d(0, -1%, 0);
+    opacity: 0.58;
+  }
+  100% {
+    background-position: -220px 160px, center;
+    transform: translate3d(0, 1%, 0);
+    opacity: 0.4;
+  }
+}
+
+@keyframes mobile-card-art-drift {
+  from {
+    background-position: 0 0, 0 0, 0 0;
+  }
+  to {
+    background-position: 120px -64px, -88px 48px, 0 0;
+  }
+}
+
+@keyframes mobile-card-art-float {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.2;
+  }
+  50% {
+    transform: translate3d(0, -0.8%, 0) scale(1.01);
+    opacity: 0.28;
+  }
+  100% {
+    transform: translate3d(0, 0.8%, 0) scale(1.015);
+    opacity: 0.2;
+  }
+}
+
+@media (max-width: 640px) {
+  .matrix-theme .mobile-square-header {
+    border-radius: 0 !important;
+  }
+
+  .matrix-theme .mobile-square-league {
+    border-radius: 0 !important;
+  }
+
+  .matrix-theme .holo-header,
+  .matrix-theme .holo-panel,
+  .matrix-theme .holo-card {
+    background: rgba(20, 20, 20, 0.92);
+    border-color: rgba(31, 31, 31, 1) !important;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+    border-radius: 16px;
+  }
+
+  /* Put drawings directly on mobile cards/panels */
+  .matrix-theme .holo-panel,
+  .matrix-theme .holo-card {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .matrix-theme .holo-panel::before,
+  .matrix-theme .holo-card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      url("/art/legend-layer.svg") repeat,
+      url("/art/carvings-layer.svg") repeat,
+      radial-gradient(120% 120% at 16% 0%, rgba(190, 255, 228, 0.2), transparent 62%);
+    background-size: 980px 620px, 860px 560px, cover;
+    mix-blend-mode: screen;
+    filter: contrast(118%) brightness(108%) drop-shadow(0 0 14px rgba(172, 255, 226, 0.28));
+    animation:
+      mobile-card-art-drift 44s linear infinite,
+      mobile-card-art-float 12s ease-in-out infinite;
+  }
+
+  .matrix-theme .holo-panel::after,
+  .matrix-theme .holo-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: url("/art/psychedelic-weave.svg") repeat;
+    background-size: 900px 580px;
+    mix-blend-mode: color-dodge;
+    opacity: 0.16;
+    filter: brightness(112%) drop-shadow(0 0 8px rgba(172, 255, 226, 0.2));
+    animation: mobile-card-art-drift 34s linear infinite reverse;
+  }
+
+  .matrix-theme .bg-\[\#141414\],
+  .matrix-theme .bg-\[\#0a0a0a\],
+  .matrix-theme .bg-\[\#1f1f1f\] {
+    background-color: rgba(20, 20, 20, 0.92) !important;
+  }
+
+  .matrix-theme .border-\[\#1f1f1f\],
+  .matrix-theme .divide-\[\#1f1f1f\] > *,
+  .matrix-theme .divide-x.divide-\[\#1f1f1f\] > * + * {
+    border-color: rgba(31, 31, 31, 1) !important;
+  }
+
+  .matrix-theme::before,
+  .matrix-theme::after {
+    content: none;
+    background: none;
+    animation: none;
+    opacity: 0;
+  }
+}

@@ -1,0 +1,6 @@
+<svg width="120" height="120" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Bookmaker">
+  <rect x="4" y="4" width="112" height="112" rx="24" fill="#1f2937"/>
+  <circle cx="60" cy="52" r="20" fill="#374151"/>
+  <text x="60" y="58" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#d1d5db">BK</text>
+  <text x="60" y="90" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" font-weight="600" fill="#9ca3af">BOOKIE</text>
+</svg>

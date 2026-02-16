@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" fill="none">
+  <g stroke="#c9f7dc" stroke-opacity="0.28" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Sun + rays -->
+    <circle cx="804" cy="170" r="66"/>
+    <circle cx="804" cy="170" r="36"/>
+    <path d="M804 70 V20"/>
+    <path d="M804 320 V270"/>
+    <path d="M704 170 H654"/>
+    <path d="M954 170 H904"/>
+    <path d="M734 100 L698 64"/>
+    <path d="M874 240 L910 276"/>
+    <path d="M734 240 L698 276"/>
+    <path d="M874 100 L910 64"/>
+
+    <!-- Solstice arcs/horizon -->
+    <path d="M540 330 C620 250 980 250 1060 330"/>
+    <path d="M520 370 C610 278 990 278 1080 370"/>
+    <path d="M506 412 H1094"/>
+    <path d="M644 412 V476"/>
+    <path d="M804 412 V492"/>
+    <path d="M964 412 V476"/>
+
+    <!-- Human figures (petroglyph style) -->
+    <circle cx="202" cy="684" r="18"/>
+    <path d="M202 704 V756"/>
+    <path d="M202 724 L170 744"/>
+    <path d="M202 724 L234 744"/>
+    <path d="M202 756 L176 794"/>
+    <path d="M202 756 L228 794"/>
+
+    <circle cx="294" cy="670" r="16"/>
+    <path d="M294 686 V736"/>
+    <path d="M294 706 L264 716"/>
+    <path d="M294 706 L324 716"/>
+    <path d="M294 736 L270 772"/>
+    <path d="M294 736 L318 772"/>
+
+    <circle cx="1308" cy="680" r="18"/>
+    <path d="M1308 700 V752"/>
+    <path d="M1308 720 L1276 742"/>
+    <path d="M1308 720 L1340 742"/>
+    <path d="M1308 752 L1282 792"/>
+    <path d="M1308 752 L1334 792"/>
+
+    <circle cx="1400" cy="666" r="16"/>
+    <path d="M1400 682 V732"/>
+    <path d="M1400 702 L1372 714"/>
+    <path d="M1400 702 L1428 714"/>
+    <path d="M1400 732 L1378 768"/>
+    <path d="M1400 732 L1422 768"/>
+
+    <!-- Serpents -->
+    <path d="M80 534 C164 456 250 614 334 536 C418 458 502 616 586 538"/>
+    <path d="M1028 548 C1108 474 1190 622 1274 548 C1358 472 1440 620 1522 546"/>
+    <path d="M582 850 C666 770 750 930 834 852 C918 774 1002 932 1086 854"/>
+    <path d="M568 538 L596 524 L588 552 Z"/>
+    <path d="M1520 546 L1548 532 L1540 560 Z"/>
+    <path d="M1084 854 L1112 840 L1104 868 Z"/>
+
+    <!-- Spirals / psychedelic symbols -->
+    <path d="M482 210 C506 180 560 188 578 220 C598 256 580 304 540 314 C494 326 446 292 442 244 C438 188 488 136 550 134"/>
+    <path d="M1126 232 C1150 202 1204 210 1222 242 C1242 278 1224 326 1184 336 C1138 348 1090 314 1086 266 C1082 210 1132 158 1194 156"/>
+    <path d="M806 598 C838 560 906 568 930 610 C956 658 934 724 882 736 C822 750 756 708 750 646 C744 578 808 516 882 514"/>
+
+    <!-- Temple geometry -->
+    <path d="M662 920 H946"/>
+    <path d="M684 892 H924"/>
+    <path d="M706 864 H902"/>
+    <path d="M728 836 H880"/>
+    <path d="M750 808 H858"/>
+  </g>
+
+  <g stroke="#d8c282" stroke-opacity="0.22" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M88 128 H352"/>
+    <path d="M1246 132 H1512"/>
+    <path d="M102 916 H466"/>
+    <path d="M1136 916 H1500"/>
+
+    <path d="M448 496 l20 -18 l20 18 l20 -18 l20 18 l20 -18 l20 18"/>
+    <path d="M930 500 l20 -18 l20 18 l20 -18 l20 18 l20 -18 l20 18"/>
+
+    <path d="M266 586 a28 28 0 1 1 -1 0"/>
+    <path d="M1338 596 a28 28 0 1 1 -1 0"/>
+  </g>
+</svg>

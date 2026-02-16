@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" fill="none">
+  <g stroke="#95d5b2" stroke-opacity="0.28" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M70 720 L150 520 L230 720 Z"/>
+    <path d="M100 670 H200"/>
+    <path d="M115 630 H185"/>
+    <path d="M130 590 H170"/>
+
+    <path d="M320 690 H470"/>
+    <path d="M340 660 H450"/>
+    <path d="M360 630 H430"/>
+    <path d="M380 600 H410"/>
+
+    <path d="M560 700 L610 560 L660 700"/>
+    <path d="M575 655 H645"/>
+    <path d="M590 620 H630"/>
+
+    <circle cx="840" cy="610" r="62"/>
+    <circle cx="840" cy="610" r="34"/>
+    <path d="M778 610 H902"/>
+    <path d="M840 548 V672"/>
+
+    <path d="M990 700 L1060 560 L1130 700"/>
+    <path d="M1010 658 H1110"/>
+    <path d="M1030 622 H1090"/>
+
+    <path d="M84 300 C130 248 180 248 226 300"/>
+    <path d="M84 338 C130 286 180 286 226 338"/>
+
+    <path d="M360 300 q34 -48 68 0 q34 48 68 0"/>
+    <path d="M360 338 q34 -48 68 0 q34 48 68 0"/>
+
+    <path d="M694 316 h188"/>
+    <path d="M714 286 h148"/>
+    <path d="M734 256 h108"/>
+
+    <path d="M950 292 q30 -50 60 0 q30 50 60 0"/>
+    <path d="M950 332 q30 -50 60 0 q30 50 60 0"/>
+
+    <path d="M80 122 L110 84 L140 122 L170 84 L200 122"/>
+    <path d="M80 168 L110 130 L140 168 L170 130 L200 168"/>
+
+    <path d="M330 98 a48 48 0 1 1 -1 0"/>
+    <path d="M330 74 V122"/>
+    <path d="M306 98 H354"/>
+
+    <path d="M540 126 l52 -56 l52 56 l52 -56 l52 56"/>
+    <path d="M540 174 l52 -56 l52 56 l52 -56 l52 56"/>
+
+    <path d="M890 146 h214"/>
+    <path d="M890 118 h214"/>
+    <path d="M918 86 h158"/>
+  </g>
+
+  <g stroke="#d8c282" stroke-opacity="0.24" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M252 744 h54"/>
+    <path d="M460 744 h60"/>
+    <path d="M676 742 h52"/>
+    <path d="M904 742 h54"/>
+
+    <path d="M250 468 l24 -20 l24 20 l24 -20 l24 20"/>
+    <path d="M504 462 l20 -16 l20 16 l20 -16 l20 16"/>
+    <path d="M754 458 l22 -18 l22 18 l22 -18 l22 18"/>
+    <path d="M1004 456 l20 -16 l20 16 l20 -16 l20 16"/>
+
+    <path d="M244 214 h82"/>
+    <path d="M502 220 h94"/>
+    <path d="M764 216 h86"/>
+    <path d="M1016 218 h78"/>
+  </g>
+</svg>

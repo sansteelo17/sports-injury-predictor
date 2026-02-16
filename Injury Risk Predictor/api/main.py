@@ -12,10 +12,32 @@ import sys
 import os
 
 from pathlib import Path
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(path=None, *args, **kwargs):
+        """Lightweight .env loader fallback when python-dotenv is unavailable."""
+        env_path = Path(path) if path else Path(".env")
+        if not env_path.exists():
+            return False
+        try:
+            for raw_line in env_path.read_text().splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+            return True
+        except Exception:
+            return False
 
 # Add project root to PYTHONPATH
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
+load_dotenv(ROOT / ".env")
 
 from src.utils.logger import get_logger
 logger = get_logger(__name__)
@@ -525,6 +547,25 @@ class YaraResponse(BaseModel):
     bookmaker: Optional[str] = None
 
 
+class BookmakerOddsLine(BaseModel):
+    """Single bookmaker line for scoring/clean-sheet market."""
+    bookmaker: str
+    decimal_odds: float
+    implied_probability: float
+    source: Optional[str] = None
+
+
+class BookmakerConsensus(BaseModel):
+    """Normalized three-bookie market summary for narrative explainability."""
+    market_type: str  # "score" | "clean_sheet"
+    market_label: str
+    average_decimal: float
+    average_probability: float
+    summary_text: str
+    market_line: str
+    lines: List[BookmakerOddsLine]
+
+
 class LabDriver(BaseModel):
     """A single key driver in Yara's Lab Notes."""
     name: str
@@ -567,6 +608,7 @@ class PlayerRisk(BaseModel):
     fpl_value: Optional[FPLValue] = None
     clean_sheet_odds: Optional[CleanSheetOdds] = None
     next_fixture: Optional[NextFixture] = None
+    bookmaker_consensus: Optional[BookmakerConsensus] = None
     yara_response: Optional[YaraResponse] = None
     lab_notes: Optional[LabNotes] = None
     risk_percentile: Optional[float] = None
@@ -909,6 +951,13 @@ def get_next_fixture_for_team(team_name: str, injury_prob: float) -> Optional[Di
                 "win_probability": cs_data["win_probability"],
                 "fixture_insight": fixture_insight,
             }
+    # Add 1X2 bookie lines (works with live key and mock fallback)
+    if odds_client:
+        moneyline_data = odds_client.get_team_moneyline_1x2(team_name)
+        if moneyline_data and moneyline_data.get("books"):
+            if odds_data is None:
+                odds_data = {}
+            odds_data["moneyline_1x2"] = moneyline_data["books"]
 
     # Use FPL API fixtures (real kickoff times)
     try:
@@ -985,6 +1034,191 @@ def get_next_fixture_for_team(team_name: str, injury_prob: float) -> Optional[Di
     return None
 
 
+def _is_defensive_position(position: str) -> bool:
+    pos_lower = (position or "").lower()
+    return any(p in pos_lower for p in ["def", "gk", "goalkeeper", "back"])
+
+
+def _canonical_bookmaker_name(raw_name: str) -> Optional[str]:
+    aliases = {
+        "SkyBet": ["sky bet", "skybet"],
+        "Paddy Power": ["paddy power", "paddypower"],
+        "Betway": ["betway"],
+    }
+    haystack = (raw_name or "").lower()
+    for canonical, keys in aliases.items():
+        if any(k in haystack for k in keys):
+            return canonical
+    return None
+
+
+def build_bookmaker_consensus(
+    player_name: str,
+    position: str,
+    scoring_odds_data: Optional[Dict],
+    clean_sheet_data: Optional[Dict],
+    scorer_market_snapshot: Optional[Dict],
+) -> Optional[Dict]:
+    """Build direct-only market lines with preferred-first book selection."""
+    defensive_market = _is_defensive_position(position) and clean_sheet_data is not None
+    if defensive_market:
+        # No direct clean-sheet market integration yet (only model estimate exists).
+        return None
+
+    if not scorer_market_snapshot:
+        return None
+
+    market_type = "score"
+    market_label = "to score"
+    target_books = ["SkyBet", "Paddy Power", "Betway"]
+    preferred_map: Dict[str, Dict[str, Any]] = {}
+    fallback_lines: List[Dict[str, Any]] = []
+    seen_books = set()
+
+    for raw_line in scorer_market_snapshot.get("lines", []):
+        decimal = raw_line.get("decimal_odds")
+        if not decimal or decimal <= 1:
+            continue
+        raw_book = raw_line.get("bookmaker", "Unknown")
+        canonical = _canonical_bookmaker_name(raw_book)
+        book_name = canonical or raw_book
+        if book_name in seen_books:
+            continue
+        seen_books.add(book_name)
+
+        normalized_line = {
+            "bookmaker": book_name,
+            "decimal_odds": round(float(decimal), 2),
+            "implied_probability": round(1 / float(decimal), 3),
+            "source": raw_line.get("source", "Live Market"),
+        }
+        if canonical in target_books:
+            preferred_map[canonical] = normalized_line
+        else:
+            fallback_lines.append(normalized_line)
+
+    lines = [preferred_map[book] for book in target_books if book in preferred_map]
+    if len(lines) < 3:
+        lines.extend(fallback_lines[: max(0, 3 - len(lines))])
+    if not lines:
+        return None
+
+    average_decimal = round(sum(line["decimal_odds"] for line in lines) / len(lines), 2)
+    average_probability = round(sum(line["implied_probability"] for line in lines) / len(lines), 3)
+    probability_pct = round(average_probability * 100, 1)
+    first_name = player_name.split()[0] if player_name else "Player"
+    opponent = scorer_market_snapshot.get("opponent") if scorer_market_snapshot else None
+    is_home = scorer_market_snapshot.get("is_home") if scorer_market_snapshot else None
+
+    summary_text = (
+        f"Bookies estimate {first_name}'s odds {market_label} is at an average of "
+        f"{average_decimal:.2f}. A {probability_pct}% probability."
+    )
+    market_line = (
+        f"{first_name} {'anytime scorer' if market_type == 'score' else 'clean sheet'} "
+        f"- {average_decimal:.2f} (≈{round(average_probability * 100)}%)"
+    )
+
+    return {
+        "market_type": market_type,
+        "market_label": market_label,
+        "average_decimal": average_decimal,
+        "average_probability": average_probability,
+        "summary_text": summary_text,
+        "market_line": market_line,
+        "lines": lines,
+        "opponent": opponent,
+        "is_home": is_home,
+    }
+
+
+def enhance_yara_response(
+    base_response: Optional[Dict],
+    player_row: Dict[str, Any],
+    next_fixture_data: Optional[Dict],
+    market_consensus: Optional[Dict],
+    scoring_odds_data: Optional[Dict] = None,
+    clean_sheet_data: Optional[Dict] = None,
+) -> Optional[Dict]:
+    """Blend model narrative with fixture context and bookmaker consensus."""
+    if not base_response and not market_consensus:
+        return None
+
+    name = player_row.get("name", "This player")
+    first_name = name.split()[0] if name else "This player"
+    team = player_row.get("team", "their team")
+    injury_prob = float(player_row.get("ensemble_prob", 0.5))
+    goals_per_90 = float(player_row.get("goals_per_90", 0) or 0)
+    assists_per_90 = float(player_row.get("assists_per_90", 0) or 0)
+
+    opponent = None
+    is_home = None
+    if next_fixture_data:
+        opponent = next_fixture_data.get("opponent")
+        is_home = next_fixture_data.get("is_home")
+
+    if market_consensus and not opponent:
+        opponent = market_consensus.get("opponent")
+        is_home = market_consensus.get("is_home")
+
+    fallback_model_prob = 0.0
+    if _is_defensive_position(player_row.get("position", "")) and clean_sheet_data:
+        fallback_model_prob = float(clean_sheet_data.get("clean_sheet_probability", 0.0) or 0.0)
+    elif scoring_odds_data:
+        fallback_model_prob = float(scoring_odds_data.get("score_probability", 0.0) or 0.0)
+
+    yara_probability = (
+        base_response.get("yara_probability")
+        if base_response
+        else (fallback_model_prob or (market_consensus.get("average_probability") if market_consensus else 0.0))
+    )
+    market_probability = (
+        market_consensus.get("average_probability")
+        if market_consensus
+        else (base_response.get("market_probability") if base_response else None)
+    )
+
+    venue_context = ""
+    if opponent:
+        venue = "host" if is_home else "travel to"
+        venue_context = f" {team} {venue} {opponent} next."
+
+    availability_context = "load risk is elevated" if injury_prob >= 0.4 else "availability profile is steady"
+    if market_consensus and market_probability is not None:
+        response_text = (
+            f"I'm projecting {round(float(yara_probability) * 100)}%. "
+            f"Bookies average {round(float(market_probability) * 100)}%. "
+            f"{first_name} is at {goals_per_90:.2f} goals/90 and {assists_per_90:.2f} assists/90, "
+            f"and the injury-adjusted view says {availability_context}.{venue_context}"
+        )
+    else:
+        response_text = (
+            f"I'm projecting {round(float(yara_probability) * 100)}%. "
+            f"{first_name} is at {goals_per_90:.2f} goals/90 and {assists_per_90:.2f} assists/90; "
+            f"{availability_context}.{venue_context}"
+        )
+
+    fpl_tip = base_response.get("fpl_tip") if base_response else None
+    if not fpl_tip:
+        if injury_prob >= 0.45:
+            fpl_tip = "Start only with bench cover. Captain only if chasing upside."
+        elif yara_probability >= 0.4:
+            fpl_tip = "Start if you own. Captain only if fixture upside matches your rank goals."
+        else:
+            fpl_tip = "Playable, but not a captain priority this week."
+
+    return {
+        "response_text": response_text,
+        "fpl_tip": fpl_tip,
+        "market_probability": market_probability,
+        "yara_probability": float(yara_probability),
+        "market_odds_decimal": market_consensus.get("average_decimal") if market_consensus else (
+            base_response.get("market_odds_decimal") if base_response else None
+        ),
+        "bookmaker": "Bookies Avg" if market_consensus else (base_response.get("bookmaker") if base_response else None),
+    }
+
+
 def get_personalized_insights(row: dict) -> List[str]:
     """Generate personalized insights using the story generator."""
     risk_factors = generate_risk_factors_list(row)
@@ -1050,11 +1284,39 @@ def player_row_to_risk(row) -> PlayerRisk:
     clean_sheet_data = calculate_clean_sheet_odds(enriched_row)
     next_fixture_data = get_next_fixture_for_team(team, prob)
 
-    # Yara's Response: compare model projection with live market odds
-    market_odds = None
+    scorer_market_snapshot = None
     if odds_client:
-        market_odds = odds_client.get_anytime_scorer_odds(team, player_name)
-    yara_data = generate_yara_response(enriched_row, market_odds)
+        scorer_market_snapshot = odds_client.get_anytime_scorer_market_snapshot(team, player_name)
+
+    bookmaker_consensus_data = build_bookmaker_consensus(
+        player_name=player_name,
+        position=enriched_row.get("position", ""),
+        scoring_odds_data=scoring_odds_data,
+        clean_sheet_data=clean_sheet_data,
+        scorer_market_snapshot=scorer_market_snapshot,
+    )
+
+    # Yara's response: compare model projection with consensus market line
+    market_odds_for_yara = None
+    if bookmaker_consensus_data:
+        market_odds_for_yara = {
+            "implied_probability": bookmaker_consensus_data["average_probability"],
+            "decimal_odds": bookmaker_consensus_data["average_decimal"],
+            "bookmaker": "Bookies Avg",
+            "opponent": bookmaker_consensus_data.get("opponent"),
+            "is_home": bookmaker_consensus_data.get("is_home"),
+        }
+    elif odds_client:
+        market_odds_for_yara = odds_client.get_anytime_scorer_odds(team, player_name)
+
+    yara_data = enhance_yara_response(
+        base_response=generate_yara_response(enriched_row, market_odds_for_yara),
+        player_row=enriched_row,
+        next_fixture_data=next_fixture_data,
+        market_consensus=bookmaker_consensus_data,
+        scoring_odds_data=scoring_odds_data,
+        clean_sheet_data=clean_sheet_data,
+    )
 
     # Yara's Lab Notes: explainability
     lab_notes_data = generate_lab_notes(enriched_row)
@@ -1095,6 +1357,7 @@ def player_row_to_risk(row) -> PlayerRisk:
         fpl_value=FPLValue(**fpl_value_data) if fpl_value_data else None,
         clean_sheet_odds=CleanSheetOdds(**clean_sheet_data) if clean_sheet_data else None,
         next_fixture=NextFixture(**next_fixture_data) if next_fixture_data else None,
+        bookmaker_consensus=BookmakerConsensus(**bookmaker_consensus_data) if bookmaker_consensus_data else None,
         yara_response=YaraResponse(**yara_data) if yara_data else None,
         lab_notes=LabNotes(
             summary=lab_notes_data["summary"],
@@ -1119,6 +1382,28 @@ async def health_check():
         models_loaded=inference_df is not None,
         player_count=len(inference_df) if inference_df is not None else 0,
     )
+
+
+@app.get("/api/odds/status")
+async def odds_status(team: str = "Arsenal", player: str = "Bukayo Saka"):
+    """Inspect odds provider mode and direct market availability."""
+    if odds_client is None:
+        raise HTTPException(status_code=503, detail="Odds client not initialized")
+
+    scorer_snapshot = odds_client.get_anytime_scorer_market_snapshot(team, player)
+    team_moneyline = odds_client.get_team_moneyline_1x2(team)
+
+    return {
+        "provider_mode": getattr(odds_client, "odds_provider", "auto"),
+        "has_odds_api_key": bool(getattr(odds_client, "api_key", "")),
+        "has_api_football_key": bool(getattr(odds_client, "api_football_key", "")),
+        "team": team,
+        "player": player,
+        "scorer_lines_count": len((scorer_snapshot or {}).get("lines", [])),
+        "scorer_lines_books": [l.get("bookmaker") for l in (scorer_snapshot or {}).get("lines", [])],
+        "moneyline_books_count": len((team_moneyline or {}).get("books", [])),
+        "moneyline_books": [b.get("bookmaker") for b in (team_moneyline or {}).get("books", [])],
+    }
 
 
 @app.get("/api/players", response_model=List[PlayerSummary])
