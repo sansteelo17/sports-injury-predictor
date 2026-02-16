@@ -26,8 +26,19 @@ import os
 import sys
 import argparse
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
+
+# Load .env if it exists (so API keys don't need to be passed on command line)
+_env_path = Path(__file__).resolve().parents[1] / ".env"
+if _env_path.exists():
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _key, _val = _line.split("=", 1)
+                os.environ.setdefault(_key.strip(), _val.strip())
 import numpy as np
 
 # Add project root to path
@@ -179,13 +190,22 @@ def compute_team_workload(matches_df, team, as_of_date):
     fatigue_index = acute_load - chronic_load
     spike_flag = 1 if acwr > 1.5 else 0
 
-    # Workload slope: trend over last 5 matches
-    recent_5 = team_matches.tail(5)
-    if len(recent_5) >= 2:
-        # Use match count per week as proxy
-        loads = [1] * len(recent_5)  # Each match = 1 load unit
-        x = np.arange(len(loads))
-        workload_slope = np.polyfit(x, loads, 1)[0]
+    # Workload slope: trend in match density over last 5 weeks
+    # Positive = schedule getting busier, negative = easing off
+    if len(team_matches) >= 3:
+        weekly_loads = []
+        for w in range(5):
+            week_start = as_of_date - timedelta(days=7 * (w + 1))
+            week_end = as_of_date - timedelta(days=7 * w)
+            week_count = len(team_matches[
+                (team_matches["Date"] >= week_start) &
+                (team_matches["Date"] < week_end)
+            ])
+            weekly_loads.append(week_count)
+        # Reverse so index 0 = oldest week, 4 = most recent
+        weekly_loads = weekly_loads[::-1]
+        x = np.arange(len(weekly_loads))
+        workload_slope = np.polyfit(x, weekly_loads, 1)[0]
     else:
         workload_slope = 0
 
@@ -201,93 +221,138 @@ def compute_team_workload(matches_df, team, as_of_date):
 
 def load_player_minutes_lookup():
     """
-    Load player playing time data from historical stats CSV.
+    Load player playing time ratios from FPL API (live minutes data).
+
+    FPL provides actual minutes played this season for every PL player.
+    Converts to a ratio: minutes / max_possible_minutes.
 
     Returns a dict mapping player name -> playing time ratio (0-1).
-    Uses Min% from the most recent season available.
     """
-    stats_path = os.path.join(PROJECT_ROOT, "data", "raw", "All_Players_1992-2025.csv")
+    try:
+        from src.data_loaders.fpl_api import FPLClient
+        client = FPLClient()
+        all_stats = client.get_all_player_stats()
 
-    if not os.path.exists(stats_path):
-        logger.warning(f"Player stats not found at {stats_path}")
+        # Current GW determines max possible minutes
+        current_gw = client.get_current_gameweek()
+        gw_num = current_gw.get("id", 20) if current_gw else 20
+        max_minutes = gw_num * 90  # Maximum possible minutes so far
+
+        lookup = {}
+        for p in all_stats:
+            minutes = p.get("minutes", 0)
+            if max_minutes > 0:
+                ratio = min(minutes / max_minutes, 1.0)
+            else:
+                ratio = 0.5
+
+            # Index by multiple name formats for matching
+            name = p.get("name", "")
+            full_name = p.get("full_name", "")
+            if name:
+                lookup[name] = ratio
+            if full_name:
+                lookup[full_name] = ratio
+
+        logger.info(f"Loaded playing time ratios for {len(all_stats)} players from FPL API (GW{gw_num})")
+        return lookup
+    except Exception as e:
+        logger.warning(f"Failed to load FPL minutes: {e}")
         return {}
-
-    df = pd.read_csv(stats_path)
-
-    # Get most recent season for each player
-    df = df.sort_values("Season", ascending=False)
-    latest = df.groupby("Player").first().reset_index()
-
-    # Create lookup: player name -> playing time ratio (Min% / 100)
-    lookup = {}
-    for _, row in latest.iterrows():
-        if pd.notna(row.get("Min%")):
-            lookup[row["Player"]] = row["Min%"] / 100.0
-
-    logger.info(f"Loaded playing time data for {len(lookup)} players")
-    return lookup
 
 
 def load_injury_history_lookup():
     """
-    Load real injury history from raw injury CSV.
+    Load real injury history from scraped Transfermarkt data.
+
+    CSVs are for training only — inference uses scraped pkl files exclusively.
+
+    Sources (in priority order):
+    1. player_injuries_detail.pkl — per-injury records with dates (best)
+    2. player_history.pkl — summary stats (fallback)
 
     Returns a dict mapping player name -> {
         'previous_injuries': count,
         'days_since_last_injury': days since most recent injury,
-        'last_injury_date': date of most recent injury
+        'last_injury_date': date of most recent injury,
+        'total_days_lost': total days lost to injury,
+        'avg_severity': average days per injury
     }
     """
-    injury_path = os.path.join(PROJECT_ROOT, "data", "raw", "player_injuries_impact.csv")
-
-    if not os.path.exists(injury_path):
-        logger.warning(f"Injury data not found at {injury_path}")
-        return {}
-
-    df = pd.read_csv(injury_path)
-
-    # Parse dates
-    date_col = None
-    for col in ['Date of Injury', 'Date', 'date', 'Injury Date', 'injury_date']:
-        if col in df.columns:
-            date_col = col
-            break
-
-    if date_col is None:
-        logger.warning(f"No date column found in injury data. Available: {df.columns.tolist()}")
-        return {}
-
-    df['injury_date'] = pd.to_datetime(df[date_col], errors='coerce')
-    df = df.dropna(subset=['injury_date'])
-
-    # Get player name column
-    name_col = None
-    for col in ['Name', 'Player Name', 'player_name', 'Player', 'name']:
-        if col in df.columns:
-            name_col = col
-            break
-
-    if name_col is None:
-        logger.warning(f"No player name column found in injury data. Available: {df.columns.tolist()}")
-        return {}
-
-    # Calculate stats per player
     today = datetime.now()
     lookup = {}
 
-    for player, group in df.groupby(name_col):
-        injuries = group.sort_values('injury_date', ascending=False)
-        last_injury = injuries.iloc[0]['injury_date']
-        days_since = (today - last_injury).days
+    # --- Source 1: Scraped detail pkl (per-injury records with dates) ---
+    detail_path = os.path.join(PROJECT_ROOT, "models", "player_injuries_detail.pkl")
+    if os.path.exists(detail_path):
+        try:
+            detail_df = pd.read_pickle(detail_path)
+        except (NotImplementedError, Exception) as e:
+            # StringDtype compatibility: re-save as plain object dtype
+            logger.warning(f"Pickle compat issue, re-loading with fix: {e}")
+            import pickle
+            with open(detail_path, "rb") as f:
+                detail_df = pickle.load(f)
 
-        lookup[player] = {
-            'previous_injuries': len(injuries),
-            'days_since_last_injury': max(0, days_since),
-            'last_injury_date': last_injury.strftime('%Y-%m-%d')
-        }
+        # Fix StringDtype columns → plain object dtype
+        for col in detail_df.select_dtypes(include=["string"]).columns:
+            detail_df[col] = detail_df[col].astype(object)
+        if hasattr(detail_df['name'].dtype, 'name') and 'String' in str(detail_df['name'].dtype):
+            detail_df['name'] = detail_df['name'].astype(str)
 
-    logger.info(f"Loaded injury history for {len(lookup)} players from CSV")
-    return lookup
+        if 'name' in detail_df.columns:
+            detail_df['injury_datetime'] = pd.to_datetime(detail_df['injury_datetime'], errors='coerce')
+            detail_df = detail_df.dropna(subset=['injury_datetime'])
+
+            for player, group in detail_df.groupby('name'):
+                injuries = group.sort_values('injury_datetime', ascending=False)
+                last_injury = injuries.iloc[0]['injury_datetime']
+                total_lost = int(injuries['severity_days'].sum()) if 'severity_days' in injuries.columns else 0
+                avg_sev = float(injuries['severity_days'].mean()) if 'severity_days' in injuries.columns else 0
+
+                lookup[player] = {
+                    'previous_injuries': len(injuries),
+                    'days_since_last_injury': max(0, (today - last_injury).days),
+                    'last_injury_date': last_injury.strftime('%Y-%m-%d'),
+                    'total_days_lost': total_lost,
+                    'avg_severity': avg_sev,
+                }
+            logger.info(f"Loaded injury history for {len(lookup)} players from detail pkl ({len(detail_df)} records)")
+            return lookup
+
+    # --- Source 2: Player history pkl (summary stats, no per-injury dates) ---
+    history_path = os.path.join(PROJECT_ROOT, "models", "player_history.pkl")
+    if os.path.exists(history_path):
+        try:
+            history_df = pd.read_pickle(history_path)
+        except (NotImplementedError, Exception):
+            import pickle
+            with open(history_path, "rb") as f:
+                history_df = pickle.load(f)
+
+        if hasattr(history_df, 'columns') and 'name' in history_df.columns:
+            for _, row in history_df.iterrows():
+                count = int(row.get('player_injury_count', 0) or 0)
+                avg_sev = float(row.get('player_avg_severity', 0) or 0)
+                days_since = row.get('days_since_last_injury')
+                last_date = row.get('last_injury_date')
+
+                # Estimate days_since if not populated
+                if pd.isna(days_since) or days_since is None:
+                    days_since = 180 if count > 0 else 365 * 3
+
+                lookup[row['name']] = {
+                    'previous_injuries': count,
+                    'days_since_last_injury': int(days_since),
+                    'last_injury_date': last_date if pd.notna(last_date) else None,
+                    'total_days_lost': int(count * avg_sev),
+                    'avg_severity': avg_sev,
+                }
+            logger.info(f"Loaded injury history for {len(lookup)} players from history pkl (summary only)")
+            return lookup
+
+    logger.warning("No scraped injury data found. Run: python scripts/scrape_injuries.py")
+    return {}
 
 
 def fetch_transfermarkt_injuries(player_names: list, existing_lookup: dict) -> dict:
@@ -350,6 +415,98 @@ def fetch_transfermarkt_injuries(player_names: list, existing_lookup: dict) -> d
     return lookup
 
 
+def compute_team_form(matches_df, team, as_of_date, n_matches=5):
+    """
+    Compute team form features from recent match results.
+
+    Returns dict with: goals_for_last_5, goals_against_last_5, goal_diff_last_5,
+    avg_goal_diff_last_5, form_last_5, form_avg_last_5, win_ratio_last_5,
+    win_streak, loss_streak, rest_days_before_injury, avg_rest_last_5.
+    """
+    team_matches = matches_df[
+        ((matches_df["Home"] == team) | (matches_df["Away"] == team)) &
+        (matches_df["Date"] < as_of_date)
+    ].sort_values("Date", ascending=False)
+
+    if len(team_matches) == 0:
+        return {
+            "goals_for_last_5": 7, "goals_against_last_5": 5,
+            "goal_diff_last_5": 2, "avg_goal_diff_last_5": 0.4,
+            "form_last_5": 7, "form_avg_last_5": 1.4,
+            "win_ratio_last_5": 0.4, "win_streak": 0, "loss_streak": 0,
+            "rest_days_before_injury": 4, "avg_rest_last_5": 4,
+        }
+
+    recent = team_matches.head(n_matches)
+
+    goals_for = 0
+    goals_against = 0
+    points = 0
+    wins = 0
+    results = []  # W/D/L sequence for streak calculation
+
+    for _, match in recent.iterrows():
+        is_home = match["Home"] == team
+        gf = match["HomeGoals"] if is_home else match["AwayGoals"]
+        ga = match["AwayGoals"] if is_home else match["HomeGoals"]
+        goals_for += gf
+        goals_against += ga
+
+        if gf > ga:
+            points += 3
+            wins += 1
+            results.append("W")
+        elif gf == ga:
+            points += 1
+            results.append("D")
+        else:
+            results.append("L")
+
+    n = len(recent)
+    goal_diff = goals_for - goals_against
+
+    # Streaks (from most recent)
+    win_streak = 0
+    for r in results:
+        if r == "W":
+            win_streak += 1
+        else:
+            break
+
+    loss_streak = 0
+    for r in results:
+        if r == "L":
+            loss_streak += 1
+        else:
+            break
+
+    # Rest days: days since last match
+    last_match_date = team_matches.iloc[0]["Date"]
+    rest_days = max(1, (as_of_date - last_match_date).days)
+
+    # Average rest between last 5 matches
+    if n >= 2:
+        dates = recent["Date"].tolist()
+        gaps = [(dates[i] - dates[i + 1]).days for i in range(len(dates) - 1)]
+        avg_rest = np.mean(gaps)
+    else:
+        avg_rest = 4
+
+    return {
+        "goals_for_last_5": int(goals_for),
+        "goals_against_last_5": int(goals_against),
+        "goal_diff_last_5": int(goal_diff),
+        "avg_goal_diff_last_5": round(goal_diff / n, 2) if n > 0 else 0,
+        "form_last_5": int(points),
+        "form_avg_last_5": round(points / n, 2) if n > 0 else 0,
+        "win_ratio_last_5": round(wins / n, 2) if n > 0 else 0,
+        "win_streak": win_streak,
+        "loss_streak": loss_streak,
+        "rest_days_before_injury": round(rest_days, 1),
+        "avg_rest_last_5": round(avg_rest, 1),
+    }
+
+
 def refresh_with_api(artifacts, api_key, dry_run=False):
     """
     Refresh predictions using football-data.org API.
@@ -380,31 +537,73 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
     players = client.get_all_team_squads()
     print(f"   Fetched {len(players)} players from {players['team'].nunique()} teams")
 
-    # Build snapshots with player-scaled workload
+    # Build snapshots with player-scaled workload + team form
     print("\n6. Computing player workloads (team schedule × playing time)...")
     snapshot_date = datetime.now()
     rows = []
 
+    # Cache team-level computations (same for all players on a team)
+    team_workload_cache = {}
+    team_form_cache = {}
+
     players_with_ratio = 0
     for _, player in players.iterrows():
-        # Get team-level workload
-        team_workload = compute_team_workload(matches, player["team"], snapshot_date)
+        team = player["team"]
+
+        # Get team-level workload (cached per team)
+        if team not in team_workload_cache:
+            team_workload_cache[team] = compute_team_workload(matches, team, snapshot_date)
+            team_form_cache[team] = compute_team_form(matches, team, snapshot_date)
+
+        team_workload = team_workload_cache[team]
+        team_form = team_form_cache[team]
 
         # Get player's playing time ratio (0-1), default to 0.5 if unknown
         player_name = player["name"]
-        play_ratio = minutes_lookup.get(player_name, 0.5)
+        play_ratio = minutes_lookup.get(player_name)
+        # Try last name if full name didn't match
+        if play_ratio is None and " " in player_name:
+            last_name = player_name.split()[-1]
+            play_ratio = minutes_lookup.get(last_name)
+        if play_ratio is None:
+            play_ratio = 0.5
 
         # Scale workload metrics by playing time ratio
-        # A player who plays 50% of minutes has ~50% of the team's workload
+        player_acute = team_workload["acute_load"] * play_ratio
+        player_chronic = team_workload["chronic_load"] * play_ratio
+
+        # Compute player-level ACWR with workload variation
+        # ACWR was designed for active players. For bench/youth players who
+        # rarely play, use neutral values to avoid false extremes.
+        team_acwr = team_workload["acwr"]
+        if play_ratio >= 0.15:
+            # Active players: modulate team ACWR by play pattern
+            # High-minute starters have stable ACWR (~team level)
+            # Rotation players (0.3-0.7) have slightly spikier loads
+            if play_ratio >= 0.6:
+                player_acwr = team_acwr  # Starter: matches team schedule
+            else:
+                # Rotation: slight spike factor (max 1.15x at play_ratio=0.4)
+                spike_factor = 1.0 + 0.15 * (1.0 - abs(2 * play_ratio - 0.8))
+                player_acwr = team_acwr * max(1.0, spike_factor)
+        else:
+            # Bench/youth player: neutral ACWR (not enough data for real calc)
+            player_acwr = 0.9
+
+        player_acwr = max(0.5, min(2.5, player_acwr))
+
+        # Player-level fatigue: acute - chronic (positive = overloaded)
+        player_fatigue = player_acute - player_chronic
+
         scaled_workload = {
-            "acute_load": round(team_workload["acute_load"] * play_ratio, 2),
-            "chronic_load": round(team_workload["chronic_load"] * play_ratio, 2),
-            "acwr": team_workload["acwr"],  # Ratio stays the same
-            "monotony": team_workload["monotony"],  # Schedule-based, same for team
+            "acute_load": round(player_acute, 2),
+            "chronic_load": round(player_chronic, 2),
+            "acwr": round(player_acwr, 3),
+            "monotony": team_workload["monotony"],
             "strain": round(team_workload["strain"] * play_ratio, 2),
-            "fatigue_index": round(team_workload["fatigue_index"] * play_ratio, 2),
+            "fatigue_index": round(player_fatigue, 2),
             "workload_slope": team_workload["workload_slope"],
-            "spike_flag": team_workload["spike_flag"],
+            "spike_flag": 1 if player_acwr > 1.5 else 0,
             "matches_last_7": round(team_workload["matches_last_7"] * play_ratio, 1),
             "matches_last_14": round(team_workload["matches_last_14"] * play_ratio, 1),
             "matches_last_30": round(team_workload["matches_last_30"] * play_ratio, 1),
@@ -412,6 +611,10 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
 
         if player_name in minutes_lookup:
             players_with_ratio += 1
+
+        # Pre-set days_since_last_match from real team schedule
+        # (prevents temporal feature engineering from computing 0 via date diff)
+        rest_days = team_form["rest_days_before_injury"]
 
         rows.append({
             "name": player_name,
@@ -422,7 +625,9 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
             "injury_datetime": snapshot_date,
             "snapshot_date": snapshot_date.strftime("%Y-%m-%d"),
             "playing_time_ratio": play_ratio,
+            "days_since_last_match": rest_days,
             **scaled_workload,
+            **team_form,
         })
 
     print(f"   {players_with_ratio}/{len(players)} players matched with playing time data")
@@ -533,21 +738,42 @@ def run_inference(snapshots_df, ensemble, severity_clf, player_history, archetyp
         injury_history = fetch_transfermarkt_injuries(player_names, injury_history)
         print(f"   Total injury records after Transfermarkt: {len(injury_history)}")
 
-    # Merge real injury history
+    # Compute full injury history features from detail pkl (most accurate source)
+    detail_path = os.path.join(PROJECT_ROOT, "models", "player_injuries_detail.pkl")
+    detail_stats = {}
+    if os.path.exists(detail_path):
+        try:
+            detail_df = pd.read_pickle(detail_path)
+            if "severity_days" in detail_df.columns and "name" in detail_df.columns:
+                for name, grp in detail_df.groupby("name"):
+                    detail_stats[name] = {
+                        "worst": grp["severity_days"].max(),
+                        "std": grp["severity_days"].std() if len(grp) > 1 else 0.0,
+                    }
+        except Exception as e:
+            logger.debug(f"Failed to load detail stats: {e}")
+
+    # Merge real injury history (scraped data is the primary source)
     matched_injuries = 0
     for idx, row in df.iterrows():
         player_name = row.get("name", "")
         if player_name in injury_history:
             hist = injury_history[player_name]
-            df.at[idx, "previous_injuries"] = hist["previous_injuries"]
+            count = hist["previous_injuries"]
+            avg_sev = hist.get("avg_severity", 0)
+            total_lost = hist.get("total_days_lost", 0)
+            ds = detail_stats.get(player_name, {})
+            df.at[idx, "previous_injuries"] = count
             df.at[idx, "days_since_last_injury"] = hist["days_since_last_injury"]
+            df.at[idx, "total_days_lost"] = total_lost
+            df.at[idx, "player_injury_count"] = count
+            df.at[idx, "player_avg_severity"] = avg_sev
+            df.at[idx, "player_worst_injury"] = ds.get("worst", avg_sev)
+            df.at[idx, "player_severity_std"] = ds.get("std", 0.0)
+            df.at[idx, "is_injury_prone"] = 1 if count >= 3 else 0
             matched_injuries += 1
 
     print(f"   Matched {matched_injuries}/{len(df)} players with injury history")
-
-    # Merge player history features (player_avg_severity, is_injury_prone, etc.)
-    if player_history is not None and len(player_history) > 0:
-        df = add_player_history_features(df, player_history)
 
     # Set defaults for players without injury history
     if "previous_injuries" not in df.columns:
@@ -606,9 +832,16 @@ def run_inference(snapshots_df, ensemble, severity_clf, player_history, archetyp
         df["xgb_prob"] = base_preds["xgb_prob"]
         df["catboost_prob"] = base_preds["catboost_prob"]
 
-    # Agreement (how many models predict >50% risk)
+    # Keep raw model probabilities — the API uses percentile-based normalization
+    # (normalize_risk_score + get_risk_level) to display relative risk, so arbitrary
+    # post-hoc calibration is unnecessary and can distort the model's rankings.
+    print(f"   Raw probs: mean={df['ensemble_prob'].mean():.1%}, "
+          f"range=[{df['ensemble_prob'].min():.1%}, {df['ensemble_prob'].max():.1%}]")
+
+    # Agreement: how many models agree the player is above-median risk
+    median_prob = df["ensemble_prob"].median()
     model_probs = np.column_stack([df["lgb_prob"], df["xgb_prob"], df["catboost_prob"]])
-    df["agreement"] = (model_probs > 0.5).sum(axis=1)
+    df["agreement"] = (model_probs > median_prob).sum(axis=1)
     df["confidence"] = df["agreement"].map({3: "very-high", 2: "high", 1: "medium", 0: "low"})
 
     # Severity prediction using heuristic for live data
@@ -674,14 +907,14 @@ def main():
     # Load models
     print("\n1. Loading trained models...")
     artifacts = load_artifacts()
-    if artifacts is None:
+    if artifacts is None or "ensemble" not in artifacts:
         print("ERROR: No trained models found. Run the notebook first.")
         sys.exit(1)
 
     ensemble = artifacts["ensemble"]
-    severity_clf = artifacts["severity_clf"]
-    player_history = artifacts["player_history"]
-    archetype_df = artifacts["df_clusters"]
+    severity_clf = artifacts.get("severity_clf")
+    player_history = artifacts.get("player_history", {})
+    archetype_df = artifacts.get("df_clusters")
     print(f"   Loaded models with {len(player_history)} player histories")
 
     # Get player snapshots based on mode

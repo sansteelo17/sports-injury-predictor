@@ -1,7 +1,7 @@
 'use client';
 
 import { TeamOverview as TeamOverviewType } from '@/types/api';
-import { Users, AlertTriangle, AlertCircle, CheckCircle, TrendingUp, TrendingDown } from 'lucide-react';
+import { Users, AlertTriangle, AlertCircle, CheckCircle, TrendingUp, TrendingDown, Calendar } from 'lucide-react';
 
 interface TeamOverviewProps {
   team: TeamOverviewType;
@@ -57,20 +57,25 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
       darkMode ? 'bg-[#141414] border border-[#1f1f1f]' : 'bg-white shadow-lg'
     }`}>
       {/* Header */}
-      <div className={`px-6 py-5 ${
+      <div className={`px-4 sm:px-6 py-4 sm:py-5 ${
         darkMode
           ? 'bg-gradient-to-r from-[#1f1f1f] to-[#141414] border-b border-[#1f1f1f]'
           : 'bg-gradient-to-r from-emerald-600 to-emerald-800 text-white'
       }`}>
-        <h2 className={`text-xl font-bold ${darkMode ? 'text-white' : ''}`}>{team.team}</h2>
-        <p className={`text-sm ${darkMode ? 'text-gray-500' : 'text-emerald-100'}`}>
+        <div className="flex items-center gap-3">
+          {team.team_badge_url && (
+            <img src={team.team_badge_url} alt="" className="w-8 h-8 object-contain" />
+          )}
+          <h2 className={`text-lg sm:text-xl font-bold ${darkMode ? 'text-white' : ''}`}>{team.team}</h2>
+        </div>
+        <p className={`text-xs sm:text-sm ${darkMode ? 'text-gray-500' : 'text-emerald-100'}`}>
           {team.total_players} players analyzed
         </p>
       </div>
 
       {/* Risk Distribution Bar */}
-      <div className={`px-6 py-4 ${darkMode ? 'border-b border-[#1f1f1f]' : 'border-b border-gray-100'}`}>
-        <div className={`text-sm mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+      <div className={`px-4 sm:px-6 py-3 sm:py-4 ${darkMode ? 'border-b border-[#1f1f1f]' : 'border-b border-gray-100'}`}>
+        <div className={`text-xs sm:text-sm mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
           Squad Risk Distribution
         </div>
         <div className="flex h-6 rounded-full overflow-hidden">
@@ -102,7 +107,7 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
       </div>
 
       {/* Stats */}
-      <div className={`grid grid-cols-4 ${darkMode ? 'divide-x divide-[#1f1f1f]' : 'divide-x divide-gray-100'}`}>
+      <div className={`grid grid-cols-2 sm:grid-cols-4 ${darkMode ? 'divide-x divide-[#1f1f1f]' : 'divide-x divide-gray-100'}`}>
         <StatBox
           icon={<Users className={darkMode ? 'text-gray-500' : 'text-gray-400'} size={18} />}
           value={team.total_players}
@@ -133,7 +138,7 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
       </div>
 
       {/* Average Risk */}
-      <div className={`px-6 py-4 flex items-center justify-between ${
+      <div className={`px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between ${
         darkMode ? 'bg-[#0a0a0a]' : 'bg-gray-50'
       }`}>
         <div className={`flex items-center gap-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
@@ -141,12 +146,46 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
           <span className="text-sm">Squad Average Risk</span>
         </div>
         <span className={`text-lg font-bold ${
-          team.avg_risk >= 0.6 ? 'text-red-500' :
-          team.avg_risk >= 0.35 ? 'text-amber-500' : (darkMode ? 'text-[#86efac]' : 'text-emerald-600')
+          team.avg_risk >= 0.45 ? 'text-red-500' :
+          team.avg_risk >= 0.30 ? 'text-amber-500' : (darkMode ? 'text-[#86efac]' : 'text-emerald-600')
         }`}>
           {Math.round(team.avg_risk * 100)}%
         </span>
       </div>
+
+      {/* Next Fixture */}
+      {team.next_fixture && (
+        <div className={`px-4 py-3 flex items-center gap-3 ${
+          darkMode ? 'bg-cyan-500/10 border-t border-cyan-500/20' : 'bg-cyan-50 border-t border-cyan-200'
+        }`}>
+          <Calendar className="text-cyan-400 flex-shrink-0" size={16} />
+          <div className="flex-1 min-w-0">
+            <div className={`text-xs font-medium ${darkMode ? 'text-cyan-300' : 'text-cyan-700'}`}>
+              Next Match
+            </div>
+            <div className={`text-sm font-bold truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              {team.next_fixture.is_home
+                ? `vs ${team.next_fixture.opponent} (H)`
+                : `@ ${team.next_fixture.opponent} (A)`}
+            </div>
+            {team.next_fixture.match_time && (
+              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                {new Date(team.next_fixture.match_time).toLocaleDateString('en-GB', {
+                  weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
+                })}
+              </div>
+            )}
+          </div>
+          {team.next_fixture.win_probability != null && (
+            <div className="text-right flex-shrink-0">
+              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>Win</div>
+              <div className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                {Math.round(team.next_fixture.win_probability * 100)}%
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Market Insight Banner - Negative (key players at risk) */}
       {showNegativeInsight && (
@@ -203,9 +242,9 @@ function StatBox({
   };
 
   return (
-    <div className="px-4 py-4 text-center">
+    <div className="px-3 sm:px-4 py-3 sm:py-4 text-center">
       <div className="flex justify-center mb-1">{icon}</div>
-      <div className={`text-xl font-bold ${
+      <div className={`text-lg sm:text-xl font-bold ${
         highlight ? highlightClasses[highlight] : (darkMode ? 'text-white' : 'text-gray-900')
       }`}>
         {value}

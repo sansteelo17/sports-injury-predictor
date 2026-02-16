@@ -123,12 +123,14 @@ def add_fixture_density_features(df: pd.DataFrame,
     df = df.sort_values([team_column, date_column])
 
     # Days since last match (per team)
-    df["days_since_last_match"] = (
-        df.groupby(team_column)[date_column]
-        .diff()
-        .dt.days
-        .fillna(7)  # Default 7 days for first match
-    )
+    # Skip if already pre-computed (e.g. from real match schedule in API mode)
+    if "days_since_last_match" not in df.columns or df["days_since_last_match"].isna().all():
+        df["days_since_last_match"] = (
+            df.groupby(team_column)[date_column]
+            .diff()
+            .dt.days
+            .fillna(7)  # Default 7 days for first match
+        )
 
     # Fixture density: matches in next 14 days
     # (Requires future knowledge, so only use for training data analysis)

@@ -25,6 +25,8 @@ class FPLClient:
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
         })
         self._bootstrap_cache = None
+        self._team_lookup = None
+        self._position_lookup = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
 
     def _fetch(self, endpoint: str) -> Dict:
         """Fetch data from FPL API."""
@@ -198,6 +200,68 @@ class FPLClient:
             })
 
         return result
+
+
+    def get_players(self) -> List[Dict]:
+        """Get all FPL players with their stats."""
+        data = self.get_bootstrap()
+        return data.get("elements", [])
+
+    def get_team_lookup(self) -> Dict[int, str]:
+        """Get team ID to name mapping."""
+        if self._team_lookup:
+            return self._team_lookup
+        teams = self.get_teams()
+        self._team_lookup = {t["id"]: t["name"] for t in teams}
+        return self._team_lookup
+
+    def get_player_stats(self, player_name: str) -> Optional[Dict]:
+        """Get FPL stats for a player by name."""
+        players = self.get_players()
+        teams = self.get_team_lookup()
+        name_lower = player_name.lower()
+
+        for player in players:
+            web_name = player.get("web_name", "").lower()
+            full_name = f"{player.get('first_name', '')} {player.get('second_name', '')}".lower()
+
+            if name_lower == web_name or name_lower == full_name or name_lower in full_name:
+                return self._format_player_stats(player, teams)
+        return None
+
+    def get_all_player_stats(self) -> List[Dict]:
+        """Get attacking stats for all FPL players."""
+        players = self.get_players()
+        teams = self.get_team_lookup()
+        return [self._format_player_stats(p, teams) for p in players]
+
+    def _format_player_stats(self, player: Dict, teams: Dict[int, str]) -> Dict:
+        """Format a single FPL player's stats."""
+        minutes = player.get("minutes", 0)
+        goals = player.get("goals_scored", 0)
+        assists = player.get("assists", 0)
+        per_90 = minutes / 90 if minutes > 0 else 0
+        goals_per_90 = goals / per_90 if per_90 > 0 else 0
+        assists_per_90 = assists / per_90 if per_90 > 0 else 0
+
+        return {
+            "name": player.get("web_name"),
+            "full_name": f"{player.get('first_name')} {player.get('second_name')}",
+            "team": teams.get(player.get("team"), "Unknown"),
+            "position": self._position_lookup.get(player.get("element_type"), "Unknown"),
+            "goals": goals,
+            "assists": assists,
+            "goals_per_90": round(goals_per_90, 2),
+            "assists_per_90": round(assists_per_90, 2),
+            "expected_goals": float(player.get("expected_goals", 0)),
+            "expected_assists": float(player.get("expected_assists", 0)),
+            "minutes": minutes,
+            "price": player.get("now_cost", 0) / 10,
+            "form": float(player.get("form", 0)),
+            "points_per_game": float(player.get("points_per_game", 0)),
+            "selected_by": float(player.get("selected_by_percent", 0)),
+            "photo_code": player.get("code"),  # For player image URL
+        }
 
 
 def get_fpl_insights() -> Dict:

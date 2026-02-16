@@ -17,7 +17,9 @@ Usage (in app.py):
 """
 
 import os
+import pickle
 import joblib
+import numpy as np
 import pandas as pd
 
 from .logger import get_logger
@@ -25,6 +27,61 @@ from .logger import get_logger
 logger = get_logger(__name__)
 
 DEFAULT_MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "models")
+
+
+def _load_pickle_compat(path):
+    """Load a pickle file with compatibility fixes for StringDtype.
+
+    When a DataFrame is pickled with newer pandas (StringDtype columns),
+    older pandas versions fail to reconstruct the ExtensionArray.
+    This patches the unpickler to convert StringDtype → object on the fly.
+    """
+    import io
+
+    class _CompatUnpickler(pickle.Unpickler):
+        def find_class(self, module, name):
+            # Intercept pandas StringDtype/StringArray reconstruction
+            if "StringDtype" in name or "StringArray" in name:
+                # Return a factory that just returns the raw values as object array
+                return _string_array_compat
+            return super().find_class(module, name)
+
+    with open(path, "rb") as f:
+        return _CompatUnpickler(f).load()
+
+
+def _string_array_compat(*args, **kwargs):
+    """Replacement constructor for StringArray that returns a plain numpy object array."""
+    # StringArray pickle passes (dtype, ndarray) — just return the ndarray
+    for arg in args:
+        if isinstance(arg, np.ndarray):
+            return arg
+    # If called differently, return the first arg
+    return args[0] if args else None
+
+
+def _strip_stringdtype(df):
+    """Convert any StringDtype/extension columns to plain numpy for pickle compatibility.
+
+    Pandas StringDtype stores columns as ExtensionArrays which can fail to
+    unpickle across different pandas versions. We rebuild the DataFrame from
+    plain numpy arrays to eliminate all extension type metadata.
+    """
+    data = {}
+    for col in df.columns:
+        series = df[col]
+        dtype_str = str(series.dtype)
+        if dtype_str in ("str", "string", "String", "string[python]") or "String" in dtype_str:
+            # Convert to plain Python strings in a numpy object array
+            arr = np.empty(len(series), dtype=object)
+            for i, v in enumerate(series):
+                arr[i] = None if (v is pd.NA or v is None or (isinstance(v, float) and np.isnan(v))) else str(v)
+            data[col] = arr
+        else:
+            # Keep other columns as-is but extract numpy array
+            data[col] = series.values
+    # Rebuild from scratch — no leftover ExtensionArray block metadata
+    return pd.DataFrame(data, index=df.index)
 
 # File names for each artifact
 ARTIFACT_FILES = {
@@ -74,7 +131,10 @@ def save_artifacts(
     for name, obj in artifacts.items():
         path = os.path.join(models_dir, ARTIFACT_FILES[name])
         if isinstance(obj, pd.DataFrame):
-            obj.to_pickle(path)
+            # Strip StringDtype to ensure cross-pandas-version compatibility
+            obj = _strip_stringdtype(obj)
+            with open(path, "wb") as f:
+                pickle.dump(obj, f, protocol=4)
         else:
             joblib.dump(obj, path)
         logger.info(f"Saved {name} → {path}")
@@ -112,21 +172,35 @@ def load_artifacts(models_dir=None):
         if not os.path.exists(path):
             missing.append(filename)
 
-    if missing:
-        logger.warning(f"Missing artifact files in {models_dir}: {missing}")
+    # Require at least the ensemble model; inference_df can be regenerated
+    ensemble_file = ARTIFACT_FILES.get("ensemble", "stacking_ensemble.pkl")
+    if ensemble_file in missing:
+        logger.warning(f"Ensemble model not found in {models_dir}")
         return None
+    if missing:
+        logger.warning(f"Some artifact files missing (non-critical): {missing}")
 
-    # Load all artifacts
+    # Load all artifacts (skip failures for non-essential ones)
     artifacts = {}
     for name, filename in ARTIFACT_FILES.items():
         path = os.path.join(models_dir, filename)
-        if filename.endswith(".pkl"):
-            # DataFrames saved with to_pickle, models with joblib
-            try:
-                artifacts[name] = pd.read_pickle(path)
-            except Exception:
-                artifacts[name] = joblib.load(path)
-        logger.info(f"Loaded {name} ← {path}")
+        try:
+            if filename.endswith(".pkl"):
+                try:
+                    artifacts[name] = pd.read_pickle(path)
+                except Exception:
+                    try:
+                        artifacts[name] = joblib.load(path)
+                    except Exception:
+                        # Last resort: raw pickle load with StringDtype workaround.
+                        # Newer pandas saves StringDtype columns as ExtensionArrays
+                        # which fail to unpickle on older pandas. Patch it.
+                        artifacts[name] = _load_pickle_compat(path)
+            logger.info(f"Loaded {name} ← {path}")
+        except Exception as e:
+            logger.warning(f"Failed to load {name}: {e}")
+            if name == "inference_df":
+                logger.warning("inference_df will be regenerated on next refresh")
 
     # Validate inference_df has expected columns
     idf = artifacts.get("inference_df")
@@ -134,12 +208,14 @@ def load_artifacts(models_dir=None):
         required = ["name", "ensemble_prob"]
         missing_cols = [c for c in required if c not in idf.columns]
         if missing_cols:
-            logger.error(f"inference_df missing required columns: {missing_cols}")
-            return None
-        logger.info(
-            f"Loaded inference_df: {idf.shape[0]} rows, "
-            f"{idf['name'].nunique()} unique players"
-        )
+            logger.warning(f"inference_df missing required columns: {missing_cols}")
+            logger.warning("inference_df will be regenerated on next refresh")
+            artifacts["inference_df"] = None
+        else:
+            logger.info(
+                f"Loaded inference_df: {idf.shape[0]} rows, "
+                f"{idf['name'].nunique()} unique players"
+            )
 
     logger.info("All artifacts loaded successfully")
     return artifacts

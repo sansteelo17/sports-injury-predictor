@@ -10,10 +10,15 @@
   --brand-green: 134, 239, 172;
 }
 
+html, body {
+  overflow-x: hidden;
+}
+
 body {
   color: rgb(var(--foreground));
   background: rgb(var(--background));
   min-height: 100vh;
+  -webkit-text-size-adjust: 100%;
 }
 
 /* Dark theme by default */

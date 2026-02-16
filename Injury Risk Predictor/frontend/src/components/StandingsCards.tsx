@@ -1,41 +1,64 @@
 'use client';
 
+import { useState } from 'react';
 import { StandingsSummary } from '@/types/api';
 import { Trophy, Medal, MapPin, AlertTriangle } from 'lucide-react';
 
 interface StandingsCardsProps {
   standings: StandingsSummary;
   darkMode?: boolean;
+  teamBadges?: Record<string, string>;
 }
 
-export function StandingsCards({ standings, darkMode = true }: StandingsCardsProps) {
+function SmallBadge({ name, badges }: { name: string; badges?: Record<string, string> }) {
+  const [errored, setErrored] = useState(false);
+  const url = badges?.[name];
+
+  if (!url || errored) return null;
+
   return (
-    <div className="grid grid-cols-3 gap-3">
+    <img
+      src={url}
+      alt=""
+      width={16}
+      height={16}
+      className="flex-shrink-0 object-contain"
+      onError={() => setErrored(true)}
+    />
+  );
+}
+
+export function StandingsCards({ standings, darkMode = true, teamBadges }: StandingsCardsProps) {
+  return (
+    <div className="grid grid-cols-3 gap-2 sm:gap-3">
       {/* League Leaders */}
-      <div className={`rounded-xl p-3 ${
+      <div className={`rounded-xl p-2.5 sm:p-3 ${
         darkMode ? 'bg-[#141414] border border-[#1f1f1f]' : 'bg-white shadow-sm border border-gray-100'
       }`}>
-        <div className="flex items-center gap-2 mb-2">
-          <Trophy className="text-amber-500" size={16} />
+        <div className="flex items-center gap-1.5 mb-2">
+          <Trophy className="text-amber-500 flex-shrink-0" size={14} />
           <span className={`text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
             Leaders
           </span>
         </div>
-        <div className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-          {standings.leader.short_name}
+        <div className="flex items-center gap-1.5">
+          <SmallBadge name={standings.leader.name} badges={teamBadges} />
+          <span className={`text-sm font-bold truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+            {standings.leader.short_name}
+          </span>
         </div>
-        <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+        <div className={`text-xs mt-0.5 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
           {standings.leader.points} pts ({standings.leader.played} played)
         </div>
       </div>
 
       {/* Selected Team Position */}
       {standings.selected_team ? (
-        <div className={`rounded-xl p-3 ${
+        <div className={`rounded-xl p-2.5 sm:p-3 ${
           darkMode ? 'bg-[#141414] border border-[#1f1f1f]' : 'bg-white shadow-sm border border-gray-100'
         }`}>
-          <div className="flex items-center gap-2 mb-2">
-            <MapPin className={darkMode ? 'text-[#86efac]' : 'text-emerald-600'} size={16} />
+          <div className="flex items-center gap-1.5 mb-2">
+            <MapPin className={`flex-shrink-0 ${darkMode ? 'text-[#86efac]' : 'text-emerald-600'}`} size={14} />
             <span className={`text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
               Position
             </span>
@@ -43,7 +66,7 @@ export function StandingsCards({ standings, darkMode = true }: StandingsCardsPro
           <div className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
             {standings.selected_team.position}{getOrdinalSuffix(standings.selected_team.position || 0)}
           </div>
-          <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+          <div className={`text-xs mt-0.5 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
             {standings.selected_team.points} pts
             {standings.selected_team.distance_from_top !== undefined && standings.selected_team.distance_from_top > 0 && (
               <span className="text-amber-500"> (-{standings.selected_team.distance_from_top})</span>
@@ -51,38 +74,40 @@ export function StandingsCards({ standings, darkMode = true }: StandingsCardsPro
           </div>
         </div>
       ) : (
-        <div className={`rounded-xl p-3 ${
+        <div className={`rounded-xl p-2.5 sm:p-3 ${
           darkMode ? 'bg-[#141414] border border-[#1f1f1f]' : 'bg-white shadow-sm border border-gray-100'
         }`}>
-          <div className="flex items-center gap-2 mb-2">
-            <Medal className="text-gray-400" size={16} />
+          <div className="flex items-center gap-1.5 mb-2">
+            <Medal className="text-gray-400 flex-shrink-0" size={14} />
             <span className={`text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
               2nd Place
             </span>
           </div>
-          <div className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-            {standings.second.short_name}
+          <div className="flex items-center gap-1.5">
+            <SmallBadge name={standings.second.name} badges={teamBadges} />
+            <span className={`text-sm font-bold truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              {standings.second.short_name}
+            </span>
           </div>
-          <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+          <div className={`text-xs mt-0.5 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
             {standings.second.points} pts
           </div>
         </div>
       )}
 
-      {/* Context card: Title Race (1-4), From Leaders (5-17), or Relegation (18-20) */}
-      <div className={`rounded-xl p-3 ${
+      {/* Context card */}
+      <div className={`rounded-xl p-2.5 sm:p-3 ${
         darkMode ? 'bg-[#141414] border border-[#1f1f1f]' : 'bg-white shadow-sm border border-gray-100'
       }`}>
         {(() => {
           const position = standings.selected_team?.position || 0;
 
-          // Relegation zone (18-20)
           if (position >= 18) {
             const distanceFromSafety = standings.selected_team?.distance_from_safety || 0;
             return (
               <>
-                <div className="flex items-center gap-2 mb-2">
-                  <AlertTriangle className="text-red-500" size={16} />
+                <div className="flex items-center gap-1.5 mb-2">
+                  <AlertTriangle className="text-red-500 flex-shrink-0" size={14} />
                   <span className={`text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                     Relegation
                   </span>
@@ -90,19 +115,18 @@ export function StandingsCards({ standings, darkMode = true }: StandingsCardsPro
                 <div className={`text-sm font-bold ${distanceFromSafety > 3 ? 'text-red-500' : 'text-amber-500'}`}>
                   {distanceFromSafety === 0 ? 'On the line!' : `${distanceFromSafety} pts`}
                 </div>
-                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                <div className={`text-xs mt-0.5 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                   from safety
                 </div>
               </>
             );
           }
 
-          // Mid-table (5-17): show distance from leaders
           if (position > 4) {
             return (
               <>
-                <div className="flex items-center gap-2 mb-2">
-                  <Trophy className="text-amber-500" size={16} />
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Trophy className="text-amber-500 flex-shrink-0" size={14} />
                   <span className={`text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                     From Leaders
                   </span>
@@ -110,18 +134,17 @@ export function StandingsCards({ standings, darkMode = true }: StandingsCardsPro
                 <div className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                   {standings.selected_team?.distance_from_top || 0} pts
                 </div>
-                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                <div className={`text-xs mt-0.5 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                   behind {standings.leader.short_name}
                 </div>
               </>
             );
           }
 
-          // Top 4: show title race gap
           return (
             <>
-              <div className="flex items-center gap-2 mb-2">
-                <Medal className="text-gray-400" size={16} />
+              <div className="flex items-center gap-1.5 mb-2">
+                <Medal className="text-gray-400 flex-shrink-0" size={14} />
                 <span className={`text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                   Title Race
                 </span>
@@ -135,7 +158,7 @@ export function StandingsCards({ standings, darkMode = true }: StandingsCardsPro
               }`}>
                 {standings.gap_to_second === 0 ? 'Level!' : `${standings.gap_to_second} pts`}
               </div>
-              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+              <div className={`text-xs mt-0.5 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                 gap to 2nd
               </div>
             </>

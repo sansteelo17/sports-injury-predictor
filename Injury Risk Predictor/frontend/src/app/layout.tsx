@@ -1,8 +1,14 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+};
+
 export const metadata: Metadata = {
-  title: 'EPL Injury Risk Predictor',
+  title: 'YaraSports - Injury Risk Predictor',
   description: 'ML-powered injury risk predictions for Premier League players',
 };
 

@@ -7,6 +7,7 @@ import {
   getPlayerRisk,
   getFPLInsights,
   getStandingsSummary,
+  getTeamBadges,
 } from "@/lib/api";
 import {
   TeamOverview as TeamOverviewType,
@@ -18,9 +19,10 @@ import { TeamSelector } from "@/components/TeamSelector";
 import { TeamOverview } from "@/components/TeamOverview";
 import { PlayerList } from "@/components/PlayerList";
 import { PlayerCard } from "@/components/PlayerCard";
+import { LabNotes } from "@/components/LabNotes";
 import { FPLInsights } from "@/components/FPLInsights";
 import { StandingsCards } from "@/components/StandingsCards";
-import { Activity, Shield, Info, Moon, Sun, Zap } from "lucide-react";
+import { Activity, Shield, Info, Moon, Sun, Zap, Microscope } from "lucide-react";
 
 export default function Home() {
   const [teams, setTeams] = useState<string[]>([]);
@@ -32,19 +34,25 @@ export default function Home() {
   const [playerRisk, setPlayerRisk] = useState<PlayerRisk | null>(null);
   const [fplInsights, setFplInsights] = useState<FPLInsightsType | null>(null);
   const [standings, setStandings] = useState<StandingsSummary | null>(null);
+  const [teamBadges, setTeamBadges] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [darkMode, setDarkMode] = useState(true);
+  const [view, setView] = useState<'overview' | 'lab'>('overview');
 
-  // Load teams and FPL data on mount
+  // Load teams, FPL data, and badges on mount
   useEffect(() => {
     getTeams()
       .then(setTeams)
-      .catch((err) => setError("Failed to load teams. Is the API running?"));
+      .catch(() => setError("Failed to load teams. Is the API running?"));
 
     getFPLInsights()
       .then(setFplInsights)
-      .catch((err) => console.log("FPL insights unavailable"));
+      .catch(() => console.log("FPL insights unavailable"));
+
+    getTeamBadges()
+      .then(setTeamBadges)
+      .catch(() => console.log("Team badges unavailable"));
   }, []);
 
   // Load team overview when team selected
@@ -59,7 +67,6 @@ export default function Home() {
     setLoading(true);
     setError(null);
 
-    // Fetch team overview and standings in parallel
     Promise.all([
       getTeamOverview(selectedTeam),
       getStandingsSummary(selectedTeam).catch(() => null),
@@ -70,7 +77,7 @@ export default function Home() {
         setSelectedPlayer(null);
         setPlayerRisk(null);
       })
-      .catch((err) => setError("Failed to load team data"))
+      .catch(() => setError("Failed to load team data"))
       .finally(() => setLoading(false));
   }, [selectedTeam]);
 
@@ -82,9 +89,10 @@ export default function Home() {
     }
 
     setLoading(true);
+    setView('overview');
     getPlayerRisk(selectedPlayer)
       .then(setPlayerRisk)
-      .catch((err) => setError("Failed to load player data"))
+      .catch(() => setError("Failed to load player data"))
       .finally(() => setLoading(false));
   }, [selectedPlayer]);
 
@@ -99,22 +107,22 @@ export default function Home() {
     <div className={`min-h-screen ${bgClass} ${textClass}`}>
       {/* Header */}
       <header
-        className={`${darkMode ? "bg-[#141414] border-b border-[#1f1f1f]" : "bg-white border-b border-gray-200"} py-4 px-4`}
+        className={`${darkMode ? "bg-[#141414] border-b border-[#1f1f1f]" : "bg-white border-b border-gray-200"} py-3 sm:py-4 px-3 sm:px-4`}
       >
         <div className="max-w-6xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
             <div className="relative">
               <Activity
-                size={32}
+                size={28}
                 className={darkMode ? "text-[#86efac]" : "text-emerald-600"}
               />
               <Zap
-                size={14}
+                size={12}
                 className={`absolute -top-1 -right-1 ${darkMode ? "text-[#86efac]" : "text-emerald-600"}`}
               />
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight">
+              <h1 className="text-lg sm:text-xl font-bold tracking-tight">
                 Yara
                 <span
                   className={darkMode ? "text-[#86efac]" : "text-emerald-600"}
@@ -122,13 +130,12 @@ export default function Home() {
                   Sports
                 </span>
               </h1>
-              <p className={`text-xs ${mutedClass}`}>
+              <p className={`text-xs hidden sm:block ${mutedClass}`}>
                 Risk-aware match intelligence for fans and analysts.
               </p>
             </div>
           </div>
 
-          {/* Dark mode toggle */}
           <button
             onClick={() => setDarkMode(!darkMode)}
             className={`p-2 rounded-lg transition-colors ${
@@ -138,42 +145,47 @@ export default function Home() {
             }`}
           >
             {darkMode ? (
-              <Sun size={20} className="text-[#86efac]" />
+              <Sun size={18} className="text-[#86efac]" />
             ) : (
-              <Moon size={20} />
+              <Moon size={18} />
             )}
           </button>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="max-w-6xl mx-auto px-4 py-8">
+      <main className="max-w-6xl mx-auto px-3 sm:px-4 py-4 sm:py-8">
         {/* League Notice */}
         <div
-          className={`${darkMode ? "bg-[#86efac]/10 border-[#86efac]/30" : "bg-emerald-50 border-emerald-200"} border rounded-xl p-4 mb-6`}
+          className={`${darkMode ? "bg-[#86efac]/10 border-[#86efac]/30" : "bg-emerald-50 border-emerald-200"} border rounded-xl p-3 sm:p-4 mb-4 sm:mb-6`}
         >
-          <div className="flex items-start gap-3">
+          <div className="flex items-start gap-2 sm:gap-3">
             <Info
-              className={darkMode ? "text-[#86efac]" : "text-emerald-600"}
-              size={18}
+              className={`flex-shrink-0 ${darkMode ? "text-[#86efac]" : "text-emerald-600"}`}
+              size={16}
             />
             <div
-              className={`text-sm ${darkMode ? "text-gray-300" : "text-gray-700"}`}
+              className={`text-xs sm:text-sm ${darkMode ? "text-gray-300" : "text-gray-700"}`}
             >
               <strong
                 className={darkMode ? "text-[#86efac]" : "text-emerald-600"}
               >
                 Currently covering Premier League.
               </strong>{" "}
-              More leagues coming soon. Our ML model analyzes injury history,
-              recovery patterns, and severity to predict injury risk over the
-              next 2 weeks.
+              <span className="hidden sm:inline">
+                More leagues coming soon. Our ML model analyzes injury history,
+                recovery patterns, and severity to predict injury risk over the
+                next 2 weeks.
+              </span>
+              <span className="sm:hidden">
+                ML-powered injury risk predictions.
+              </span>
             </div>
           </div>
         </div>
 
         {/* Team Selector */}
-        <div className="mb-6">
+        <div className="mb-4 sm:mb-6">
           <label className={`block text-sm font-medium mb-2 ${mutedClass}`}>
             Select Team
           </label>
@@ -182,19 +194,20 @@ export default function Home() {
             selectedTeam={selectedTeam}
             onSelectTeam={setSelectedTeam}
             darkMode={darkMode}
+            teamBadges={teamBadges}
           />
         </div>
 
         {/* Error State */}
         {error && (
-          <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 mb-6 text-red-400">
+          <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 sm:p-4 mb-4 sm:mb-6 text-red-400 text-sm">
             {error}
           </div>
         )}
 
         {/* Loading State */}
         {loading && (
-          <div className="flex items-center justify-center py-12">
+          <div className="flex items-center justify-center py-8 sm:py-12">
             <div
               className={`animate-spin rounded-full h-8 w-8 border-b-2 ${darkMode ? "border-[#86efac]" : "border-emerald-600"}`}
             ></div>
@@ -203,14 +216,13 @@ export default function Home() {
 
         {/* Content Grid */}
         {teamOverview && !loading && (
-          <div className="grid lg:grid-cols-3 gap-6">
+          <div className="grid lg:grid-cols-3 gap-4 sm:gap-6">
             {/* Left Column - Team Overview & Player List */}
-            <div className="lg:col-span-1 space-y-6">
+            <div className={`lg:col-span-1 space-y-4 sm:space-y-6 ${playerRisk ? 'order-2 lg:order-1' : ''}`}>
               <TeamOverview team={teamOverview} darkMode={darkMode} />
 
-              {/* Standings Cards */}
               {standings && (
-                <StandingsCards standings={standings} darkMode={darkMode} />
+                <StandingsCards standings={standings} darkMode={darkMode} teamBadges={teamBadges} />
               )}
 
               {fplInsights && (
@@ -221,17 +233,17 @@ export default function Home() {
                 />
               )}
 
-              <div className={`${cardClass} border rounded-xl p-4`}>
+              <div className={`${cardClass} border rounded-xl p-3 sm:p-4`}>
                 <h3
-                  className={`font-semibold mb-3 flex items-center gap-2 ${textClass}`}
+                  className={`font-semibold mb-3 flex items-center gap-2 text-sm sm:text-base ${textClass}`}
                 >
                   <Shield
-                    size={18}
+                    size={16}
                     className={darkMode ? "text-[#86efac]" : "text-emerald-600"}
                   />
                   Squad
                 </h3>
-                <div className="max-h-96 overflow-y-auto">
+                <div className="max-h-[50vh] sm:max-h-96 overflow-y-auto">
                   <PlayerList
                     players={teamOverview.players}
                     onSelectPlayer={setSelectedPlayer}
@@ -242,13 +254,46 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Right Column - Player Card */}
-            <div className="lg:col-span-2">
+            {/* Right Column - Player Card / Lab Notes */}
+            <div className={`lg:col-span-2 ${playerRisk ? 'order-1 lg:order-2' : ''}`}>
               {playerRisk ? (
-                <PlayerCard player={playerRisk} darkMode={darkMode} />
+                <div className="space-y-4">
+                  {/* View Toggle */}
+                  <div className={`flex gap-1 p-1 rounded-xl ${darkMode ? 'bg-[#141414] border border-[#1f1f1f]' : 'bg-gray-100'}`}>
+                    <button
+                      onClick={() => setView('overview')}
+                      className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        view === 'overview'
+                          ? darkMode ? 'bg-[#1f1f1f] text-white' : 'bg-white text-gray-900 shadow-sm'
+                          : darkMode ? 'text-gray-500 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700'
+                      }`}
+                    >
+                      <Shield size={14} />
+                      Overview
+                    </button>
+                    <button
+                      onClick={() => setView('lab')}
+                      className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        view === 'lab'
+                          ? darkMode ? 'bg-[#1f1f1f] text-white' : 'bg-white text-gray-900 shadow-sm'
+                          : darkMode ? 'text-gray-500 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700'
+                      }`}
+                    >
+                      <Microscope size={14} />
+                      Yara&apos;s Lab Notes
+                    </button>
+                  </div>
+
+                  {/* Content */}
+                  {view === 'overview' ? (
+                    <PlayerCard player={playerRisk} darkMode={darkMode} />
+                  ) : (
+                    <LabNotes player={playerRisk} darkMode={darkMode} />
+                  )}
+                </div>
               ) : (
                 <div
-                  className={`${cardClass} border rounded-2xl p-12 text-center`}
+                  className={`${cardClass} border rounded-2xl p-8 sm:p-12 text-center`}
                 >
                   <Shield
                     size={48}
@@ -257,7 +302,7 @@ export default function Home() {
                   <h3 className={`text-lg font-medium mb-2 ${textClass}`}>
                     Select a Player
                   </h3>
-                  <p className={mutedClass}>
+                  <p className={`text-sm ${mutedClass}`}>
                     Click on any player to view their injury risk analysis
                   </p>
                 </div>
@@ -268,21 +313,21 @@ export default function Home() {
 
         {/* Empty State */}
         {!selectedTeam && !loading && (
-          <div className="text-center py-16">
-            <div className="relative inline-block mb-6">
+          <div className="text-center py-10 sm:py-16">
+            <div className="relative inline-block mb-4 sm:mb-6">
               <Activity
-                size={64}
+                size={48}
                 className={darkMode ? "text-[#1f1f1f]" : "text-gray-200"}
               />
               <Zap
-                size={24}
+                size={20}
                 className={`absolute -top-2 -right-2 animate-pulse ${darkMode ? "text-[#86efac]" : "text-emerald-600"}`}
               />
             </div>
-            <h2 className={`text-xl font-semibold mb-2 ${textClass}`}>
+            <h2 className={`text-lg sm:text-xl font-semibold mb-2 ${textClass}`}>
               Welcome to YaraSports
             </h2>
-            <p className={`max-w-md mx-auto ${mutedClass}`}>
+            <p className={`text-sm max-w-md mx-auto ${mutedClass}`}>
               Select a Premier League team to view squad injury risk analysis
               and player predictions.
             </p>
@@ -292,11 +337,11 @@ export default function Home() {
 
       {/* Footer */}
       <footer
-        className={`${darkMode ? "bg-[#141414] border-t border-[#1f1f1f]" : "bg-gray-100 border-t border-gray-200"} py-6 mt-12`}
+        className={`${darkMode ? "bg-[#141414] border-t border-[#1f1f1f]" : "bg-gray-100 border-t border-gray-200"} py-4 sm:py-6 mt-8 sm:mt-12`}
       >
-        <div className="max-w-6xl mx-auto px-4 text-center">
+        <div className="max-w-6xl mx-auto px-3 sm:px-4 text-center">
           <p
-            className={`text-sm ${darkMode ? "text-gray-600" : "text-gray-500"}`}
+            className={`text-xs sm:text-sm ${darkMode ? "text-gray-600" : "text-gray-500"}`}
           >
             Predictions estimate injury probability over the next 2 weeks.
             Powered by ensemble ML models. For educational purposes only.

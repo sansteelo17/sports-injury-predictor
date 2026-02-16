@@ -54,3 +54,7 @@ export async function getStandingsSummary(team?: string): Promise<StandingsSumma
   const query = team ? `?team=${encodeURIComponent(team)}` : '';
   return fetchAPI<StandingsSummary>(`/standings/summary${query}`);
 }
+
+export async function getTeamBadges(): Promise<Record<string, string>> {
+  return fetchAPI<Record<string, string>>('/teams/badges');
+}

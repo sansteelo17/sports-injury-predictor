@@ -53,26 +53,51 @@ def normalize_position(pos: str) -> str:
     if "," in pos:
         pos = pos.split(",")[0].strip()
 
-    # Common mappings
+    # Common mappings (including football-data.org API position names)
     mappings = {
         "FORWARD": "FW",
         "STRIKER": "ST",
         "WINGER": "LW",
         "MIDFIELDER": "MF",
         "ATTACKING MIDFIELDER": "CAM",
+        "ATTACKING MIDFIELD": "CAM",
         "DEFENSIVE MIDFIELDER": "CDM",
+        "DEFENSIVE MIDFIELD": "CDM",
         "CENTRAL MIDFIELDER": "CM",
+        "CENTRAL MIDFIELD": "CM",
         "DEFENDER": "DF",
         "CENTER BACK": "CB",
         "CENTRE BACK": "CB",
+        "CENTRE-BACK": "CB",
         "LEFT BACK": "LB",
+        "LEFT-BACK": "LB",
         "RIGHT BACK": "RB",
+        "RIGHT-BACK": "RB",
         "FULL BACK": "RB",
         "GOALKEEPER": "GK",
         "KEEPER": "GK",
+        # football-data.org API names
+        "OFFENCE": "FW",
+        "DEFENCE": "DF",
+        "MIDFIELD": "MF",
+        "CENTRE-FORWARD": "CF",
+        "CENTRE FORWARD": "CF",
+        "RIGHT WINGER": "RW",
+        "LEFT WINGER": "LW",
+        "RIGHT MIDFIELD": "RM",
+        "LEFT MIDFIELD": "LM",
     }
 
-    return mappings.get(pos, pos if pos in POSITION_INJURY_RISK else "MF")
+    # Also try with hyphens replaced by spaces
+    result = mappings.get(pos)
+    if result:
+        return result
+    pos_nohyphen = pos.replace("-", " ")
+    result = mappings.get(pos_nohyphen)
+    if result:
+        return result
+
+    return pos if pos in POSITION_INJURY_RISK else "MF"
 
 
 def add_position_risk_features(df: pd.DataFrame,

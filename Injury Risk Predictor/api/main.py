@@ -27,9 +27,18 @@ from src.inference.story_generator import (
     generate_player_story,
     generate_risk_factors_list,
     get_recommendation_text,
+    get_fpl_insight,
+    calculate_scoring_odds,
+    get_fpl_value_assessment,
+    calculate_clean_sheet_odds,
+    generate_yara_response,
+    generate_lab_notes,
 )
 from src.data_loaders.fpl_api import FPLClient, get_fpl_insights
 from src.data_loaders.football_data_api import FootballDataClient, get_standings_summary
+from src.data_loaders.odds_api import OddsClient, get_clean_sheet_insight
+# Archetype clustering imports are done lazily inside assign_hybrid_archetypes()
+# to avoid importing all of src.models (which pulls in lightgbm, xgboost, etc.)
 
 app = FastAPI(
     title="EPL Injury Risk Predictor API",
@@ -52,20 +61,376 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# FPL team names -> display names mapping
+FPL_TEAM_DISPLAY_NAMES = {
+    "Man Utd": "Man United",
+    "Spurs": "Tottenham",
+    "Wolves": "Wolverhampton",
+    "Brighton": "Brighton Hove",
+    "Nott'm Forest": "Nottingham",
+    "Leeds": "Leeds United",
+}
+
+
+def _fpl_team_to_df_team(fpl_team: str) -> str:
+    """Convert FPL team name to our display name."""
+    return FPL_TEAM_DISPLAY_NAMES.get(fpl_team, fpl_team)
+
+
 # Load models at startup
 artifacts = None
 inference_df = None
+fpl_stats_cache = {}  # FPL stats indexed by name
+fpl_team_ids = {}  # Team name -> FPL team ID (for badges)
+fpl_player_codes = {}  # Player name -> FPL code (for photos)
+fpl_players_by_team = {}  # Team name -> set of FPL player names (for filtering)
+odds_client = None
 
 
 @app.on_event("startup")
 async def load_models():
-    global artifacts, inference_df
+    global artifacts, inference_df, fpl_stats_cache, fpl_team_ids, fpl_player_codes, fpl_players_by_team, odds_client
     artifacts = load_artifacts()
     if artifacts and "inference_df" in artifacts:
         inference_df = artifacts["inference_df"]
         print(f"Loaded {len(inference_df)} player predictions")
     else:
         print("WARNING: No trained models found. API will return errors.")
+
+    # Load FPL stats
+    try:
+        client = FPLClient()
+        all_stats = client.get_all_player_stats()
+        # Index by multiple keys for matching
+        for p in all_stats:
+            name_lower = p["name"].lower()
+            full_lower = p["full_name"].lower()
+            fpl_stats_cache[name_lower] = p
+            fpl_stats_cache[full_lower] = p
+            # Index by last name
+            last_name = p["full_name"].split()[-1].lower() if p["full_name"] else ""
+            if last_name and len(last_name) >= 4:
+                fpl_stats_cache[last_name] = p
+            # Index by first + last (skipping middle names)
+            parts = p["full_name"].split()
+            if len(parts) >= 2:
+                first_last = f"{parts[0]} {parts[-1]}".lower()
+                fpl_stats_cache[first_last] = p
+            # Store photo codes
+            if p.get("photo_code"):
+                fpl_player_codes[name_lower] = p["photo_code"]
+                fpl_player_codes[full_lower] = p["photo_code"]
+                if last_name and len(last_name) >= 4:
+                    fpl_player_codes[last_name] = p["photo_code"]
+            # Build per-team player sets for filtering
+            team_name = p.get("team", "")
+            if team_name:
+                if team_name not in fpl_players_by_team:
+                    fpl_players_by_team[team_name] = set()
+                fpl_players_by_team[team_name].add(name_lower)
+                fpl_players_by_team[team_name].add(full_lower)
+                if last_name and len(last_name) >= 4:
+                    fpl_players_by_team[team_name].add(last_name)
+
+        # Build team ID lookup for badges — use "code" not "id"!
+        # FPL "id" is sequential 1-20 (alphabetical, changes each season).
+        # FPL "code" is the historical club identifier used by the PL CDN for badges.
+        # e.g. Arsenal: id=1 but code=3 → badge URL must be t3@x2.png, not t1.
+        teams = client.get_teams()
+        for t in teams:
+            fpl_team_ids[t["name"].lower()] = t["code"]
+        print(f"Loaded FPL stats for {len(all_stats)} players, {len(teams)} teams")
+    except Exception as e:
+        print(f"WARNING: Failed to load FPL stats: {e}")
+
+    # Initialize odds client
+    odds_client = OddsClient()
+    matches = odds_client.get_upcoming_matches()
+    print(f"Loaded odds for {len(matches)} upcoming matches")
+
+    # Filter inference_df: validate against FPL and correct team assignments.
+    # FPL updates weekly (gameweek-level) so it reflects January transfers etc.
+    # football-data.org squads can be stale.
+    if inference_df is not None and fpl_stats_cache:
+        pre_count = len(inference_df)
+        valid_rows = []
+        for idx, row in inference_df.iterrows():
+            fpl = get_fpl_stats_for_player(row["name"], team_hint=row.get("team", ""))
+            if fpl:
+                valid_rows.append(idx)
+                # Use FPL team assignment — it's updated weekly and reflects transfers
+                fpl_team = fpl.get("team", "")
+                if fpl_team:
+                    inference_df.at[idx, "team"] = fpl_team
+                    inference_df.at[idx, "player_team"] = fpl_team
+        inference_df = inference_df.loc[valid_rows].copy()
+        # Deduplicate: keep highest-risk entry per name+team
+        inference_df = inference_df.sort_values("ensemble_prob", ascending=False)
+        inference_df = inference_df.drop_duplicates(subset=["name", "team"], keep="first")
+        print(f"Filtered players: {pre_count} -> {len(inference_df)} (matched to FPL squads)")
+
+    # Enrich inference_df with scraped injury history from player_history.pkl
+    if inference_df is not None:
+        try:
+            import pandas as pd
+            history_path = os.path.join(PROJECT_ROOT, "models", "player_history.pkl")
+            if os.path.exists(history_path):
+                ph = pd.read_pickle(history_path)
+                # Merge enriched injury columns into inference_df
+                merge_cols = ["name"]
+                enrich_cols = ["total_days_lost", "days_since_last_injury", "last_injury_date"]
+                available = [c for c in enrich_cols if c in ph.columns]
+                if available:
+                    ph_subset = ph[["name"] + available].drop_duplicates(subset=["name"], keep="last")
+                    # Also update player_injury_count and player_avg_severity from fresh scrape
+                    for col in ["player_injury_count", "player_avg_severity", "player_worst_injury", "is_injury_prone"]:
+                        if col in ph.columns:
+                            available.append(col)
+                    ph_subset = ph[["name"] + available].drop_duplicates(subset=["name"], keep="last")
+
+                    pre_cols = set(inference_df.columns)
+                    # Drop old columns that will be replaced
+                    for col in available:
+                        if col in inference_df.columns:
+                            inference_df = inference_df.drop(columns=[col])
+                    inference_df = inference_df.merge(ph_subset, on="name", how="left")
+                    # Fill NaN for players not in history
+                    inference_df["player_injury_count"] = inference_df["player_injury_count"].fillna(0)
+                    inference_df["player_avg_severity"] = inference_df["player_avg_severity"].fillna(0)
+                    inference_df["player_worst_injury"] = inference_df["player_worst_injury"].fillna(0)
+                    inference_df["is_injury_prone"] = inference_df["is_injury_prone"].fillna(0)
+                    inference_df["total_days_lost"] = inference_df["total_days_lost"].fillna(0)
+                    inference_df["days_since_last_injury"] = inference_df["days_since_last_injury"].fillna(365)
+                    has_data = (inference_df["player_injury_count"] > 0).sum()
+                    print(f"Enriched injury history: {has_data}/{len(inference_df)} players have injury records")
+        except Exception as e:
+            print(f"WARNING: Failed to enrich injury history: {e}")
+
+    # Re-assign archetypes: KMeans for players with per-injury detail, rule-based fallback
+    if inference_df is not None:
+        inference_df = assign_hybrid_archetypes(inference_df)
+        archetype_counts = inference_df["archetype"].value_counts().to_dict()
+        print(f"Hybrid archetypes: {archetype_counts}")
+
+
+def assign_rule_based_archetypes(df):
+    """Assign archetypes using rule-based logic from scraped injury summary stats.
+
+    Order matters — first match wins. Designed to address:
+    - Players with injuries incorrectly showing as "Clean Record"
+    - Players with 2 injuries + high severity but >1yr gap misclassified as "Injury Prone"
+    """
+    import math
+
+    def _safe_int(val, default=0):
+        try:
+            if val is None or (isinstance(val, float) and math.isnan(val)):
+                return default
+            return int(val)
+        except (ValueError, TypeError):
+            return default
+
+    def _safe_float(val, default=0.0):
+        try:
+            if val is None or (isinstance(val, float) and math.isnan(val)):
+                return default
+            return float(val)
+        except (ValueError, TypeError):
+            return default
+
+    def _classify(row):
+        count = _safe_int(row.get("player_injury_count", 0))
+        avg_sev = _safe_float(row.get("player_avg_severity", 0))
+        worst = _safe_float(row.get("player_worst_injury", 0))
+        days_since = _safe_float(row.get("days_since_last_injury", 9999), 9999)
+
+        if count == 0:
+            return "Clean Record"
+        # Fragile: serious injuries (high severity + at least a pattern)
+        if count >= 3 and avg_sev >= 40 and worst >= 60:
+            return "Fragile"
+        # Injury Prone: many injuries AND they're not just minor knocks
+        if count >= 5 and avg_sev >= 20:
+            return "Injury Prone"
+        # Recurring Issues: frequent recent injuries
+        if count >= 3 and days_since < 180:
+            return "Recurring Issues"
+        # Durable: few injuries, long time since last
+        if count <= 2 and days_since > 365:
+            return "Durable"
+        # Durable: many minor knocks (avg < 20 days) with no recent issues
+        if avg_sev < 20 and days_since > 180:
+            return "Durable"
+        return "Moderate Risk"
+
+    df["archetype"] = df.apply(_classify, axis=1)
+    return df
+
+
+def assign_hybrid_archetypes(df):
+    """Hybrid archetype assignment: HDBSCAN primary, KMeans fallback, rule-based last resort.
+
+    1. Build archetype features from player_injuries_detail.pkl (per-injury records)
+    2. HDBSCAN to find dense clusters — labels noise as -1
+    3. KMeans on noise points to assign them to nearest cluster
+    4. Label clusters by inspecting centroids (avg_severity, total_injuries, etc.)
+    5. Rule-based fallback for players not in detail pkl (no per-injury data)
+    """
+    import os
+    import pandas as pd
+    import hdbscan
+    from sklearn.cluster import KMeans
+    from sklearn.preprocessing import StandardScaler
+    from src.feature_engineering.archetype import build_player_archetype_features
+
+    detail_path = os.path.join(os.path.dirname(__file__), "..", "models", "player_injuries_detail.pkl")
+    detail_path = os.path.abspath(detail_path)
+
+    if not os.path.exists(detail_path):
+        print("No player_injuries_detail.pkl found — falling back to rule-based archetypes")
+        return assign_rule_based_archetypes(df)
+
+    try:
+        detail_df = pd.read_pickle(detail_path)
+        # Fix StringDtype columns
+        for col in detail_df.columns:
+            if "String" in str(detail_df[col].dtype) or str(detail_df[col].dtype) in ("string", "string[python]"):
+                detail_df[col] = detail_df[col].astype(object)
+
+        # Build per-player feature matrix from per-injury records
+        feat_df = build_player_archetype_features(detail_df)
+        print(f"Built archetype features for {len(feat_df)} players")
+
+        # Use core features only (avoids curse of dimensionality with 44 sparse features)
+        core_cols = [
+            "total_injuries", "avg_severity", "median_severity", "max_severity",
+            "high_severity_rate", "avg_days_between_injuries", "reinjury_rate",
+            "body_area_entropy", "severity_cv", "severity_trend",
+        ]
+        core_cols = [c for c in core_cols if c in feat_df.columns]
+        X = feat_df[core_cols].fillna(0).values
+
+        # Standardize
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        # --- HDBSCAN ---
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=10, min_samples=3, cluster_selection_method="eom")
+        labels = clusterer.fit_predict(X_scaled)
+        n_clusters = len(set(labels) - {-1})
+        noise_count = (labels == -1).sum()
+        print(f"HDBSCAN: {n_clusters} clusters, {noise_count} noise points out of {len(labels)}")
+
+        # --- KMeans fallback for noise points ---
+        if n_clusters < 2:
+            # HDBSCAN couldn't find structure — use KMeans entirely
+            print("HDBSCAN found <2 clusters — using KMeans with 5 clusters")
+            km = KMeans(n_clusters=5, random_state=42, n_init=10)
+            labels = km.fit_predict(X_scaled)
+            n_clusters = 5
+        elif noise_count > 0:
+            # Assign noise points to nearest HDBSCAN cluster via KMeans
+            km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+            km_labels = km.fit_predict(X_scaled)
+            for i in range(len(labels)):
+                if labels[i] == -1:
+                    labels[i] = km_labels[i]
+            print(f"KMeans assigned {noise_count} noise points to clusters")
+
+        feat_df["cluster"] = labels
+
+        # --- Label clusters by ranking on key characteristics ---
+        profiles = feat_df.groupby("cluster").agg({
+            "total_injuries": "mean",
+            "avg_severity": "mean",
+            "max_severity": "mean",
+            "high_severity_rate": "mean",
+            "reinjury_rate": "mean",
+            "severity_cv": "mean",
+        })
+
+        # Score each cluster for each archetype and assign greedily
+        archetype_candidates = [
+            ("Fragile", lambda r: r["avg_severity"] * 2 + r["max_severity"] - r["total_injuries"] * 3),
+            ("Injury Prone", lambda r: r["total_injuries"] * 5 + r["high_severity_rate"] * 20),
+            ("Unpredictable", lambda r: r["severity_cv"] * 30 + r["total_injuries"] * 2),
+            ("Recurring Issues", lambda r: r["reinjury_rate"] * 100 + r["total_injuries"] * 3),
+            ("Durable", lambda r: -(r["avg_severity"] * 2 + r["total_injuries"] * 5)),
+        ]
+
+        cluster_to_archetype = {}
+        assigned_clusters = set()
+        for archetype_name, score_fn in archetype_candidates:
+            best_cid, best_score = None, float("-inf")
+            for cid, row in profiles.iterrows():
+                if cid in assigned_clusters:
+                    continue
+                score = score_fn(row)
+                if score > best_score:
+                    best_score = score
+                    best_cid = cid
+            if best_cid is not None:
+                cluster_to_archetype[best_cid] = archetype_name
+                assigned_clusters.add(best_cid)
+
+        # Any remaining clusters get "Moderate Risk"
+        for cid in profiles.index:
+            if cid not in cluster_to_archetype:
+                cluster_to_archetype[cid] = "Moderate Risk"
+
+        feat_df["archetype"] = feat_df["cluster"].map(cluster_to_archetype)
+
+        # Log cluster assignments
+        for cid in sorted(cluster_to_archetype.keys()):
+            row = profiles.loc[cid]
+            count = (feat_df["cluster"] == cid).sum()
+            print(f"  Cluster {cid} → {cluster_to_archetype[cid]} ({count} players, "
+                  f"avg_inj={row['total_injuries']:.1f}, avg_sev={row['avg_severity']:.1f})")
+
+        # Map back to inference_df by player name
+        archetype_lookup = dict(zip(feat_df["name"], feat_df["archetype"]))
+        matched = 0
+        for idx, row in df.iterrows():
+            name = row.get("name", "")
+            if name in archetype_lookup:
+                df.at[idx, "archetype"] = archetype_lookup[name]
+                matched += 1
+
+        # Rule-based fallback for unmatched players (not in detail pkl)
+        unmatched_mask = ~df["name"].isin(archetype_lookup)
+        unmatched_count = unmatched_mask.sum()
+        if unmatched_count > 0:
+            unmatched_df = assign_rule_based_archetypes(df.loc[unmatched_mask].copy())
+            df.loc[unmatched_mask, "archetype"] = unmatched_df["archetype"].values
+
+        # Recency-based overrides: clustering ignores time since last injury
+        overrides = 0
+        for idx, row in df.iterrows():
+            days_since = float(row.get("days_since_last_injury", 9999))
+            prev_inj = int(row.get("previous_injuries", row.get("player_injury_count", 0)))
+            total_days = float(row.get("total_days_lost", 0))
+            avg_sev = total_days / prev_inj if prev_inj > 0 else 0
+            current = df.at[idx, "archetype"]
+
+            # Recently injured/returning → Currently Vulnerable
+            if days_since < 60 and current not in ("Fragile",):
+                df.at[idx, "archetype"] = "Currently Vulnerable"
+                overrides += 1
+            # Long injury-free + low severity → Durable (not Injury Prone)
+            elif days_since > 365 and avg_sev < 25 and current in ("Injury Prone", "Recurring Issues"):
+                df.at[idx, "archetype"] = "Durable"
+                overrides += 1
+
+        counts = df["archetype"].value_counts().to_dict()
+        print(f"Hybrid archetypes: {matched} clustered, {unmatched_count} rule-based, {overrides} recency overrides")
+        print(f"  Distribution: {counts}")
+        return df
+
+    except Exception as e:
+        print(f"WARNING: Hybrid clustering failed ({e}) — falling back to rule-based")
+        import traceback
+        traceback.print_exc()
+        return assign_rule_based_archetypes(df)
 
 
 # ============================================================
@@ -81,6 +446,7 @@ class PlayerSummary(BaseModel):
     archetype: str
     minutes_played: int = 0
     is_starter: bool = False
+    player_image_url: Optional[str] = None
 
 
 class RiskFactors(BaseModel):
@@ -99,10 +465,86 @@ class ModelPredictions(BaseModel):
 
 class ImpliedOdds(BaseModel):
     """Betting odds derived from injury probability."""
-    american: str  # e.g., "-150" or "+200"
-    decimal: float  # e.g., 1.67
-    fractional: str  # e.g., "2/3"
-    implied_prob: float  # The probability used
+    american: str
+    decimal: float
+    fractional: str
+    implied_prob: float
+
+
+class ScoringOdds(BaseModel):
+    """Odds for a player to score in next match."""
+    score_probability: float
+    involvement_probability: float
+    goals_per_90: float
+    assists_per_90: float
+    american: str
+    decimal: float
+    fractional: str
+    availability_factor: float
+
+
+class FPLValue(BaseModel):
+    """FPL value assessment for a player."""
+    tier: str
+    tier_emoji: str
+    verdict: str
+    position_insight: Optional[str] = None
+    adjusted_value: float
+    goals_per_90: float
+    assists_per_90: float
+    price: float
+    risk_factor: float
+
+
+class CleanSheetOdds(BaseModel):
+    """Clean sheet odds for defenders/goalkeepers."""
+    clean_sheet_probability: float
+    goals_conceded_per_game: float
+    american: str
+    decimal: float
+    availability_factor: float
+
+
+class NextFixture(BaseModel):
+    """Player's next match info with betting context."""
+    opponent: str
+    is_home: bool
+    match_time: Optional[str] = None
+    clean_sheet_odds: Optional[str] = None
+    win_probability: Optional[float] = None
+    fixture_insight: Optional[str] = None
+
+
+class YaraResponse(BaseModel):
+    """Yara's opinionated analysis comparing model vs market odds."""
+    response_text: str
+    fpl_tip: str
+    market_probability: Optional[float] = None
+    yara_probability: float
+    market_odds_decimal: Optional[float] = None
+    bookmaker: Optional[str] = None
+
+
+class LabDriver(BaseModel):
+    """A single key driver in Yara's Lab Notes."""
+    name: str
+    value: Any
+    impact: str  # "risk_increasing", "protective", "neutral"
+    explanation: str
+
+
+class TechnicalDetails(BaseModel):
+    """Technical details for the 'for builders' section."""
+    model_agreement: float
+    methodology: str
+    feature_highlights: List[Dict[str, Any]]
+
+
+class LabNotes(BaseModel):
+    """Yara's Lab Notes — explainability for the risk score."""
+    summary: str
+    key_drivers: List[LabDriver]
+    technical: TechnicalDetails
 
 
 class PlayerRisk(BaseModel):
@@ -117,9 +559,19 @@ class PlayerRisk(BaseModel):
     factors: RiskFactors
     model_predictions: ModelPredictions
     recommendations: List[str]
-    story: str  # Personalized narrative
-    implied_odds: ImpliedOdds  # Betting odds representation
+    story: str
+    implied_odds: ImpliedOdds
     last_injury_date: Optional[str]
+    fpl_insight: Optional[str] = None
+    scoring_odds: Optional[ScoringOdds] = None
+    fpl_value: Optional[FPLValue] = None
+    clean_sheet_odds: Optional[CleanSheetOdds] = None
+    next_fixture: Optional[NextFixture] = None
+    yara_response: Optional[YaraResponse] = None
+    lab_notes: Optional[LabNotes] = None
+    risk_percentile: Optional[float] = None
+    player_image_url: Optional[str] = None
+    team_badge_url: Optional[str] = None
 
 
 class TeamOverview(BaseModel):
@@ -130,6 +582,8 @@ class TeamOverview(BaseModel):
     low_risk_count: int
     avg_risk: float
     players: List[PlayerSummary]
+    team_badge_url: Optional[str] = None
+    next_fixture: Optional[Dict[str, Any]] = None
 
 
 class HealthCheck(BaseModel):
@@ -178,14 +632,14 @@ class TeamStanding(BaseModel):
     played: int
     form: Optional[str] = None
     distance_from_top: Optional[int] = None
-    distance_from_safety: Optional[int] = None  # For relegation zone teams
+    distance_from_safety: Optional[int] = None
 
 
 class StandingsSummary(BaseModel):
     leader: TeamStanding
     second: TeamStanding
     gap_to_second: int
-    safety_points: int = 0  # Points needed for safety (17th place)
+    safety_points: int = 0
     selected_team: Optional[TeamStanding] = None
 
 
@@ -194,123 +648,462 @@ class StandingsSummary(BaseModel):
 # ============================================================
 
 ARCHETYPE_DESCRIPTIONS = {
-    "Durable": "Resilient player who recovers quickly from minor setbacks",
-    "Fragile": "Prone to serious injuries requiring extended recovery",
+    "Durable": "Resilient player with limited injury history and good recovery",
+    "Fragile": "When injured, tends to be serious — requires extended recovery periods",
+    "Injury Prone": "Frequently picks up injuries, though typically not severe",
+    "Recurring Issues": "Recent pattern of repeated injuries — needs targeted management",
+    "Moderate Risk": "Average injury profile with no major red flags",
+    "Clean Record": "No significant injury history on record",
     "Currently Vulnerable": "Recently returned from injury, elevated re-injury risk",
-    "Injury Prone": "Frequent injuries with moderate recovery times",
     "Recurring": "Regular minor injuries but quick recoveries",
-    "Moderate Risk": "Average injury profile, no major concerns",
-    "Clean Record": "Minimal injury history on record",
+    "Unpredictable": "Varied injury patterns that are difficult to predict",
+}
+
+# Team name aliases for FPL badge lookup
+# Maps all known team name variants → FPL full name (lowercase)
+# FPL names: Arsenal, Aston Villa, Bournemouth, Brentford, Brighton,
+#   Chelsea, Crystal Palace, Everton, Fulham, Ipswich, Leicester,
+#   Liverpool, Man City, Man Utd, Newcastle, Nott'm Forest,
+#   Southampton, Spurs, West Ham, Wolves
+TEAM_BADGE_ALIASES = {
+    # Arsenal
+    "arsenal": "arsenal", "arsenal fc": "arsenal",
+    # Aston Villa
+    "aston villa": "aston villa", "villa": "aston villa",
+    # Bournemouth
+    "bournemouth": "bournemouth", "afc bournemouth": "bournemouth",
+    # Brentford
+    "brentford": "brentford", "brentford fc": "brentford",
+    # Brighton
+    "brighton": "brighton", "brighton hove": "brighton",
+    "brighton & hove albion": "brighton", "brighton and hove albion": "brighton",
+    "brighton & hove": "brighton",
+    # Chelsea
+    "chelsea": "chelsea", "chelsea fc": "chelsea",
+    # Crystal Palace
+    "crystal palace": "crystal palace", "palace": "crystal palace",
+    # Everton
+    "everton": "everton", "everton fc": "everton",
+    # Fulham
+    "fulham": "fulham", "fulham fc": "fulham",
+    # Ipswich
+    "ipswich": "ipswich", "ipswich town": "ipswich",
+    # Leicester
+    "leicester": "leicester", "leicester city": "leicester",
+    # Liverpool
+    "liverpool": "liverpool", "liverpool fc": "liverpool",
+    # Man City
+    "man city": "man city", "manchester city": "man city",
+    "manchester city fc": "man city", "mcfc": "man city",
+    # Man Utd
+    "man utd": "man utd", "man united": "man utd",
+    "manchester united": "man utd", "manchester united fc": "man utd",
+    "mufc": "man utd",
+    # Newcastle
+    "newcastle": "newcastle", "newcastle united": "newcastle",
+    "newcastle utd": "newcastle",
+    # Nott'm Forest
+    "nott'm forest": "nott'm forest", "nottm forest": "nott'm forest",
+    "nottingham forest": "nott'm forest", "nottingham": "nott'm forest",
+    # Southampton
+    "southampton": "southampton", "southampton fc": "southampton",
+    # Spurs
+    "spurs": "spurs", "tottenham": "spurs",
+    "tottenham hotspur": "spurs", "tottenham hotspurs": "spurs",
+    # West Ham
+    "west ham": "west ham", "west ham united": "west ham",
+    # Wolves
+    "wolves": "wolves", "wolverhampton": "wolves",
+    "wolverhampton wanderers": "wolves",
+    # Promoted / other
+    "leeds": "leeds", "leeds united": "leeds",
+    "sunderland": "sunderland", "sunderland afc": "sunderland",
+    "burnley": "burnley", "burnley fc": "burnley",
+    "luton": "luton", "luton town": "luton",
+    "sheffield united": "sheffield utd", "sheffield utd": "sheffield utd",
 }
 
 
-def get_risk_level(prob: float) -> str:
-    if prob >= 0.6:
-        return "High"
-    elif prob >= 0.35:
-        return "Medium"
-    return "Low"
+def get_risk_level(prob: float, row=None) -> str:
+    """Classify 2-week injury risk using percentile rank from model output.
+
+    Uses percentile-based thresholds from the actual data distribution so that
+    ~25% of players are High, ~45% Medium, ~30% Low. The model now incorporates
+    injury history features (player_injury_count, player_avg_severity, etc.)
+    so no manual overrides are needed.
+    """
+    if inference_df is not None and "ensemble_prob" in inference_df.columns:
+        p75 = inference_df["ensemble_prob"].quantile(0.75)
+        p30 = inference_df["ensemble_prob"].quantile(0.30)
+        if prob >= p75:
+            return "High"
+        elif prob >= p30:
+            return "Medium"
+        else:
+            return "Low"
+    else:
+        # Fallback absolute thresholds
+        if prob >= 0.30:
+            return "High"
+        elif prob >= 0.15:
+            return "Medium"
+        else:
+            return "Low"
+
+
+def normalize_risk_score(prob: float) -> float:
+    """Convert raw model probability to a 0-100 score based on percentile rank.
+
+    The raw ensemble_prob is not calibrated (range ~0.04-0.92, median ~0.77),
+    so showing it directly confuses users. Instead, show where the player
+    ranks relative to all others: 50 = average risk, 90 = top 10%.
+    """
+    if inference_df is not None and "ensemble_prob" in inference_df.columns:
+        percentile = float((inference_df["ensemble_prob"] <= prob).mean())
+        return round(percentile * 100, 1)
+    # Fallback: min-max normalize assuming typical range
+    return round(max(0, min(100, (prob - 0.04) / (0.92 - 0.04) * 100)), 1)
+
+
+def get_team_badge_url(team_name: str) -> Optional[str]:
+    """Get Premier League badge URL for a team."""
+    team_lower = team_name.lower().strip()
+    search = TEAM_BADGE_ALIASES.get(team_lower, team_lower)
+
+    # Exact match
+    if search in fpl_team_ids:
+        return f"https://resources.premierleague.com/premierleague/badges/50/t{fpl_team_ids[search]}@x2.png"
+
+    # Substring match fallback — only against names >= 5 chars to avoid
+    # false positives from short codes like "che", "ars", "lei"
+    for key, tid in fpl_team_ids.items():
+        if len(key) < 5:
+            continue
+        if search in key or key in search:
+            return f"https://resources.premierleague.com/premierleague/badges/50/t{fpl_team_ids[key]}@x2.png"
+    return None
+
+
+def get_player_image_url(player_name: str) -> Optional[str]:
+    """Get Premier League player photo URL."""
+    name_lower = player_name.lower()
+    # Try exact match
+    if name_lower in fpl_player_codes:
+        code = fpl_player_codes[name_lower]
+        return f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{code}.png"
+    # Try partial match on significant name parts
+    parts = [p for p in name_lower.split() if len(p) >= 4]
+    for part in parts:
+        for key, code in fpl_player_codes.items():
+            if part in key:
+                return f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{code}.png"
+    return None
 
 
 def calculate_implied_odds(prob: float) -> ImpliedOdds:
-    """
-    Convert probability to betting odds formats.
-
-    This shows what odds a bookmaker would offer if injury markets existed.
-    Higher probability = shorter odds (less payout).
-    """
-    # Clamp probability to avoid division issues
+    """Convert probability to betting odds formats."""
     prob = max(0.01, min(0.99, prob))
-
-    # Decimal odds: 1 / probability
     decimal_odds = round(1 / prob, 2)
-
-    # American odds
     if prob >= 0.5:
-        # Favorite: negative odds (how much to bet to win $100)
         american = int(-100 * prob / (1 - prob))
         american_str = str(american)
     else:
-        # Underdog: positive odds (how much you win on $100 bet)
         american = int(100 * (1 - prob) / prob)
         american_str = f"+{american}"
-
-    # Fractional odds (simplified)
-    # Convert decimal to fraction
     if decimal_odds >= 2:
         numerator = int(round((decimal_odds - 1) * 1))
         fractional = f"{numerator}/1"
     else:
-        # For odds like 1.5, show as 1/2
         denominator = int(round(1 / (decimal_odds - 1)))
         fractional = f"1/{denominator}"
-
     return ImpliedOdds(
-        american=american_str,
-        decimal=decimal_odds,
-        fractional=fractional,
-        implied_prob=round(prob, 3),
+        american=american_str, decimal=decimal_odds,
+        fractional=fractional, implied_prob=round(prob, 3),
     )
+
+
+def get_fpl_stats_for_player(name: str, team_hint: str = None) -> Optional[Dict]:
+    """Look up FPL stats for a player by name.
+
+    Args:
+        name: Player name to search for
+        team_hint: Optional team name from inference_df to validate matches
+    """
+    if not fpl_stats_cache:
+        return None
+    name_lower = name.lower()
+
+    # Exact match (most reliable)
+    if name_lower in fpl_stats_cache:
+        return fpl_stats_cache[name_lower]
+
+    # Full name containment (e.g. "Bukayo Saka" in "Bukayo Saka" or vice versa)
+    candidates = []
+    for key, stats in fpl_stats_cache.items():
+        if name_lower in key or key in name_lower:
+            candidates.append(stats)
+
+    # If team_hint provided, prefer candidates matching the team
+    if candidates and team_hint:
+        team_lower = team_hint.lower()
+        team_matches = [s for s in candidates if _teams_match(s.get("team", ""), team_lower)]
+        if team_matches:
+            return team_matches[0]
+
+    if len(candidates) == 1:
+        return candidates[0]
+    if candidates:
+        return candidates[0]
+
+    # Last resort: match by last name only (must be unique and long enough)
+    parts = name_lower.split()
+    if parts:
+        last_name = parts[-1]
+        if len(last_name) >= 5:  # Only match long last names to avoid false positives
+            last_name_matches = []
+            for key, stats in fpl_stats_cache.items():
+                if key.endswith(last_name) or last_name == key.split()[-1] if " " in key else last_name == key:
+                    last_name_matches.append(stats)
+            if len(last_name_matches) == 1:
+                return last_name_matches[0]
+            # If multiple matches, use team hint
+            if last_name_matches and team_hint:
+                team_lower = team_hint.lower()
+                team_filtered = [s for s in last_name_matches if _teams_match(s.get("team", ""), team_lower)]
+                if len(team_filtered) == 1:
+                    return team_filtered[0]
+    return None
+
+
+def _teams_match(fpl_team: str, team_hint: str) -> bool:
+    """Check if FPL team name matches a team hint (fuzzy)."""
+    fpl_lower = fpl_team.lower()
+    hint_lower = team_hint.lower()
+    # Direct match
+    if fpl_lower == hint_lower:
+        return True
+    # Check display name mapping
+    display = _fpl_team_to_df_team(fpl_team).lower()
+    if display == hint_lower or hint_lower in display or display in hint_lower:
+        return True
+    # Short name containment (e.g. "wolves" in "wolverhampton")
+    if len(fpl_lower) >= 4 and (fpl_lower in hint_lower or hint_lower in fpl_lower):
+        return True
+    return False
+
+
+def get_next_fixture_for_team(team_name: str, injury_prob: float) -> Optional[Dict]:
+    """Get next fixture info with betting odds for a team.
+
+    Uses FPL API for fixture data (always has real kickoff times).
+    Enriches with external odds if ODDS_API_KEY is available (not mock).
+    """
+    # Try external odds API only if we have a real API key (not mock data)
+    odds_data = None
+    if odds_client and odds_client.api_key:
+        cs_data = odds_client.get_clean_sheet_odds(team_name)
+        if cs_data:
+            fixture_insight = get_clean_sheet_insight(team_name, injury_prob)
+            odds_data = {
+                "clean_sheet_odds": cs_data["american"],
+                "win_probability": cs_data["win_probability"],
+                "fixture_insight": fixture_insight,
+            }
+
+    # Use FPL API fixtures (real kickoff times)
+    try:
+        client = FPLClient()
+        gw = client.get_current_gameweek()
+        if not gw:
+            return None
+        teams_list = client.get_teams()
+        team_map = {t["id"]: t["name"] for t in teams_list}
+
+        # Find team ID by matching name
+        team_lower = team_name.lower()
+        team_id = None
+        for t in teams_list:
+            if (team_lower in t["name"].lower() or t["name"].lower() in team_lower
+                    or team_lower in t.get("short_name", "").lower()):
+                team_id = t["id"]
+                break
+        if not team_id:
+            search = TEAM_BADGE_ALIASES.get(team_lower, team_lower)
+            for t in teams_list:
+                if search in t["name"].lower() or t["name"].lower() in search:
+                    team_id = t["id"]
+                    break
+        if not team_id:
+            return None
+
+        # Try current GW first, then next GW if all current fixtures are finished
+        gw_ids_to_try = [gw["id"]]
+        # Find next GW
+        data = client.get_bootstrap()
+        for event in data.get("events", []):
+            if event.get("is_next") and event["id"] != gw["id"]:
+                gw_ids_to_try.append(event["id"])
+                break
+            if event["id"] == gw["id"] + 1:
+                gw_ids_to_try.append(event["id"])
+                break
+
+        for gw_id in gw_ids_to_try:
+            fixtures = client.get_fixtures(gw_id)
+            for f in fixtures:
+                # Skip finished matches — only show upcoming/live
+                if f.get("finished") or f.get("finished_provisional"):
+                    continue
+
+                fixture_result = None
+                if f.get("team_h") == team_id:
+                    fixture_result = {
+                        "opponent": team_map.get(f["team_a"], "Unknown"),
+                        "is_home": True,
+                        "match_time": f.get("kickoff_time"),
+                        "clean_sheet_odds": None,
+                        "win_probability": None,
+                        "fixture_insight": None,
+                    }
+                elif f.get("team_a") == team_id:
+                    fixture_result = {
+                        "opponent": team_map.get(f["team_h"], "Unknown"),
+                        "is_home": False,
+                        "match_time": f.get("kickoff_time"),
+                        "clean_sheet_odds": None,
+                        "win_probability": None,
+                        "fixture_insight": None,
+                    }
+                if fixture_result:
+                    # Merge external odds data if available
+                    if odds_data:
+                        fixture_result.update(odds_data)
+                    return fixture_result
+    except Exception as e:
+        logger.warning(f"Failed to get FPL fixture for {team_name}: {e}")
+
+    return None
 
 
 def get_personalized_insights(row: dict) -> List[str]:
     """Generate personalized insights using the story generator."""
-    # Get risk factors from the story generator
     risk_factors = generate_risk_factors_list(row)
-
     insights = []
-
-    # Add the main recommendation
     main_rec = get_recommendation_text(row)
     if main_rec:
         insights.append(main_rec)
-
-    # Add key risk factor descriptions
-    for factor in risk_factors[:2]:  # Top 2 risk factors
+    for factor in risk_factors[:2]:
         if factor["impact"] in ["high_risk", "moderate_risk"]:
             insights.append(f"{factor['factor']}: {factor['description']}")
         elif factor["impact"] == "protective":
             insights.append(f"{factor['factor']}: {factor['description']}")
-
-    return insights[:4]  # Max 4 insights
+    return insights[:4]
 
 
 def player_row_to_risk(row) -> PlayerRisk:
     """Convert a DataFrame row to a PlayerRisk response."""
     prob = row.get("ensemble_prob", row.get("calibrated_prob", 0.5))
-    prev_injuries = row.get("previous_injuries", 0)
-    total_days = row.get("total_days_lost", 0)
+    # Use player_injury_count (has data) instead of previous_injuries (all zeros in inference_df)
+    prev_injuries = int(row.get("player_injury_count", row.get("previous_injuries", 0)))
+    avg_severity = row.get("player_avg_severity", 0)
+    total_days = int(prev_injuries * avg_severity) if prev_injuries > 0 else 0
+    player_name = row.get("name", "Unknown")
+    team = row.get("team", row.get("player_team", "Unknown"))
 
-    # Generate personalized story
-    story = generate_player_story(row)
+    # Build enriched row with corrected injury fields + FPL stats
+    # inference_df is now enriched at startup with real Transfermarkt data,
+    # but story generators read "previous_injuries" so we map it
+    enriched_row = dict(row)
+    enriched_row["previous_injuries"] = prev_injuries
+    # Use total_days_lost from scraped data if available, otherwise estimate
+    total_days_from_scrape = row.get("total_days_lost", 0)
+    if total_days_from_scrape and int(total_days_from_scrape) > 0:
+        total_days = int(total_days_from_scrape)
+    enriched_row["total_days_lost"] = total_days
+    # Use days_since_last_injury from scraped data (real value, not default 365)
+    days_since = int(row.get("days_since_last_injury", 365))
+    enriched_row["days_since_last_injury"] = days_since
+
+    # Enrich with FPL stats
+    fpl_stats = get_fpl_stats_for_player(player_name)
+    if fpl_stats:
+        enriched_row.update({
+            "goals": fpl_stats.get("goals", 0),
+            "assists": fpl_stats.get("assists", 0),
+            "goals_per_90": fpl_stats.get("goals_per_90", 0),
+            "assists_per_90": fpl_stats.get("assists_per_90", 0),
+            "price": fpl_stats.get("price", 0),
+            "form": fpl_stats.get("form", 0),
+            "minutes": fpl_stats.get("minutes", 0),
+        })
+
+    # Compute risk percentile for context (e.g. "higher risk than 92% of players")
+    risk_percentile = None
+    if inference_df is not None:
+        risk_percentile = round(float((inference_df["ensemble_prob"] <= prob).mean()), 3)
+    enriched_row["risk_percentile"] = risk_percentile
+
+    # Use enriched_row for ALL generators so they see correct injury history
+    story = generate_player_story(enriched_row)
+    scoring_odds_data = calculate_scoring_odds(enriched_row)
+    fpl_value_data = get_fpl_value_assessment(enriched_row)
+    clean_sheet_data = calculate_clean_sheet_odds(enriched_row)
+    next_fixture_data = get_next_fixture_for_team(team, prob)
+
+    # Yara's Response: compare model projection with live market odds
+    market_odds = None
+    if odds_client:
+        market_odds = odds_client.get_anytime_scorer_odds(team, player_name)
+    yara_data = generate_yara_response(enriched_row, market_odds)
+
+    # Yara's Lab Notes: explainability
+    lab_notes_data = generate_lab_notes(enriched_row)
+
+    fpl_insight_text = get_fpl_insight(enriched_row)
+    if not fpl_insight_text and next_fixture_data:
+        fpl_insight_text = next_fixture_data.get("fixture_insight")
 
     return PlayerRisk(
-        name=row.get("name", "Unknown"),
-        team=row.get("team", row.get("player_team", "Unknown")),
-        position=row.get("position", "Unknown"),
-        age=int(row.get("age", 25)),
-        risk_level=get_risk_level(prob),
+        name=player_name,
+        team=team,
+        position=enriched_row.get("position", "Unknown"),
+        age=int(enriched_row.get("age", 25)),
+        risk_level=get_risk_level(prob, enriched_row),
         risk_probability=round(prob, 3),
-        archetype=row.get("archetype", "Unknown"),
+        archetype=enriched_row.get("archetype", "Unknown"),
         archetype_description=ARCHETYPE_DESCRIPTIONS.get(
-            row.get("archetype", ""), "Unknown injury profile"
+            enriched_row.get("archetype", ""), "Unknown injury profile"
         ),
         factors=RiskFactors(
             previous_injuries=int(prev_injuries),
             total_days_lost=int(total_days),
-            days_since_last_injury=int(row.get("days_since_last_injury", 365)),
+            days_since_last_injury=days_since,
             avg_days_per_injury=round(total_days / prev_injuries, 1) if prev_injuries > 0 else 0,
         ),
         model_predictions=ModelPredictions(
             ensemble=round(prob, 3),
-            lgb=round(row.get("lgb_prob", prob), 3),
-            xgb=round(row.get("xgb_prob", prob), 3),
-            catboost=round(row.get("catboost_prob", prob), 3),
+            lgb=round(enriched_row.get("lgb_prob", prob), 3),
+            xgb=round(enriched_row.get("xgb_prob", prob), 3),
+            catboost=round(enriched_row.get("catboost_prob", prob), 3),
         ),
-        recommendations=get_personalized_insights(row),
+        recommendations=get_personalized_insights(enriched_row),
         story=story,
         implied_odds=calculate_implied_odds(prob),
-        last_injury_date=str(row.get("last_injury_date")) if row.get("last_injury_date") else None,
+        last_injury_date=str(enriched_row.get("last_injury_date")) if enriched_row.get("last_injury_date") else None,
+        fpl_insight=fpl_insight_text,
+        scoring_odds=ScoringOdds(**scoring_odds_data) if scoring_odds_data else None,
+        fpl_value=FPLValue(**fpl_value_data) if fpl_value_data else None,
+        clean_sheet_odds=CleanSheetOdds(**clean_sheet_data) if clean_sheet_data else None,
+        next_fixture=NextFixture(**next_fixture_data) if next_fixture_data else None,
+        yara_response=YaraResponse(**yara_data) if yara_data else None,
+        lab_notes=LabNotes(
+            summary=lab_notes_data["summary"],
+            key_drivers=[LabDriver(**d) for d in lab_notes_data["key_drivers"]],
+            technical=TechnicalDetails(**lab_notes_data["technical"]),
+        ) if lab_notes_data else None,
+        risk_percentile=risk_percentile,
+        player_image_url=get_player_image_url(player_name),
+        team_badge_url=get_team_badge_url(team),
     )
 
 
@@ -330,42 +1123,36 @@ async def health_check():
 
 @app.get("/api/players", response_model=List[PlayerSummary])
 async def list_players(team: Optional[str] = None, risk_level: Optional[str] = None):
-    """
-    List all players with summary info.
-
-    Optional filters:
-    - team: Filter by team name
-    - risk_level: Filter by High/Medium/Low
-    """
+    """List all players with summary info."""
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
     df = inference_df.copy()
 
-    # Apply filters
     if team:
         df = df[df["team"].str.lower() == team.lower()]
-
     if risk_level:
-        df["risk_level"] = df["ensemble_prob"].apply(get_risk_level)
+        df["risk_level"] = df.apply(lambda r: get_risk_level(r.get("ensemble_prob", 0.5), r), axis=1)
         df = df[df["risk_level"].str.lower() == risk_level.lower()]
 
-    # Sort by risk (highest first)
     df = df.sort_values("ensemble_prob", ascending=False)
 
     players = []
     for _, row in df.iterrows():
         prob = row.get("ensemble_prob", 0.5)
-        minutes = int(row.get("minutes_played", 0))
+        name = row.get("name", "Unknown")
+        fpl = get_fpl_stats_for_player(name)
+        minutes = fpl.get("minutes", 0) if fpl else 0
         players.append(PlayerSummary(
-            name=row.get("name", "Unknown"),
+            name=name,
             team=row.get("team", "Unknown"),
             position=row.get("position", "Unknown"),
-            risk_level=get_risk_level(prob),
+            risk_level=get_risk_level(prob, row),
             risk_probability=round(prob, 3),
             archetype=row.get("archetype", "Unknown"),
             minutes_played=minutes,
-            is_starter=minutes >= 900,  # ~10 full games = regular starter
+            is_starter=minutes >= 900,
+            player_image_url=get_player_image_url(name),
         ))
 
     return players
@@ -377,17 +1164,13 @@ async def get_player_risk(player_name: str):
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
-    # Case-insensitive search
     matches = inference_df[
         inference_df["name"].str.lower() == player_name.lower()
     ]
-
     if matches.empty:
-        # Try partial match
         matches = inference_df[
             inference_df["name"].str.lower().str.contains(player_name.lower())
         ]
-
     if matches.empty:
         raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found")
 
@@ -401,25 +1184,20 @@ async def list_teams():
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
-    # Get teams from our data
     our_teams = inference_df["team"].unique().tolist()
 
-    # Get current Premier League teams from ESPN
     try:
         client = FootballDataClient()
         standings = client.get_standings()
         current_pl_teams = {t["name"].lower() for t in standings}
         current_pl_short = {t["short_name"].lower() for t in standings}
 
-        # Filter to only teams in current PL (using alias matching)
         from src.data_loaders.football_data_api import TEAM_ALIASES
 
         filtered = []
         for team in our_teams:
             team_lower = team.lower()
             search_term = TEAM_ALIASES.get(team_lower, team_lower)
-
-            # Check if team is in current PL
             in_pl = any(
                 search_term in pl_team or pl_team in search_term
                 for pl_team in current_pl_teams
@@ -427,15 +1205,27 @@ async def list_teams():
                 search_term in short or short in search_term
                 for short in current_pl_short
             )
-
             if in_pl:
                 filtered.append(team)
 
         return sorted(filtered)
     except Exception as e:
         logger.warning(f"Failed to filter teams by current PL: {e}")
-        # Fallback to all teams if ESPN fails
         return sorted(our_teams)
+
+
+@app.get("/api/teams/badges")
+async def get_team_badges():
+    """Get badge URLs for all teams."""
+    if inference_df is None:
+        raise HTTPException(status_code=503, detail="Models not loaded")
+    teams = inference_df["team"].unique().tolist()
+    badges = {}
+    for team in teams:
+        url = get_team_badge_url(team)
+        if url:
+            badges[team] = url
+    return badges
 
 
 @app.get("/api/teams/{team_name}/overview", response_model=TeamOverview)
@@ -444,48 +1234,54 @@ async def get_team_overview(team_name: str):
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
-    # Case-insensitive team match
     team_df = inference_df[
         inference_df["team"].str.lower() == team_name.lower()
     ]
-
     if team_df.empty:
         raise HTTPException(status_code=404, detail=f"Team '{team_name}' not found")
 
-    # Calculate risk levels
     team_df = team_df.copy()
-    team_df["risk_level"] = team_df["ensemble_prob"].apply(get_risk_level)
+    team_df["risk_level"] = team_df.apply(lambda r: get_risk_level(r.get("ensemble_prob", 0.5), r), axis=1)
 
     high_risk = len(team_df[team_df["risk_level"] == "High"])
     medium_risk = len(team_df[team_df["risk_level"] == "Medium"])
     low_risk = len(team_df[team_df["risk_level"] == "Low"])
 
-    # Sort players by risk
     team_df = team_df.sort_values("ensemble_prob", ascending=False)
 
     players = []
     for _, row in team_df.iterrows():
         prob = row.get("ensemble_prob", 0.5)
-        minutes = int(row.get("minutes_played", 0))
+        name = row.get("name", "Unknown")
+        fpl = get_fpl_stats_for_player(name)
+        minutes = fpl.get("minutes", 0) if fpl else 0
         players.append(PlayerSummary(
-            name=row.get("name", "Unknown"),
+            name=name,
             team=row.get("team", "Unknown"),
             position=row.get("position", "Unknown"),
-            risk_level=get_risk_level(prob),
+            risk_level=get_risk_level(prob, row),
             risk_probability=round(prob, 3),
             archetype=row.get("archetype", "Unknown"),
             minutes_played=minutes,
             is_starter=minutes >= 900,
+            player_image_url=get_player_image_url(name),
         ))
 
+    actual_team = team_df.iloc[0]["team"]
+
+    # Get next fixture for the team
+    next_fixture_data = get_next_fixture_for_team(actual_team, team_df["ensemble_prob"].mean())
+
     return TeamOverview(
-        team=team_df.iloc[0]["team"],
+        team=actual_team,
         total_players=len(team_df),
         high_risk_count=high_risk,
         medium_risk_count=medium_risk,
         low_risk_count=low_risk,
         avg_risk=round(team_df["ensemble_prob"].mean(), 3),
         players=players,
+        team_badge_url=get_team_badge_url(actual_team),
+        next_fixture=next_fixture_data,
     )
 
 
@@ -497,14 +1293,7 @@ async def list_archetypes():
 
 @app.get("/api/fpl/insights", response_model=FPLInsights)
 async def get_fpl_insights_endpoint():
-    """
-    Get FPL insights including standings, fixtures, and double gameweeks.
-
-    Useful for understanding the context of injury risk:
-    - Teams with double gameweeks = higher injury risk but FPL upside
-    - Top teams = higher stakes matches
-    - Current form = confidence in predictions
-    """
+    """Get FPL insights including standings, fixtures, and double gameweeks."""
     try:
         client = FPLClient()
         standings = client.get_standings()
@@ -534,21 +1323,12 @@ async def get_league_standings():
 
 @app.get("/api/standings/summary")
 async def get_standings_summary_endpoint(team: Optional[str] = None):
-    """
-    Get Premier League standings summary.
-
-    Args:
-        team: Optional team name to include position for
-
-    Returns:
-        Leader, second place, gap, and optionally selected team's position
-    """
+    """Get Premier League standings summary."""
     try:
         summary = get_standings_summary(team)
         if not summary:
             raise HTTPException(status_code=503, detail="Standings unavailable")
 
-        # Data is already formatted by get_standings_summary/safe_team
         return StandingsSummary(
             leader=TeamStanding(**summary["leader"]),
             second=TeamStanding(**summary["second"]),
@@ -565,12 +1345,7 @@ async def get_standings_summary_endpoint(team: Optional[str] = None):
 
 @app.get("/api/fpl/double-gameweeks")
 async def get_double_gameweeks():
-    """
-    Get teams with upcoming double gameweeks.
-
-    Returns mapping of gameweek -> list of team names with 2+ fixtures.
-    FPL insight: These players have higher ceiling but also fatigue risk.
-    """
+    """Get teams with upcoming double gameweeks."""
     try:
         client = FPLClient()
         teams = {t["id"]: t["name"] for t in client.get_teams()}

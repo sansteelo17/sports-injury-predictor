@@ -3,11 +3,7 @@ from pathlib import Path
 
 # ALWAYS resolve root based on this file's location
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = PROJECT_ROOT / "data" / "raw"
-
-print("PROJECT ROOT =", PROJECT_ROOT)
-print("DATA_DIR =", DATA_DIR)
-print("CSV exists?", (DATA_DIR / "player_injuries_impact.csv").exists())
+DATA_DIR = PROJECT_ROOT / "csv"
 
 def load_injury_data():
     return pd.read_csv(DATA_DIR / "player_injuries_impact.csv")

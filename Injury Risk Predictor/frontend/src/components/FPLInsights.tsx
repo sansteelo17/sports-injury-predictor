@@ -33,7 +33,7 @@ export function FPLInsights({ insights, selectedTeam, darkMode = true }: FPLInsi
       darkMode ? 'bg-[#141414] border border-[#1f1f1f]' : 'bg-white shadow-lg'
     }`}>
       {/* Header */}
-      <div className={`px-6 py-4 flex items-center gap-3 ${
+      <div className={`px-4 sm:px-6 py-3 sm:py-4 flex items-center gap-3 ${
         darkMode
           ? 'bg-gradient-to-r from-purple-500/20 to-[#141414] border-b border-[#1f1f1f]'
           : 'bg-gradient-to-r from-purple-100 to-white border-b border-gray-100'

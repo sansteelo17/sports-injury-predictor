@@ -1,4 +1,4 @@
-.PHONY: help install run clean test docker-build docker-run deploy-check lint format
+.PHONY: help install run clean test docker-build docker-run deploy-check lint format retrain retrain-accurate retrain-dry-run retrain-cron-install retrain-cron-remove
 
 # Default target
 help:
@@ -13,6 +13,13 @@ help:
 	@echo "  make run            Start Streamlit dashboard"
 	@echo "  make docker-build   Build Docker image"
 	@echo "  make docker-run     Run in Docker container"
+	@echo ""
+	@echo "Retraining:"
+	@echo "  make retrain              Run retraining pipeline (fast/API mode)"
+	@echo "  make retrain-accurate     Run retraining pipeline (FBref scraping)"
+	@echo "  make retrain-dry-run      Preview retraining without saving"
+	@echo "  make retrain-cron-install Install Tue/Fri cron schedule"
+	@echo "  make retrain-cron-remove  Remove retrain cron jobs"
 	@echo ""
 	@echo "Development:"
 	@echo "  make clean          Remove cache and temporary files"
@@ -98,3 +105,34 @@ lint:
 format:
 	@echo "Code formatting not yet configured"
 	@echo "Consider adding: black, autopep8, or isort"
+
+# ── Retraining Pipeline ──────────────────────────────────────
+
+# Run retraining pipeline (fast API mode, ~2 min)
+retrain:
+	python scripts/retrain.py
+
+# Run retraining with FBref scraping (accurate, ~20 min)
+retrain-accurate:
+	python scripts/retrain.py --accurate
+
+# Preview retraining without saving anything
+retrain-dry-run:
+	python scripts/retrain.py --dry-run
+
+# Install cron jobs for Tuesday & Friday 6 AM UTC
+retrain-cron-install:
+	@PROJECT_DIR="$(shell pwd)"; \
+	CRON_MARKER="# YaraSports retrain"; \
+	(crontab -l 2>/dev/null | grep -v "$$CRON_MARKER"; \
+	 echo "0 6 * * 2 cd $$PROJECT_DIR && python scripts/retrain.py >> logs/retrain.log 2>&1 $$CRON_MARKER"; \
+	 echo "0 6 * * 5 cd $$PROJECT_DIR && python scripts/retrain.py >> logs/retrain.log 2>&1 $$CRON_MARKER"; \
+	) | crontab -
+	@echo "Cron jobs installed (Tue & Fri 6 AM UTC)"
+	@echo "Verify with: crontab -l"
+
+# Remove retrain cron jobs
+retrain-cron-remove:
+	@CRON_MARKER="# YaraSports retrain"; \
+	(crontab -l 2>/dev/null | grep -v "$$CRON_MARKER") | crontab -
+	@echo "Retrain cron jobs removed"

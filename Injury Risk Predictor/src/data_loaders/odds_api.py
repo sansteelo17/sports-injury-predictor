@@ -191,6 +191,86 @@ class OddsClient:
 
         return None
 
+    def get_anytime_scorer_odds(self, team_name: str, player_name: str) -> Optional[Dict]:
+        """
+        Get anytime goal scorer odds for a player from The Odds API.
+
+        Uses the player_goal_scorer_anytime market. Falls back to None
+        if market unavailable or no API key.
+
+        Args:
+            team_name: Player's team name
+            player_name: Player's name
+
+        Returns:
+            Dict with bookmaker, decimal_odds, implied_probability, or None
+        """
+        if not self.api_key:
+            return None
+
+        # Check cache
+        cache_key = f"scorer_{player_name.lower()}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        try:
+            response = self.session.get(
+                f"{ODDS_API_URL}/sports/{SPORT_KEY}/odds",
+                params={
+                    "apiKey": self.api_key,
+                    "regions": "uk,us",
+                    "markets": "player_goal_scorer_anytime",
+                    "oddsFormat": "decimal",
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+            matches = response.json()
+
+            # Find the right match for this team
+            team_lower = team_name.lower()
+            player_lower = player_name.lower()
+            player_last = player_name.split()[-1].lower() if player_name else ""
+
+            for match in matches:
+                home = match.get("home_team", "").lower()
+                away = match.get("away_team", "").lower()
+
+                if team_lower not in home and team_lower not in away:
+                    continue
+
+                # Search bookmakers for player odds
+                for bookie in match.get("bookmakers", []):
+                    for market in bookie.get("markets", []):
+                        if market.get("key") != "player_goal_scorer_anytime":
+                            continue
+                        for outcome in market.get("outcomes", []):
+                            outcome_name = outcome.get("name", "").lower()
+                            if (player_lower in outcome_name or
+                                    player_last in outcome_name or
+                                    outcome_name in player_lower):
+                                decimal_odds = outcome.get("price", 0)
+                                if decimal_odds > 0:
+                                    implied_prob = round(1 / decimal_odds, 3)
+                                    result = {
+                                        "bookmaker": bookie.get("title", "Unknown"),
+                                        "decimal_odds": decimal_odds,
+                                        "implied_probability": implied_prob,
+                                        "player_matched": outcome.get("name", ""),
+                                        "opponent": match.get("away_team") if team_lower in home else match.get("home_team"),
+                                        "is_home": team_lower in home,
+                                    }
+                                    self._cache[cache_key] = result
+                                    return result
+
+            # Player not found in scorer markets
+            self._cache[cache_key] = None
+            return None
+
+        except Exception as e:
+            logger.debug(f"Failed to fetch scorer odds for {player_name}: {e}")
+            return None
+
     def get_clean_sheet_odds(self, team_name: str) -> Optional[Dict]:
         """
         Estimate clean sheet odds for a team's next match.
@@ -292,11 +372,11 @@ def get_clean_sheet_insight(team_name: str, injury_prob: float) -> Optional[str]
     venue = "at home" if is_home else "away"
 
     # High CS odds + Low injury risk = Great pick
-    if cs_prob >= 0.35 and injury_prob < 0.35:
+    if cs_prob >= 0.35 and injury_prob < 0.20:
         return f"🛡️ Clean Sheet Alert: {team_name} are {american} for a CS {venue} vs {opponent}. With low injury risk, this is a solid defensive pick!"
 
     # High CS odds + High injury risk = Risky
-    if cs_prob >= 0.35 and injury_prob >= 0.5:
+    if cs_prob >= 0.35 and injury_prob >= 0.30:
         return f"⚠️ {team_name} have good CS odds ({american}) vs {opponent}, but this player's elevated injury risk means they might not be on the pitch to collect those points."
 
     # Low CS odds (tough fixture)
@@ -305,6 +385,6 @@ def get_clean_sheet_insight(team_name: str, injury_prob: float) -> Optional[str]
 
     # Moderate situation
     if cs_prob >= 0.25:
-        return f"📊 {team_name} are {american} for a CS vs {opponent}. {'Low injury risk makes this viable.' if injury_prob < 0.4 else 'Monitor fitness before committing.'}"
+        return f"📊 {team_name} are {american} for a CS vs {opponent}. {'Low injury risk makes this viable.' if injury_prob < 0.20 else 'Monitor fitness before committing.'}"
 
     return None
