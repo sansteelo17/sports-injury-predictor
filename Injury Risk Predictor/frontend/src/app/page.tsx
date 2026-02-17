@@ -273,14 +273,17 @@ export default function Home() {
                     </button>
                     <button
                       onClick={() => setView('lab')}
-                      className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors ${
                         view === 'lab'
                           ? darkMode ? 'bg-[#1f1f1f] text-white' : 'bg-white text-gray-900 shadow-sm'
                           : darkMode ? 'text-gray-500 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700'
                       }`}
                     >
                       <Microscope size={14} />
-                      Yara&apos;s Lab Notes
+                      <span className="leading-tight">
+                        Yara&apos;s Lab Notes{" "}
+                        <span className="text-[10px] sm:text-xs opacity-80">(for builders)</span>
+                      </span>
                     </button>
                   </div>
 

@@ -40,6 +40,7 @@ export interface ScoringOdds {
   decimal: number;
   fractional: string;
   availability_factor: number;
+  analysis?: string | null;
 }
 
 export interface FPLValue {

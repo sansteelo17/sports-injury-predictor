@@ -26,6 +26,7 @@ class FPLClient:
         })
         self._bootstrap_cache = None
         self._team_lookup = None
+        self._player_summary_cache = {}
         self._position_lookup = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
 
     def _fetch(self, endpoint: str) -> Dict:
@@ -75,6 +76,20 @@ class FPLClient:
         if gameweek:
             endpoint += f"?event={gameweek}"
         return self._fetch(endpoint) or []
+
+    def get_player_summary(self, player_id: int) -> Dict:
+        """Get player match-by-match history from element-summary endpoint."""
+        try:
+            pid = int(player_id)
+        except (TypeError, ValueError):
+            return {}
+        if pid <= 0:
+            return {}
+        if pid in self._player_summary_cache:
+            return self._player_summary_cache[pid]
+        data = self._fetch(f"element-summary/{pid}/") or {}
+        self._player_summary_cache[pid] = data
+        return data
 
     def get_standings(self) -> List[Dict]:
         """
@@ -245,9 +260,11 @@ class FPLClient:
         assists_per_90 = assists / per_90 if per_90 > 0 else 0
 
         return {
+            "player_id": player.get("id"),
             "name": player.get("web_name"),
             "full_name": f"{player.get('first_name')} {player.get('second_name')}",
             "team": teams.get(player.get("team"), "Unknown"),
+            "team_id": player.get("team"),
             "position": self._position_lookup.get(player.get("element_type"), "Unknown"),
             "goals": goals,
             "assists": assists,

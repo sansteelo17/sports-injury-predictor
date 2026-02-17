@@ -6,10 +6,131 @@ that explain WHY a player has their specific risk level.
 """
 
 import math
+import re
 from typing import Dict, List, Optional
 
+from .context_rag import build_dynamic_rag_line, retrieve_player_context
+from .llm_client import generate_grounded_narrative
 
-def generate_player_story(player_data: Dict) -> str:
+
+POPULAR_NAME_OVERRIDES = {
+    "mohamed salah": "Salah",
+    "bruno fernandes": "Bruno",
+    "heung-min son": "Son",
+    "son heung-min": "Son",
+    "bukayo saka": "Saka",
+    "erling haaland": "Haaland",
+    "alexander isak": "Isak",
+    "martin odegaard": "Odegaard",
+    "martin ødegaard": "Odegaard",
+}
+
+DISPLAY_TEAM_NAME_OVERRIDES = {
+    "Manchester United": "Man Utd",
+    "Manchester City": "Man City",
+    "Tottenham": "Spurs",
+    "Tottenham Hotspur": "Spurs",
+    "Wolverhampton": "Wolves",
+    "Wolverhampton Wanderers": "Wolves",
+    "West Ham United": "West Ham",
+    "Brighton Hove": "Brighton",
+    "Brighton & Hove Albion": "Brighton",
+    "Leeds United": "Leeds",
+    "Newcastle United": "Newcastle",
+    "Nottingham Forest": "Nott'm Forest",
+    "Nott'ham Forest": "Nott'm Forest",
+}
+
+
+def _safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value, default=0):
+    try:
+        if value is None:
+            return default
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_sentence(text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+    if text.endswith((".", "!", "?")):
+        return text
+    return f"{text}."
+
+
+def _count_phrase(count: int, singular: str, plural: Optional[str] = None) -> str:
+    label = singular if count == 1 else (plural or f"{singular}s")
+    return f"{count} {label}"
+
+
+def _display_team_name(team_name: Optional[str]) -> str:
+    value = (team_name or "").strip()
+    if not value:
+        return "this opponent"
+    mapped = DISPLAY_TEAM_NAME_OVERRIDES.get(value, value)
+    if mapped.islower():
+        mapped = mapped.title()
+    return mapped
+
+
+def _position_group(position: str) -> str:
+    pos = (position or "").strip().lower()
+    if not pos:
+        return "other"
+    if any(token in pos for token in ["goalkeeper", "keeper", "gk", "def", "back"]):
+        return "defender"
+    if any(token in pos for token in ["forward", "fwd", "striker", "winger", "wing"]):
+        return "attacker"
+    if any(token in pos for token in ["midfielder", "mid", "am", "cm", "dm", "playmaker"]):
+        return "midfielder"
+    return "other"
+
+
+def _call_name(player_data: Dict) -> str:
+    """Return football-popular short name for narrative voice."""
+    for key in ("story_name", "popular_name", "display_name", "web_name"):
+        value = (player_data.get(key) or "").strip()
+        if value:
+            return value
+
+    full_name = (player_data.get("name") or "").strip()
+    if not full_name:
+        return "This player"
+
+    lowered = full_name.lower()
+    if lowered in POPULAR_NAME_OVERRIDES:
+        return POPULAR_NAME_OVERRIDES[lowered]
+
+    parts = full_name.split()
+    if len(parts) == 1:
+        return parts[0]
+    particles = {"van", "von", "de", "da", "di", "del", "der", "dos", "le", "la"}
+    if len(parts) >= 2 and parts[-2].lower() in particles:
+        return f"{parts[-2]} {parts[-1]}"
+    return parts[-1]
+
+
+def _first_chunk_text(chunks: List[Dict], kind: str) -> Optional[str]:
+    for chunk in chunks:
+        if chunk.get("kind") == kind:
+            text = (chunk.get("text") or "").strip()
+            if text:
+                return text
+    return None
+
+
+def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = None) -> str:
     """
     Generate a personalized risk story for a player.
 
@@ -24,86 +145,113 @@ def generate_player_story(player_data: Dict) -> str:
         Human-readable story explaining the player's risk
     """
     name = player_data.get("name", "This player")
-    first_name = name.split()[0] if name else "This player"
+    first_name = _call_name(player_data)
 
-    prev_injuries = player_data.get("previous_injuries", 0)
-    days_lost = player_data.get("total_days_lost", 0)
-    days_since = player_data.get("days_since_last_injury", 365)
+    prev_injuries = _safe_int(player_data.get("previous_injuries", 0))
+    days_lost = _safe_float(player_data.get("total_days_lost", 0))
+    days_since = _safe_int(player_data.get("days_since_last_injury", 365), 365)
     archetype = player_data.get("archetype", "Unknown")
-    prob = player_data.get("ensemble_prob", 0.5)
-    age = player_data.get("age", 25)
+    prob = _safe_float(player_data.get("ensemble_prob", 0.5), 0.5)
+    age = _safe_int(player_data.get("age", 25), 25)
 
     # Calculate derived stats
     avg_days = days_lost / prev_injuries if prev_injuries > 0 else 0
 
-    # Build story components
-    parts = []
-
-    # Opening based on risk level with percentile context
+    # Opening with percentile context
     percentile = player_data.get("risk_percentile")
-    pct_suffix = ""
-    if percentile and percentile >= 0.85:
-        pct_suffix = f", placing them in the top {100 - int(percentile * 100)}% of risk across the league"
-
+    opening = ""
     if prob >= 0.45:
-        parts.append(f"{first_name} is currently at elevated risk{pct_suffix}")
+        opening = f"{first_name} currently profiles as high injury risk ({round(prob * 100)}%)."
     elif prob >= 0.30:
-        parts.append(f"{first_name} has a moderate injury risk{pct_suffix}")
+        opening = f"{first_name} currently profiles as moderate injury risk ({round(prob * 100)}%)."
     else:
-        parts.append(f"{first_name} has a relatively low injury risk")
+        opening = f"{first_name} currently profiles as lower injury risk ({round(prob * 100)}%)."
 
-    # Recency factor
-    if days_since < 30:
-        parts.append(f"having only recently returned from injury {days_since} days ago")
-    elif days_since < 60:
-        parts.append(f"still in the vulnerable window after returning from injury about {days_since} days ago")
-    elif days_since < 90:
-        parts.append("with a recent injury still in the recovery monitoring period")
+    if percentile and percentile >= 0.85:
+        top_bucket = max(1, 100 - int(float(percentile) * 100))
+        opening = opening.rstrip(".") + f" That places them in roughly the top {top_bucket}% of risk in the current pool."
 
-    # History factor
-    if prev_injuries == 0:
-        parts.append("with no significant injury history on record")
-    elif prev_injuries >= 15:
-        parts.append(f"with an extensive injury history of {prev_injuries} recorded injuries")
-    elif prev_injuries >= 10:
-        parts.append(f"having dealt with {prev_injuries} injuries throughout their career")
-    elif prev_injuries >= 5:
-        parts.append(f"with a moderate injury history of {prev_injuries} previous injuries")
+    # Retrieve context chunks (lightweight RAG over structured context)
+    context_chunks = retrieve_player_context(
+        player_data,
+        extra_context=extra_context,
+        top_k=12,
+        include_open_question=True,
+    )
 
-    # Severity factor
-    if avg_days >= 50:
-        parts.append(f"When injured, they typically miss significant time (averaging {avg_days:.0f} days per injury)")
-    elif avg_days >= 30:
-        parts.append(f"Their injuries tend to be moderately serious, averaging {avg_days:.0f} days out")
-    elif avg_days >= 15 and prev_injuries > 0:
-        parts.append(f"Most injuries have been relatively minor, averaging {avg_days:.0f} days recovery")
+    chunk_by_kind = {}
+    for chunk in context_chunks:
+        kind = chunk.get("kind")
+        if kind and kind not in chunk_by_kind:
+            chunk_by_kind[kind] = chunk.get("text", "")
 
-    # Age factor
+    details: List[str] = []
+    for kind in [
+        "history",
+        "sample_sensitivity",
+        "severity_pattern",
+        "recency",
+        "fixture_history",
+        "fixture_history_all_time",
+        "fixture_latest",
+        "recent_form",
+        "vs_opponent",
+        "opponent_defense",
+        "workload",
+        "fixture",
+        "market",
+        "output",
+    ]:
+        text = chunk_by_kind.get(kind, "")
+        sentence = _as_sentence(text)
+        if sentence and sentence not in details:
+            details.append(sentence)
+
+    # Age context (kept explicit because it is not always present in retrieved chunks)
     if age >= 32:
-        parts.append(f"At {age}, recovery times may be extended compared to younger players")
+        details.append(f"At {age}, recovery windows can tighten under fixture congestion.")
     elif age <= 21:
-        parts.append(f"At just {age}, they're still developing physically which can be both protective and risky")
+        details.append(f"At {age}, physical development can be both protective and volatile.")
 
-    # Archetype-specific insight
+    # Archetype interpretation
     archetype_insights = {
-        "Currently Vulnerable": "The recent return from injury places them in a high-risk window where re-injury is most likely.",
-        "Fragile": "Their injury pattern shows a tendency toward serious injuries requiring extended recovery periods.",
-        "Injury Prone": "Historical patterns suggest they're more susceptible to injuries than the average player.",
-        "Recurring": "While injuries are frequent, they tend to recover quickly from each setback.",
-        "Durable": "Their body has shown resilience, bouncing back well from physical demands.",
-        "Clean Record": "Limited injury data makes prediction less certain, but the absence of issues is encouraging.",
-        "Moderate Risk": "Their injury profile is fairly typical, without major red flags or notable resilience.",
+        "Currently Vulnerable": "The return window is still open, so short-term re-injury risk remains elevated.",
+        "Fragile": "When setbacks happen, they have tended to require longer recoveries.",
+        "Injury Prone": "Frequency is the key concern rather than one isolated injury spell.",
+        "Recurring": "The pattern is repeat events with relatively manageable layoff lengths.",
+        "Durable": "Recent availability trends point to resilience under normal load.",
+        "Clean Record": "Data history is light, which keeps uncertainty higher but baseline risk lower.",
+        "Moderate Risk": "The profile is mixed, with no single dominant red flag.",
     }
-
     if archetype in archetype_insights:
-        parts.append(archetype_insights[archetype])
+        details.append(archetype_insights[archetype])
 
-    # Combine into flowing narrative
-    story = ". ".join(parts)
-    if not story.endswith("."):
-        story += "."
+    # Guardrail for small-sample histories (e.g., 1-2 injuries with one severe event)
+    if 0 < prev_injuries <= 2:
+        if days_since >= 365:
+            details.append(
+                f"Only {prev_injuries} injuries are logged, so one major event can skew averages, and the {days_since}-day healthy run should carry real weight."
+            )
+        else:
+            details.append(
+                f"Only {prev_injuries} injuries are logged, so this profile is more sample-sensitive than most."
+            )
 
-    return story
+    # Build final narrative with controlled length
+    open_question = _as_sentence(_first_chunk_text(context_chunks, "open_question") or "")
+    story_parts = [_as_sentence(opening)] + [d for d in details if d][:5]
+    if open_question:
+        story_parts.append(open_question)
+    fallback_story = " ".join(part for part in story_parts if part).strip()
+    fallback_story = fallback_story or f"{first_name} currently profiles as moderate injury risk."
+
+    return generate_grounded_narrative(
+        task="Write a risk analysis narrative that explains injury profile clearly for football users.",
+        player_name=name,
+        context_chunks=context_chunks,
+        fallback_text=fallback_story,
+        require_open_question=True,
+    )
 
 
 def generate_risk_factors_list(player_data: Dict) -> List[Dict]:
@@ -219,30 +367,68 @@ def get_recommendation_text(player_data: Dict) -> str:
     return "Standard monitoring and recovery protocols are appropriate. No specific interventions indicated at this time."
 
 
-def get_fpl_insight(player_data: Dict) -> Optional[str]:
-    """Generate FPL-specific insight for a player."""
-    name = player_data.get("name", "This player")
-    first_name = name.split()[0] if name else "This player"
-    days_since = player_data.get("days_since_last_injury", 365)
-    archetype = player_data.get("archetype", "Unknown")
-    prob = player_data.get("ensemble_prob", 0.5)
+def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> Optional[str]:
+    """Generate player-aware FPL manager tip (not team-level market copy)."""
+    first_name = _call_name(player_data)
+    if first_name and first_name[0].islower():
+        first_name = first_name[0].upper() + first_name[1:]
+    injury_prob = _safe_float(player_data.get("ensemble_prob", 0.5), 0.5)
+    days_since = _safe_int(player_data.get("days_since_last_injury", 365), 365)
+    minutes = _safe_int(player_data.get("minutes", 0), 0)
+    position = str(player_data.get("position", "Unknown") or "Unknown")
+    role = _position_group(position)
+    goals_per_90 = _safe_float(player_data.get("goals_per_90", 0.0), 0.0)
+    assists_per_90 = _safe_float(player_data.get("assists_per_90", 0.0), 0.0)
 
-    if days_since < 14:
-        return f"FPL Warning: {first_name} just returned from injury. High rotation risk - may be used as impact sub rather than starter."
+    extra_context = extra_context or {}
+    matchup_context = extra_context.get("matchup_context") or {}
+    recent_form = matchup_context.get("recent_form") or {}
+    recent_samples = _safe_int(recent_form.get("samples", 0), 0)
+    recent_returns = _safe_int(recent_form.get("returns", 0), 0)
+    recent_clean_sheets = _safe_int(recent_form.get("clean_sheets", 0), 0)
 
-    if 14 <= days_since <= 28:
-        return f"FPL Alert: {first_name}'s coach may limit minutes to reduce re-injury risk. Don't expect full 90s in the next few gameweeks."
+    next_fixture = extra_context.get("next_fixture") or {}
+    opponent = _display_team_name((
+        matchup_context.get("opponent")
+        or next_fixture.get("opponent")
+        or "this opponent"
+    ))
+    is_home = matchup_context.get("is_home")
+    if is_home is None:
+        is_home = next_fixture.get("is_home")
+    venue_label = "at home" if is_home else "away" if is_home is not None else ""
 
-    if archetype == "Currently Vulnerable" and days_since <= 60:
-        return f"FPL Note: {first_name} is in a vulnerable window. Have bench cover ready in case of setback."
+    # Baseline manager action (kept distinct from FPL value tiers)
+    if minutes < 180:
+        action = "Bench for now"
+        reason = "minutes sample is too light to trust for immediate starts"
+    elif days_since < 21:
+        action = "Bench unless needed"
+        reason = "still in the short-term return window"
+    elif injury_prob >= 0.45:
+        action = "Start only with bench cover"
+        reason = "availability risk is still elevated"
+    elif role == "defender":
+        if recent_clean_sheets >= 2 and injury_prob < 0.35:
+            action = "Start"
+            reason = "clean-sheet form is trending up"
+        else:
+            action = "Playable, not a lock"
+            reason = "defensive return floor is still matchup-dependent"
+    else:
+        output_signal = goals_per_90 + assists_per_90
+        if output_signal >= 0.55 and recent_returns >= 2 and injury_prob < 0.35:
+            action = "Start with confidence"
+            reason = "output and availability both support the pick"
+        elif output_signal < 0.2 and recent_returns == 0:
+            action = "Bench/avoid this week"
+            reason = "current output profile is too quiet"
+        else:
+            action = "Start if owned"
+            reason = "decent floor, but ceiling depends on fixture state"
 
-    if prob >= 0.45:
-        return f"FPL Consideration: {first_name}'s elevated injury risk means rotation is likely during fixture congestion."
-
-    if archetype == "Injury Prone" and prob >= 0.35:
-        return f"FPL Tip: {first_name} has a history of injuries. Monitor news carefully before deadline."
-
-    return None
+    insight = f"{action} for {first_name} {venue_label} vs {opponent}: {reason}."
+    return _as_sentence(re.sub(r"\s{2,}", " ", insight).strip())
 
 
 def _prob_to_odds(prob: float) -> dict:
@@ -263,12 +449,16 @@ def _prob_to_odds(prob: float) -> dict:
     return {"american": american_str, "decimal": decimal_odds, "fractional": fractional}
 
 
-def calculate_scoring_odds(player_data: Dict) -> Optional[Dict]:
+def calculate_scoring_odds(player_data: Dict, extra_context: Optional[Dict] = None) -> Optional[Dict]:
     """
     Calculate odds for a player to score in the next match.
 
     Combines historical scoring rate with availability probability.
     """
+    position = str(player_data.get("position", "") or "").lower()
+    if any(token in position for token in ["def", "gk", "goalkeeper", "back"]):
+        return None
+
     goals_per_90 = player_data.get("goals_per_90", 0)
     assists_per_90 = player_data.get("assists_per_90", 0)
     injury_prob = player_data.get("ensemble_prob", 0.5)
@@ -283,6 +473,26 @@ def calculate_scoring_odds(player_data: Dict) -> Optional[Dict]:
     involvement_prob = min((goals_per_90 + assists_per_90) * availability, 0.95)
     odds = _prob_to_odds(score_prob)
 
+    fallback_analysis = (
+        f"Scoring headline: {round(score_prob * 100)}% anytime projection after injury adjustment. "
+        f"Baseline stays at {goals_per_90:.2f} goals/90, {assists_per_90:.2f} assists/90 "
+        f"with availability {availability:.2f}."
+    )
+    scoring_context = retrieve_player_context(
+        player_data,
+        extra_context=extra_context,
+        query="scoring odds injury adjusted probability goals assists availability fixture market",
+        top_k=10,
+        include_open_question=False,
+    )
+    scoring_analysis = generate_grounded_narrative(
+        task="Write a concise odds-to-score analysis for this player.",
+        player_name=player_data.get("name", "This player"),
+        context_chunks=scoring_context,
+        fallback_text=fallback_analysis,
+        require_open_question=False,
+    )
+
     return {
         "score_probability": round(score_prob, 3),
         "involvement_probability": round(involvement_prob, 3),
@@ -292,73 +502,139 @@ def calculate_scoring_odds(player_data: Dict) -> Optional[Dict]:
         "decimal": odds["decimal"],
         "fractional": odds["fractional"],
         "availability_factor": round(availability, 2),
+        "analysis": scoring_analysis,
     }
 
 
-def get_fpl_value_assessment(player_data: Dict) -> Optional[Dict]:
+def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = None) -> Optional[Dict]:
     """
     Generate FPL value assessment combining injury risk with attacking output.
     """
     name = player_data.get("name", "Player")
-    first_name = name.split()[0] if name else "Player"
-    goals = player_data.get("goals", 0)
-    assists = player_data.get("assists", 0)
-    goals_per_90 = player_data.get("goals_per_90", 0)
-    assists_per_90 = player_data.get("assists_per_90", 0)
-    price = player_data.get("price", 0)
-    injury_prob = player_data.get("ensemble_prob", 0.5)
-    position = player_data.get("position", "Unknown")
-    minutes = player_data.get("minutes", 0)
+    first_name = _call_name(player_data)
+    goals = _safe_int(player_data.get("goals", 0), 0)
+    assists = _safe_int(player_data.get("assists", 0), 0)
+    goals_per_90 = _safe_float(player_data.get("goals_per_90", 0), 0.0)
+    assists_per_90 = _safe_float(player_data.get("assists_per_90", 0), 0.0)
+    price = _safe_float(player_data.get("price", 0), 0.0)
+    injury_prob = _safe_float(player_data.get("ensemble_prob", 0.5), 0.5)
+    position = str(player_data.get("position", "Unknown") or "Unknown")
     archetype = player_data.get("archetype", "Unknown")
+    minutes = _safe_int(player_data.get("minutes", 0), 0)
+    role = _position_group(position)
 
-    if minutes < 270 or price == 0:
+    if minutes < 270 or price <= 0:
         return None
 
-    ga_per_90 = goals_per_90 + assists_per_90
-    risk_factor = 1 - injury_prob
-    adjusted_value = ga_per_90 * risk_factor
+    extra_context = extra_context or {}
+    matchup_context = extra_context.get("matchup_context") or {}
+    recent_form = matchup_context.get("recent_form") or {}
+    recent_samples = _safe_int(recent_form.get("samples", 0), 0)
+    recent_goals = _safe_int(recent_form.get("goals", 0), 0)
+    recent_assists = _safe_int(recent_form.get("assists", 0), 0)
+    recent_returns = _safe_int(recent_form.get("returns", 0), 0)
+    recent_clean_sheets = _safe_int(recent_form.get("clean_sheets", 0), 0)
 
-    if adjusted_value >= 0.6:
+    ga_per_90 = goals_per_90 + assists_per_90
+    risk_factor = max(0.05, 1 - injury_prob)
+    recent_output_rate = (
+        (recent_goals + recent_assists) / max(1, recent_samples)
+        if recent_samples > 0
+        else 0.0
+    )
+    recent_clean_sheet_rate = (
+        recent_clean_sheets / max(1, recent_samples)
+        if recent_samples > 0
+        else 0.0
+    )
+
+    if role == "defender":
+        # Defenders get value mostly from clean-sheet potential, with some attacking upside.
+        output_signal = (recent_clean_sheet_rate * 0.7) + (ga_per_90 * 0.3)
+        tier_thresholds = (0.42, 0.30, 0.20, 0.12)  # premium, strong, decent, rotation
+    else:
+        # Mid/attacker value is driven by output rate and recent return cadence.
+        output_signal = (ga_per_90 * 0.75) + ((recent_output_rate * 0.25) if recent_samples > 0 else 0.0)
+        tier_thresholds = (0.60, 0.40, 0.25, 0.12)
+
+    adjusted_value = output_signal * risk_factor
+    premium_cut, strong_cut, decent_cut, rotation_cut = tier_thresholds
+
+    if adjusted_value >= premium_cut:
         tier, emoji = "Premium", "💎"
-    elif adjusted_value >= 0.4:
+    elif adjusted_value >= strong_cut:
         tier, emoji = "Strong", "✅"
-    elif adjusted_value >= 0.25:
+    elif adjusted_value >= decent_cut:
         tier, emoji = "Decent", "👍"
-    elif adjusted_value >= 0.1:
+    elif adjusted_value >= rotation_cut:
         tier, emoji = "Rotation", "🔄"
     else:
         tier, emoji = "Avoid", "⛔"
 
     # Injury history context for verdict
-    prev_injuries = player_data.get("previous_injuries", player_data.get("player_injury_count", 0))
-    days_since = player_data.get("days_since_last_injury", 365)
-    total_days_lost = player_data.get("total_days_lost", 0)
+    prev_injuries = _safe_int(player_data.get("previous_injuries", player_data.get("player_injury_count", 0)), 0)
+    days_since = _safe_int(player_data.get("days_since_last_injury", 365), 365)
+    total_days_lost = _safe_float(player_data.get("total_days_lost", 0), 0.0)
     avg_days_per_injury = total_days_lost / prev_injuries if prev_injuries > 0 else 0
     injury_prone = prev_injuries >= 5 or (prev_injuries >= 3 and avg_days_per_injury >= 30)
+    high_risk = injury_prob >= 0.40
+    low_output = output_signal < (0.18 if role == "defender" else 0.18)
+    durability_signal = days_since >= 240 and prev_injuries <= 2
 
-    # Priority: archetype/history overrides, then model probability
-    if archetype == "Currently Vulnerable" or (days_since < 45 and prev_injuries >= 2):
-        verdict = f"{emoji} {first_name} is in a vulnerable period - monitor before investing."
-    elif injury_prone and days_since < 120:
-        verdict = f"{emoji} {first_name} has a concerning injury record ({prev_injuries} injuries, avg {avg_days_per_injury:.0f} days) - high risk pick."
-    elif injury_prob < 0.15 and not injury_prone and ga_per_90 >= 0.5:
-        verdict = f"{emoji} {first_name} is a reliable FPL asset - good returns with low injury risk."
-    elif injury_prob < 0.15 and not injury_prone and ga_per_90 < 0.3:
-        verdict = f"{emoji} {first_name} is durable but lacks attacking output for FPL value."
-    elif injury_prob >= 0.30 and ga_per_90 >= 0.5:
-        verdict = f"{emoji} {first_name} has great numbers but elevated injury risk - high reward, high risk."
-    elif injury_prob >= 0.30:
-        verdict = f"{emoji} {first_name} carries significant injury risk - consider alternatives."
+    if tier == "Avoid":
+        if low_output and high_risk:
+            verdict = (
+                f"{first_name} is an avoid this week: output is too thin and availability drag is still heavy."
+            )
+        elif low_output and durability_signal:
+            verdict = (
+                f"{first_name} is an avoid this week: upside is too thin for the price. "
+                f"Durability is not the main issue ({prev_injuries} prior injury, {days_since} days injury-free)."
+            )
+        elif low_output:
+            verdict = f"{first_name} is an avoid this week: output is too thin for this price bracket."
+        elif high_risk:
+            verdict = f"{first_name} is an avoid this week: injury drag is too high for the expected return."
+        else:
+            verdict = f"{first_name} is an avoid this week: projected return is too low for the price."
+    elif tier == "Rotation":
+        if low_output:
+            verdict = f"{first_name} is a rotation-only pick: minutes are usable, upside is limited."
+        elif high_risk:
+            verdict = f"{first_name} is a rotation-only pick until availability risk cools."
+        else:
+            verdict = f"{first_name} is fixture-dependent value, better as depth than a locked starter."
+    elif tier == "Decent":
+        if high_risk:
+            verdict = f"{first_name} is decent value but still carries availability drag."
+        else:
+            verdict = f"{first_name} is decent value with balanced upside and risk."
+    elif tier == "Strong":
+        verdict = f"{first_name} is strong value right now with reliable return potential."
     else:
-        verdict = f"{emoji} {first_name} offers {tier.lower()} FPL value with moderate risk."
+        verdict = f"{first_name} is premium value right now and can justify a starter slot."
+
+    if archetype == "Currently Vulnerable" and days_since < 60:
+        verdict = f"{first_name} is still in a vulnerable return window, which caps FPL trust this week."
+    elif injury_prone and days_since < 120 and tier in {"Decent", "Strong", "Premium"}:
+        verdict = (
+            f"{first_name} has real upside, but volatility is high "
+            f"({prev_injuries} injuries, {avg_days_per_injury:.0f} days average layoff)."
+        )
 
     position_insight = None
-    if position == "FWD" and ga_per_90 >= 0.5 and injury_prob < 0.20:
-        position_insight = f"As a forward with {goals} goals this season and low injury risk, {first_name} is a strong captaincy option."
-    elif position == "MID" and assists_per_90 >= 0.3 and injury_prob < 0.20:
-        position_insight = f"Creative midfielder with {assists} assists - good value in the midfield slot."
-    elif position == "DEF" and ga_per_90 >= 0.2:
-        position_insight = f"Attacking defender with goal threat - rare value if they stay fit."
+    if role == "attacker" and ga_per_90 >= 0.5 and injury_prob < 0.20:
+        position_insight = (
+            f"As a forward with {goals} goals this season and low injury drag, {first_name} is captain-viable."
+        )
+    elif role == "midfielder" and assists_per_90 >= 0.3 and injury_prob < 0.20:
+        position_insight = f"Creative midfield profile with {assists} assists - strong slot efficiency."
+    elif role == "defender" and (recent_clean_sheet_rate >= 0.4 or ga_per_90 >= 0.2):
+        position_insight = (
+            f"Defender value is live when clean sheets hold and attacking threat ({ga_per_90:.2f} G+A/90) stays active."
+        )
+
+    verdict = _as_sentence(verdict)
 
     return {
         "tier": tier,
@@ -412,7 +688,7 @@ def generate_yara_response(player_data: Dict, market_odds: Optional[Dict] = None
         market_odds_decimal, bookmaker — or None if insufficient data
     """
     name = player_data.get("name", "This player")
-    first_name = name.split()[0] if name else "This player"
+    first_name = _call_name(player_data)
     goals_per_90 = player_data.get("goals_per_90", 0)
     assists_per_90 = player_data.get("assists_per_90", 0)
     injury_prob = player_data.get("ensemble_prob", 0.5)
@@ -543,7 +819,7 @@ def _yara_no_market(name, yara, inj_prob, g90, a90, archetype, days_since):
 
 def _generate_fpl_tip(player_data, yara_prob, market_prob, opponent, is_home):
     """Generate FPL-specific tip based on model + market analysis."""
-    name = player_data.get("name", "Player").split()[0]
+    name = _call_name(player_data)
     injury_prob = player_data.get("ensemble_prob", 0.5)
     archetype = player_data.get("archetype", "Unknown")
     form = player_data.get("form", 0)
@@ -582,11 +858,9 @@ def _generate_fpl_tip(player_data, yara_prob, market_prob, opponent, is_home):
     return f"Solid mid-range option. {name} won't lose you your league but won't win it either."
 
 
-def generate_lab_notes(player_data: Dict) -> Optional[Dict]:
+def generate_lab_notes(player_data: Dict, extra_context: Optional[Dict] = None) -> Optional[Dict]:
     """
-    Generate Yara's Lab Notes — explainability in plain English + technical detail.
-
-    Checks key features against thresholds and explains what's driving the risk score.
+    Generate Yara's Lab Notes using RAG context and plain-language LLM narration.
 
     Args:
         player_data: Dict with player info including model features
@@ -595,132 +869,144 @@ def generate_lab_notes(player_data: Dict) -> Optional[Dict]:
         Dict with summary, key_drivers, technical — or None if insufficient data
     """
     name = player_data.get("name", "This player")
-    first_name = name.split()[0] if name else "This player"
-    prob = player_data.get("ensemble_prob", 0.5)
+    first_name = _call_name(player_data)
+    prob = _safe_float(player_data.get("ensemble_prob", 0.5), 0.5)
+
+    # RAG context used to ground plain-language explanation.
+    lab_context = retrieve_player_context(
+        player_data,
+        extra_context=extra_context,
+        query=(
+            "lab notes explainability workload recency injury history fixture "
+            "market odds form availability risk drivers"
+        ),
+        top_k=12,
+        include_open_question=False,
+    )
 
     # Check key features and build driver list
     drivers = []
 
     # 1. ACWR (Acute:Chronic Workload Ratio)
-    acwr = player_data.get("acwr", 0)
-    if acwr and float(acwr) >= 1.3:
+    acwr = _safe_float(player_data.get("acwr", 0), 0.0)
+    if acwr >= 1.3:
         drivers.append({
             "name": "Workload Ratio",
-            "value": round(float(acwr), 2),
+            "value": round(acwr, 2),
             "impact": "risk_increasing",
-            "explanation": f"ACWR of {float(acwr):.2f} exceeds the 1.3 threshold — workload is spiking relative to baseline."
+            "explanation": f"Workload ratio is {acwr:.2f}, above the safe range, so physical stress is running hot."
         })
-    elif acwr and float(acwr) > 0:
+    elif acwr > 0:
         drivers.append({
             "name": "Workload Ratio",
-            "value": round(float(acwr), 2),
+            "value": round(acwr, 2),
             "impact": "protective",
-            "explanation": f"ACWR of {float(acwr):.2f} is within safe range — workload is well managed."
+            "explanation": f"Workload ratio is {acwr:.2f}, which suggests load is being managed well."
         })
 
     # 2. Fatigue Index
-    fatigue = player_data.get("fatigue_index", 0)
-    if fatigue and float(fatigue) >= 1.0:
+    fatigue = _safe_float(player_data.get("fatigue_index", 0), 0.0)
+    if fatigue >= 1.0:
         drivers.append({
             "name": "Fatigue Index",
-            "value": round(float(fatigue), 2),
+            "value": round(fatigue, 2),
             "impact": "risk_increasing",
-            "explanation": "Acute load exceeding chronic load — accumulated fatigue is a concern."
+            "explanation": "Recent physical load is outpacing normal recovery rhythm."
         })
 
     # 3. Injury Count
-    inj_count = player_data.get("player_injury_count", player_data.get("previous_injuries", 0))
-    if inj_count and int(inj_count) >= 5:
+    inj_count = _safe_int(player_data.get("player_injury_count", player_data.get("previous_injuries", 0)), 0)
+    if inj_count >= 5:
         drivers.append({
             "name": "Injury History",
             "value": int(inj_count),
             "impact": "risk_increasing",
-            "explanation": f"{int(inj_count)} previous injuries — historical pattern strongly influences the model."
+            "explanation": f"{inj_count} prior injuries create a meaningful repeat-risk pattern."
         })
-    elif inj_count and int(inj_count) >= 3:
+    elif inj_count >= 3:
         drivers.append({
             "name": "Injury History",
             "value": int(inj_count),
             "impact": "risk_increasing",
-            "explanation": f"{int(inj_count)} previous injuries — moderate injury history noted."
+            "explanation": f"{inj_count} prior injuries keep baseline risk above average."
         })
-    elif int(inj_count or 0) == 0:
+    elif inj_count == 0:
         drivers.append({
             "name": "Injury History",
             "value": 0,
             "impact": "protective",
-            "explanation": "No recorded injuries — clean slate works strongly in the player's favor."
+            "explanation": "No recorded injuries in this dataset, which supports current availability."
         })
 
     # 4. Days Since Last Injury
-    days_since = player_data.get("days_since_last_injury", 365)
-    if days_since and int(days_since) <= 30:
+    days_since = _safe_int(player_data.get("days_since_last_injury", 365), 365)
+    if days_since <= 30:
         drivers.append({
             "name": "Recency",
             "value": int(days_since),
             "impact": "risk_increasing",
-            "explanation": f"Only {int(days_since)} days since last injury — re-injury window is still open."
+            "explanation": f"{days_since} days since last injury means the re-injury window is still open."
         })
-    elif days_since and int(days_since) <= 60:
+    elif days_since <= 60:
         drivers.append({
             "name": "Recency",
             "value": int(days_since),
             "impact": "risk_increasing",
-            "explanation": f"{int(days_since)} days since last injury — elevated risk period hasn't fully closed."
+            "explanation": f"{days_since} days since injury; risk is easing but not fully settled."
         })
-    elif days_since and int(days_since) > 365:
+    elif days_since > 365:
         drivers.append({
             "name": "Recency",
             "value": int(days_since),
             "impact": "protective",
-            "explanation": "Over a year injury-free — strong indicator of current durability."
+            "explanation": "Over a year injury-free is a strong durability signal."
         })
 
     # 5. Age
-    age = player_data.get("age", 25)
-    if age and int(age) >= 32:
+    age = _safe_int(player_data.get("age", 25), 25)
+    if age >= 32:
         drivers.append({
             "name": "Age Factor",
             "value": int(age),
             "impact": "risk_increasing",
-            "explanation": f"At {int(age)}, recovery capacity and tissue resilience decline — model accounts for this."
+            "explanation": f"At {age}, recovery margins are usually tighter through heavy schedules."
         })
-    elif age and int(age) <= 21:
+    elif age <= 21:
         drivers.append({
             "name": "Age Factor",
             "value": int(age),
             "impact": "neutral",
-            "explanation": f"At {int(age)}, still developing physically — can go either way."
+            "explanation": f"At {age}, physical development is still in progress."
         })
 
     # 6. Acute Load
-    acute = player_data.get("acute_load", 0)
-    if acute and float(acute) >= 3:
+    acute = _safe_float(player_data.get("acute_load", 0), 0.0)
+    if acute >= 3:
         drivers.append({
             "name": "Match Congestion",
-            "value": round(float(acute), 1),
+            "value": round(acute, 1),
             "impact": "risk_increasing",
-            "explanation": f"3+ matches in 7 days — fixture congestion is a significant risk factor."
+            "explanation": "Recent fixture congestion increases fatigue accumulation risk."
         })
 
     # 7. Injury Prone Flag
-    is_ip = player_data.get("is_injury_prone", 0)
-    if is_ip and int(is_ip) == 1:
+    is_ip = _safe_int(player_data.get("is_injury_prone", 0), 0)
+    if is_ip == 1:
         drivers.append({
             "name": "Injury Prone Profile",
             "value": "Yes",
             "impact": "risk_increasing",
-            "explanation": "Historical injury frequency exceeds the threshold — model flags elevated baseline risk."
+            "explanation": "Historical injury frequency is above the model's baseline threshold."
         })
 
     # 8. Spike Flag
-    spike = player_data.get("spike_flag", 0)
-    if spike and int(spike) == 1:
+    spike = _safe_int(player_data.get("spike_flag", 0), 0)
+    if spike == 1:
         drivers.append({
             "name": "Workload Spike",
             "value": "Detected",
             "impact": "risk_increasing",
-            "explanation": "ACWR > 1.5 — dangerous workload spike that sharply increases injury probability."
+            "explanation": "A sharp workload spike is detected, which raises short-term setback risk."
         })
 
     if not drivers:
@@ -730,21 +1016,52 @@ def generate_lab_notes(player_data: Dict) -> Optional[Dict]:
     impact_order = {"risk_increasing": 0, "neutral": 1, "protective": 2}
     drivers.sort(key=lambda d: impact_order.get(d["impact"], 1))
 
-    # Build plain English summary
+    # Build plain-language fallback summary, then let LLM polish it.
     risk_drivers = [d for d in drivers if d["impact"] == "risk_increasing"]
     protective_drivers = [d for d in drivers if d["impact"] == "protective"]
 
     if risk_drivers:
         driver_names = [d["name"].lower() for d in risk_drivers[:3]]
         if len(driver_names) == 1:
-            summary = f"The main factor elevating {first_name}'s risk is {driver_names[0]}."
+            summary = f"The biggest pressure on {first_name}'s risk this week is {driver_names[0]}."
         else:
-            summary = f"Key factors elevating {first_name}'s risk are {', '.join(driver_names[:-1])} and {driver_names[-1]}."
+            summary = (
+                f"The main risk pressures for {first_name} are "
+                f"{', '.join(driver_names[:-1])} and {driver_names[-1]}."
+            )
         if protective_drivers:
             prot_names = [d["name"].lower() for d in protective_drivers[:2]]
-            summary += f" Working in their favor: {', '.join(prot_names)}."
+            summary += f" What helps: {', '.join(prot_names)}."
     else:
-        summary = f"{first_name}'s risk profile is clean — no significant risk factors detected by the model."
+        summary = f"{first_name}'s profile is steady right now, without strong risk spikes."
+
+    rag_line = build_dynamic_rag_line(
+        player_data=player_data,
+        extra_context=extra_context,
+        section="story",
+        context_chunks=lab_context,
+    )
+    if rag_line:
+        summary = f"{summary} {rag_line}"
+
+    llm_context = list(lab_context)
+    for d in drivers[:4]:
+        llm_context.append({
+            "kind": "driver",
+            "text": f"{d['name']}: {d['explanation']}",
+            "tags": set(),
+            "weight": 1.0,
+        })
+    summary = generate_grounded_narrative(
+        task=(
+            "Write Yara's Lab Notes summary for builders in plain football language. "
+            "Keep it human-readable and avoid jargon. 2-3 short sentences."
+        ),
+        player_name=name,
+        context_chunks=llm_context,
+        fallback_text=summary,
+        require_open_question=False,
+    )
 
     # Build technical section
     lgb = player_data.get("lgb_prob", prob)
@@ -769,10 +1086,8 @@ def generate_lab_notes(player_data: Dict) -> Optional[Dict]:
     technical = {
         "model_agreement": agreement,
         "methodology": (
-            "Ensemble of CatBoost, LightGBM, and XGBoost with stacking meta-learner. "
-            "81 engineered features including workload ratios, injury history, "
-            "match congestion, and temporal patterns. "
-            "Trained on 10+ years of Premier League injury data."
+            "This note blends model output with public match context, workload trend, "
+            "injury history pattern, and fixture pressure. It does not use private medical records."
         ),
         "feature_highlights": tech_features[:8],
     }

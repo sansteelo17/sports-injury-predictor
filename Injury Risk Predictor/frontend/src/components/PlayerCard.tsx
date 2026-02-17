@@ -23,6 +23,19 @@ interface PlayerCardProps {
   darkMode?: boolean;
 }
 
+function formatStoryLines(story: string): string[] {
+  const normalized = (story || "")
+    .replace(/\s+/g, " ")
+    .replace(/([.!?])\s+(?=[A-Z])/g, "$1\n")
+    .replace(/\)\s+(?=[A-Z])/g, ")\n")
+    .trim();
+
+  return normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
   const archetypeColors: Record<string, { dark: string; light: string }> = {
     Durable: {
@@ -102,6 +115,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
     ? `No direct clean-sheet lines are available right now.`
     : `No direct scorer line is available right now from preferred books.`;
   const showExperimentalSections = false;
+  const storyLines = player.story ? formatStoryLines(player.story) : [];
 
   return (
     <div
@@ -263,11 +277,24 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
               >
                 Risk Analysis
               </span>
-              <p
-                className={`text-sm mt-2 leading-relaxed ${darkMode ? "text-gray-300" : "text-gray-600"}`}
-              >
-                {player.story}
-              </p>
+              <div className="mt-2 space-y-2">
+                {storyLines.map((line, index) => (
+                  <p
+                    key={`${index}-${line.slice(0, 24)}`}
+                    className={`text-sm leading-relaxed pl-3 border-l ${
+                      index === 0
+                        ? darkMode
+                          ? "text-gray-200 border-[#86efac]/45"
+                          : "text-gray-700 border-emerald-300"
+                        : darkMode
+                          ? "text-gray-300 border-white/10"
+                          : "text-gray-600 border-gray-200"
+                    }`}
+                  >
+                    {line}
+                  </p>
+                ))}
+              </div>
             </div>
           </div>
         </div>
@@ -403,15 +430,8 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
               <p
                 className={`text-sm leading-relaxed ${darkMode ? "text-gray-300" : "text-gray-600"}`}
               >
-                Yara estimates {player.name.split(" ").pop()}&apos;s chance to
-                score at{" "}
-                <span
-                  className={`font-semibold ${darkMode ? "text-green-400" : "text-green-600"}`}
-                >
-                  {Math.round(player.scoring_odds.score_probability * 100)}%
-                </span>{" "}
-                ({player.scoring_odds.decimal.toFixed(2)}) — adjusted for injury
-                risk and recent form.
+                {player.scoring_odds.analysis ??
+                  `Yara estimates ${player.name.split(" ").pop()}\'s chance to score at ${Math.round(player.scoring_odds.score_probability * 100)}% (${player.scoring_odds.decimal.toFixed(2)}) — adjusted for injury risk and recent form.`}
               </p>
             </div>
           </div>

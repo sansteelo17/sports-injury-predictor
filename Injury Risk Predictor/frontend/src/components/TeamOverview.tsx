@@ -59,6 +59,8 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
   };
 
   const moneylineRows = team.next_fixture?.moneyline_1x2 ?? [];
+  const dynamicMarketInsight = team.next_fixture?.fixture_insight?.trim() ?? '';
+  const showDynamicInsight = dynamicMarketInsight.length > 0;
 
   return (
     <div className={`holo-card rounded-2xl overflow-hidden ${
@@ -250,8 +252,22 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
         </div>
       )}
 
-      {/* Market Insight Banner - Negative (key players at risk) */}
-      {showNegativeInsight && (
+      {/* Market Insight Banner - Dynamic */}
+      {showDynamicInsight && (
+        <div className={`px-4 py-3 ${
+          darkMode ? 'bg-amber-500/10 border-t border-amber-500/20' : 'bg-amber-50 border-t border-amber-200'
+        }`}>
+          <div className="flex items-start gap-2">
+            <TrendingDown className="text-amber-500 flex-shrink-0 mt-0.5" size={16} />
+            <p className={`text-xs ${darkMode ? 'text-amber-200' : 'text-amber-800'}`}>
+              {dynamicMarketInsight}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Market Insight Banner - Negative (fallback) */}
+      {!showDynamicInsight && showNegativeInsight && (
         <div className={`px-4 py-3 ${
           darkMode ? 'bg-amber-500/10 border-t border-amber-500/20' : 'bg-amber-50 border-t border-amber-200'
         }`}>
@@ -266,8 +282,8 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
         </div>
       )}
 
-      {/* Market Insight Banner - Positive (key players healthy) */}
-      {showPositiveInsight && (
+      {/* Market Insight Banner - Positive (fallback) */}
+      {!showDynamicInsight && showPositiveInsight && (
         <div className={`px-4 py-3 ${
           darkMode ? 'bg-[#86efac]/10 border-t border-[#86efac]/20' : 'bg-emerald-50 border-t border-emerald-200'
         }`}>

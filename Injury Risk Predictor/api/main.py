@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import sys
 import os
+from datetime import datetime, timedelta
 
 from pathlib import Path
 try:
@@ -58,6 +59,7 @@ from src.inference.story_generator import (
 )
 from src.data_loaders.fpl_api import FPLClient, get_fpl_insights
 from src.data_loaders.football_data_api import FootballDataClient, get_standings_summary
+from src.data_loaders.api_client import FootballDataClient as MatchHistoryApiClient
 from src.data_loaders.odds_api import OddsClient, get_clean_sheet_insight
 # Archetype clustering imports are done lazily inside assign_hybrid_archetypes()
 # to avoid importing all of src.models (which pulls in lightgbm, xgboost, etc.)
@@ -104,14 +106,22 @@ artifacts = None
 inference_df = None
 fpl_stats_cache = {}  # FPL stats indexed by name
 fpl_team_ids = {}  # Team name -> FPL team ID (for badges)
+fpl_team_name_to_id = {}  # Team name -> FPL numeric team ID
+fpl_team_names_by_id = {}  # FPL numeric team ID -> team name
+fpl_team_meta = {}  # Team name -> full FPL team metadata
+fpl_team_recent_defense = {}  # Team ID -> recent defensive snapshot
 fpl_player_codes = {}  # Player name -> FPL code (for photos)
 fpl_players_by_team = {}  # Team name -> set of FPL player names (for filtering)
+historical_matches_df = None  # Local historical PL fixtures from csv
+fixture_history_cache = {}  # (team, opponent, years) -> summary
 odds_client = None
 
 
 @app.on_event("startup")
 async def load_models():
-    global artifacts, inference_df, fpl_stats_cache, fpl_team_ids, fpl_player_codes, fpl_players_by_team, odds_client
+    global artifacts, inference_df, fpl_stats_cache, fpl_team_ids, fpl_team_name_to_id
+    global fpl_team_names_by_id, fpl_team_meta, fpl_team_recent_defense
+    global fpl_player_codes, fpl_players_by_team, historical_matches_df, fixture_history_cache, odds_client
     artifacts = load_artifacts()
     if artifacts and "inference_df" in artifacts:
         inference_df = artifacts["inference_df"]
@@ -161,6 +171,41 @@ async def load_models():
         teams = client.get_teams()
         for t in teams:
             fpl_team_ids[t["name"].lower()] = t["code"]
+            fpl_team_name_to_id[t["name"].lower()] = t["id"]
+            fpl_team_names_by_id[t["id"]] = t["name"]
+            fpl_team_meta[t["name"].lower()] = t
+
+        # Build recent defensive form cache from completed fixtures
+        try:
+            all_fixtures = client.get_fixtures()
+            conceded_by_team = {}
+            for fx in all_fixtures:
+                if not (fx.get("finished") or fx.get("finished_provisional")):
+                    continue
+                home = fx.get("team_h")
+                away = fx.get("team_a")
+                home_score = fx.get("team_h_score")
+                away_score = fx.get("team_a_score")
+                kickoff = fx.get("kickoff_time") or ""
+                if home is None or away is None or home_score is None or away_score is None:
+                    continue
+                conceded_by_team.setdefault(home, []).append((kickoff, int(away_score)))
+                conceded_by_team.setdefault(away, []).append((kickoff, int(home_score)))
+
+            for team_id, rows in conceded_by_team.items():
+                rows = sorted(rows, key=lambda r: r[0])
+                last5 = rows[-5:]
+                if not last5:
+                    continue
+                avg_conceded = round(sum(v for _, v in last5) / len(last5), 2)
+                clean_sheets = sum(1 for _, v in last5 if v == 0)
+                fpl_team_recent_defense[team_id] = {
+                    "avg_goals_conceded_last5": avg_conceded,
+                    "clean_sheets_last5": clean_sheets,
+                    "samples": len(last5),
+                }
+        except Exception as defense_err:
+            logger.warning(f"Failed to build team recent-defense cache: {defense_err}")
         print(f"Loaded FPL stats for {len(all_stats)} players, {len(teams)} teams")
     except Exception as e:
         print(f"WARNING: Failed to load FPL stats: {e}")
@@ -169,6 +214,22 @@ async def load_models():
     odds_client = OddsClient()
     matches = odds_client.get_upcoming_matches()
     print(f"Loaded odds for {len(matches)} upcoming matches")
+
+    # Load historical fixture data (CSV + optional live backfill for post-2023 coverage)
+    try:
+        historical_matches_df = _load_fixture_history_dataset()
+        fixture_history_cache = {}
+        if historical_matches_df is not None and not historical_matches_df.empty:
+            latest_date = historical_matches_df["Date"].max()
+            latest_str = str(latest_date.date()) if hasattr(latest_date, "date") else str(latest_date)[:10]
+            print(
+                f"Loaded historical fixtures: {len(historical_matches_df)} rows "
+                f"(latest={latest_str})"
+            )
+        else:
+            print("No fixture history available — team-v-team context disabled")
+    except Exception as e:
+        print(f"WARNING: Failed to load historical fixture data: {e}")
 
     # Filter inference_df: validate against FPL and correct team assignments.
     # FPL updates weekly (gameweek-level) so it reflects January transfers etc.
@@ -268,14 +329,15 @@ def assign_rule_based_archetypes(df):
 
         if count == 0:
             return "Clean Record"
-        # Fragile: serious injuries (high severity + at least a pattern)
-        if count >= 3 and avg_sev >= 40 and worst >= 60:
+        # Fragile: repeated severe spells, not just one outlier event.
+        if ((count >= 4 and avg_sev >= 45 and worst >= 75) or
+                (count >= 3 and avg_sev >= 60 and worst >= 75)):
             return "Fragile"
         # Injury Prone: many injuries AND they're not just minor knocks
         if count >= 5 and avg_sev >= 20:
             return "Injury Prone"
-        # Recurring Issues: frequent recent injuries
-        if count >= 3 and days_since < 180:
+        # Recurring Issues: frequent and recent injuries
+        if count >= 3 and days_since < 180 and avg_sev >= 12:
             return "Recurring Issues"
         # Durable: few injuries, long time since last
         if count <= 2 and days_since > 365:
@@ -323,21 +385,37 @@ def assign_hybrid_archetypes(df):
         feat_df = build_player_archetype_features(detail_df)
         print(f"Built archetype features for {len(feat_df)} players")
 
-        # Use core features only (avoids curse of dimensionality with 44 sparse features)
+        # Avoid over-clustering tiny samples: players with sparse injury history
+        # are better handled by rule-based logic.
+        min_injuries_for_clustering = max(2, int(os.getenv("ARCHETYPE_CLUSTER_MIN_INJURIES", "3")))
+        feat_df["total_injuries"] = feat_df["total_injuries"].fillna(0)
+        clustered_feat_df = feat_df[feat_df["total_injuries"] >= min_injuries_for_clustering].copy()
+        sparse_feat_df = feat_df[feat_df["total_injuries"] < min_injuries_for_clustering].copy()
+        print(
+            f"Archetype clustering scope: {len(clustered_feat_df)} clustered, "
+            f"{len(sparse_feat_df)} sparse-history fallback"
+        )
+
+        if len(clustered_feat_df) < 25:
+            print("Insufficient clustered sample size — falling back to rule-based archetypes")
+            return assign_rule_based_archetypes(df)
+
+        # Use core features only (avoids curse of dimensionality with sparse one-hot columns)
         core_cols = [
             "total_injuries", "avg_severity", "median_severity", "max_severity",
             "high_severity_rate", "avg_days_between_injuries", "reinjury_rate",
             "body_area_entropy", "severity_cv", "severity_trend",
         ]
-        core_cols = [c for c in core_cols if c in feat_df.columns]
-        X = feat_df[core_cols].fillna(0).values
+        core_cols = [c for c in core_cols if c in clustered_feat_df.columns]
+        X = clustered_feat_df[core_cols].fillna(0).values
 
         # Standardize
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
 
         # --- HDBSCAN ---
-        clusterer = hdbscan.HDBSCAN(min_cluster_size=10, min_samples=3, cluster_selection_method="eom")
+        min_cluster_size = max(8, int(os.getenv("ARCHETYPE_HDBSCAN_MIN_CLUSTER_SIZE", "10")))
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size, min_samples=3, cluster_selection_method="eom")
         labels = clusterer.fit_predict(X_scaled)
         n_clusters = len(set(labels) - {-1})
         noise_count = (labels == -1).sum()
@@ -346,10 +424,11 @@ def assign_hybrid_archetypes(df):
         # --- KMeans fallback for noise points ---
         if n_clusters < 2:
             # HDBSCAN couldn't find structure — use KMeans entirely
-            print("HDBSCAN found <2 clusters — using KMeans with 5 clusters")
-            km = KMeans(n_clusters=5, random_state=42, n_init=10)
+            fallback_clusters = max(2, min(5, len(clustered_feat_df) // 12))
+            print(f"HDBSCAN found <2 clusters — using KMeans with {fallback_clusters} clusters")
+            km = KMeans(n_clusters=fallback_clusters, random_state=42, n_init=10)
             labels = km.fit_predict(X_scaled)
-            n_clusters = 5
+            n_clusters = fallback_clusters
         elif noise_count > 0:
             # Assign noise points to nearest HDBSCAN cluster via KMeans
             km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
@@ -359,58 +438,55 @@ def assign_hybrid_archetypes(df):
                     labels[i] = km_labels[i]
             print(f"KMeans assigned {noise_count} noise points to clusters")
 
-        feat_df["cluster"] = labels
+        clustered_feat_df["cluster"] = labels
 
         # --- Label clusters by ranking on key characteristics ---
-        profiles = feat_df.groupby("cluster").agg({
+        profiles = clustered_feat_df.groupby("cluster").agg({
             "total_injuries": "mean",
             "avg_severity": "mean",
             "max_severity": "mean",
             "high_severity_rate": "mean",
             "reinjury_rate": "mean",
             "severity_cv": "mean",
+            "avg_days_between_injuries": "mean",
+            "body_area_entropy": "mean",
+            "severity_trend": "mean",
         })
 
-        # Score each cluster for each archetype and assign greedily
-        archetype_candidates = [
-            ("Fragile", lambda r: r["avg_severity"] * 2 + r["max_severity"] - r["total_injuries"] * 3),
-            ("Injury Prone", lambda r: r["total_injuries"] * 5 + r["high_severity_rate"] * 20),
-            ("Unpredictable", lambda r: r["severity_cv"] * 30 + r["total_injuries"] * 2),
-            ("Recurring Issues", lambda r: r["reinjury_rate"] * 100 + r["total_injuries"] * 3),
-            ("Durable", lambda r: -(r["avg_severity"] * 2 + r["total_injuries"] * 5)),
-        ]
+        # Independent per-cluster scoring (do not force one-to-one archetype labels).
+        # Forcing unique labels across clusters was causing obvious misclassifications.
+        def _score_cluster(row):
+            injuries = float(row.get("total_injuries", 0) or 0)
+            avg_sev = float(row.get("avg_severity", 0) or 0)
+            max_sev = float(row.get("max_severity", 0) or 0)
+            high_sev = float(row.get("high_severity_rate", 0) or 0)
+            reinjury = float(row.get("reinjury_rate", 0) or 0)
+            variability = float(row.get("severity_cv", 0) or 0)
+            avg_gap = float(row.get("avg_days_between_injuries", 0) or 0)
+            entropy = float(row.get("body_area_entropy", 0) or 0)
+            trend = float(row.get("severity_trend", 0) or 0)
 
-        cluster_to_archetype = {}
-        assigned_clusters = set()
-        for archetype_name, score_fn in archetype_candidates:
-            best_cid, best_score = None, float("-inf")
-            for cid, row in profiles.iterrows():
-                if cid in assigned_clusters:
-                    continue
-                score = score_fn(row)
-                if score > best_score:
-                    best_score = score
-                    best_cid = cid
-            if best_cid is not None:
-                cluster_to_archetype[best_cid] = archetype_name
-                assigned_clusters.add(best_cid)
+            scores = {
+                "Fragile": (avg_sev * 1.5) + (max_sev * 0.8) + (high_sev * 35) - (injuries * 1.4),
+                "Injury Prone": (injuries * 7.0) + (high_sev * 12) + (max(0, 140 - avg_gap) * 0.06),
+                "Recurring Issues": (reinjury * 110) + (injuries * 3.5) + (max(0, 120 - avg_gap) * 0.05) + (max(0, trend) * 8),
+                "Unpredictable": (variability * 32) + (entropy * 8) + (abs(trend) * 4) + (injuries * 2),
+                "Durable": (max(0, 28 - avg_sev) * 1.2) + (max(0, 4 - injuries) * 8) + (avg_gap * 0.08) + (max(0, 0.35 - reinjury) * 40),
+            }
+            return max(scores, key=scores.get)
 
-        # Any remaining clusters get "Moderate Risk"
-        for cid in profiles.index:
-            if cid not in cluster_to_archetype:
-                cluster_to_archetype[cid] = "Moderate Risk"
-
-        feat_df["archetype"] = feat_df["cluster"].map(cluster_to_archetype)
+        cluster_to_archetype = {cid: _score_cluster(row) for cid, row in profiles.iterrows()}
+        clustered_feat_df["archetype"] = clustered_feat_df["cluster"].map(cluster_to_archetype)
 
         # Log cluster assignments
         for cid in sorted(cluster_to_archetype.keys()):
             row = profiles.loc[cid]
-            count = (feat_df["cluster"] == cid).sum()
+            count = (clustered_feat_df["cluster"] == cid).sum()
             print(f"  Cluster {cid} → {cluster_to_archetype[cid]} ({count} players, "
                   f"avg_inj={row['total_injuries']:.1f}, avg_sev={row['avg_severity']:.1f})")
 
         # Map back to inference_df by player name
-        archetype_lookup = dict(zip(feat_df["name"], feat_df["archetype"]))
+        archetype_lookup = dict(zip(clustered_feat_df["name"], clustered_feat_df["archetype"]))
         matched = 0
         for idx, row in df.iterrows():
             name = row.get("name", "")
@@ -418,8 +494,10 @@ def assign_hybrid_archetypes(df):
                 df.at[idx, "archetype"] = archetype_lookup[name]
                 matched += 1
 
-        # Rule-based fallback for unmatched players (not in detail pkl)
-        unmatched_mask = ~df["name"].isin(archetype_lookup)
+        sparse_names = set(sparse_feat_df["name"].tolist())
+
+        # Rule-based fallback for unmatched players (not in detail pkl or sparse history)
+        unmatched_mask = ~df["name"].isin(archetype_lookup) | df["name"].isin(sparse_names)
         unmatched_count = unmatched_mask.sum()
         if unmatched_count > 0:
             unmatched_df = assign_rule_based_archetypes(df.loc[unmatched_mask].copy())
@@ -428,9 +506,18 @@ def assign_hybrid_archetypes(df):
         # Recency-based overrides: clustering ignores time since last injury
         overrides = 0
         for idx, row in df.iterrows():
-            days_since = float(row.get("days_since_last_injury", 9999))
-            prev_inj = int(row.get("previous_injuries", row.get("player_injury_count", 0)))
-            total_days = float(row.get("total_days_lost", 0))
+            try:
+                days_since = float(row.get("days_since_last_injury", 9999))
+            except (TypeError, ValueError):
+                days_since = 9999.0
+            try:
+                prev_inj = int(float(row.get("previous_injuries", row.get("player_injury_count", 0)) or 0))
+            except (TypeError, ValueError):
+                prev_inj = 0
+            try:
+                total_days = float(row.get("total_days_lost", 0) or 0)
+            except (TypeError, ValueError):
+                total_days = 0.0
             avg_sev = total_days / prev_inj if prev_inj > 0 else 0
             current = df.at[idx, "archetype"]
 
@@ -442,8 +529,74 @@ def assign_hybrid_archetypes(df):
             elif days_since > 365 and avg_sev < 25 and current in ("Injury Prone", "Recurring Issues"):
                 df.at[idx, "archetype"] = "Durable"
                 overrides += 1
+            # Small-sample guardrail: 1-2 injuries can be skewed by one severe event.
+            elif prev_inj <= 2 and days_since > 365 and current in ("Fragile", "Injury Prone"):
+                if avg_sev >= 45:
+                    df.at[idx, "archetype"] = "Moderate Risk"
+                else:
+                    df.at[idx, "archetype"] = "Durable"
+                overrides += 1
 
+        # Collapse guard: if one archetype dominates unnaturally, fallback to
+        # rule-based assignment to preserve interpretability.
         counts = df["archetype"].value_counts().to_dict()
+        dominant_ratio = (max(counts.values()) / len(df)) if counts else 0.0
+        if dominant_ratio >= float(os.getenv("ARCHETYPE_DOMINANCE_MAX_RATIO", "0.55")):
+            print(
+                f"Archetype collapse detected ({dominant_ratio:.1%} dominant) — "
+                "falling back to rule-based archetypes"
+            )
+            df = assign_rule_based_archetypes(df)
+            counts = df["archetype"].value_counts().to_dict()
+            dominant_ratio = (max(counts.values()) / len(df)) if counts else 0.0
+
+        # Final guardrail: if data quality causes a second collapse, enforce a
+        # rank-based spread so the UI doesn't show one archetype for everyone.
+        if dominant_ratio >= 0.70:
+            print(
+                f"Archetype collapse persisted ({dominant_ratio:.1%}) — "
+                "applying quantile-based fallback archetypes"
+            )
+            tmp = df.copy()
+            inj = pd.to_numeric(
+                tmp.get("previous_injuries", tmp.get("player_injury_count", 0)),
+                errors="coerce",
+            ).fillna(0)
+            days_lost = pd.to_numeric(tmp.get("total_days_lost", 0), errors="coerce").fillna(0)
+            days_since = pd.to_numeric(tmp.get("days_since_last_injury", 365), errors="coerce").fillna(365)
+            avg_sev = days_lost.divide(inj.where(inj > 0, 1))
+
+            composite = (
+                inj * 0.65
+                + avg_sev * 0.08
+                + (days_since < 60).astype(float) * 6.0
+                + (days_since < 180).astype(float) * 2.0
+                - (days_since > 365).astype(float) * 2.5
+            )
+            rank = composite.rank(pct=True)
+
+            def _assign(i, sev, since, pct):
+                if i <= 0:
+                    return "Clean Record"
+                if since < 60:
+                    return "Currently Vulnerable"
+                if pct >= 0.88:
+                    return "Fragile" if sev >= 45 else "Injury Prone"
+                if pct >= 0.70:
+                    return "Injury Prone"
+                if pct >= 0.52:
+                    return "Recurring Issues"
+                if pct >= 0.32:
+                    return "Moderate Risk"
+                return "Durable"
+
+            tmp["archetype"] = [
+                _assign(i, sev, since, pct)
+                for i, sev, since, pct in zip(inj.tolist(), avg_sev.tolist(), days_since.tolist(), rank.tolist())
+            ]
+            df["archetype"] = tmp["archetype"].values
+            counts = df["archetype"].value_counts().to_dict()
+
         print(f"Hybrid archetypes: {matched} clustered, {unmatched_count} rule-based, {overrides} recency overrides")
         print(f"  Distribution: {counts}")
         return df
@@ -503,6 +656,7 @@ class ScoringOdds(BaseModel):
     decimal: float
     fractional: str
     availability_factor: float
+    analysis: Optional[str] = None
 
 
 class FPLValue(BaseModel):
@@ -842,6 +996,42 @@ def get_player_image_url(player_name: str) -> Optional[str]:
     return None
 
 
+POPULAR_NAME_OVERRIDES = {
+    "mohamed salah": "Salah",
+    "bruno fernandes": "Bruno",
+    "heung-min son": "Son",
+    "son heung-min": "Son",
+    "bukayo saka": "Saka",
+    "erling haaland": "Haaland",
+    "alexander isak": "Isak",
+    "martin odegaard": "Odegaard",
+    "martin ødegaard": "Odegaard",
+}
+
+
+def get_popular_player_name(player_name: str, fpl_stats: Optional[Dict[str, Any]] = None) -> str:
+    """Get natural football call-name used in narrative text."""
+    full = (player_name or "").strip()
+    lowered = full.lower()
+    if lowered in POPULAR_NAME_OVERRIDES:
+        return POPULAR_NAME_OVERRIDES[lowered]
+
+    if fpl_stats:
+        web_name = (fpl_stats.get("name") or "").strip()
+        if web_name:
+            return web_name
+
+    if not full:
+        return "This player"
+    parts = full.split()
+    if len(parts) == 1:
+        return parts[0]
+    particles = {"van", "von", "de", "da", "di", "del", "der", "dos", "le", "la"}
+    if len(parts) >= 2 and parts[-2].lower() in particles:
+        return f"{parts[-2]} {parts[-1]}"
+    return parts[-1]
+
+
 def calculate_implied_odds(prob: float) -> ImpliedOdds:
     """Convert probability to betting odds formats."""
     prob = max(0.01, min(0.99, prob))
@@ -932,6 +1122,650 @@ def _teams_match(fpl_team: str, team_hint: str) -> bool:
     if len(fpl_lower) >= 4 and (fpl_lower in hint_lower or hint_lower in fpl_lower):
         return True
     return False
+
+
+def _safe_int(val, default=0) -> int:
+    try:
+        if val is None:
+            return default
+        return int(float(val))
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(val, default=0.0) -> float:
+    try:
+        if val is None:
+            return default
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def _resolve_fpl_team_id(team_name: Optional[str]) -> Optional[int]:
+    """Resolve a display team name to FPL numeric team ID."""
+    if not team_name:
+        return None
+    team_lower = team_name.lower().strip()
+    search = TEAM_BADGE_ALIASES.get(team_lower, team_lower)
+
+    # Direct match
+    if search in fpl_team_name_to_id:
+        return fpl_team_name_to_id[search]
+
+    # Fuzzy containment
+    for key, tid in fpl_team_name_to_id.items():
+        if len(key) < 5:
+            continue
+        if search in key or key in search:
+            return tid
+    return None
+
+
+HISTORY_TEAM_ALIASES = {
+    "arsenal": "Arsenal",
+    "aston villa": "Aston Villa",
+    "bournemouth": "Bournemouth",
+    "brentford": "Brentford",
+    "brighton": "Brighton",
+    "brighton hove": "Brighton",
+    "brighton & hove albion": "Brighton",
+    "chelsea": "Chelsea",
+    "crystal palace": "Crystal Palace",
+    "everton": "Everton",
+    "fulham": "Fulham",
+    "ipswich": "Ipswich",
+    "leicester": "Leicester",
+    "liverpool": "Liverpool",
+    "man city": "Manchester City",
+    "manchester city": "Manchester City",
+    "man utd": "Manchester United",
+    "man united": "Manchester United",
+    "manchester united": "Manchester United",
+    "newcastle": "Newcastle",
+    "newcastle united": "Newcastle",
+    "nottingham": "Nott'ham Forest",
+    "nottingham forest": "Nott'ham Forest",
+    "nott'm forest": "Nott'ham Forest",
+    "southampton": "Southampton",
+    "spurs": "Tottenham",
+    "tottenham": "Tottenham",
+    "tottenham hotspur": "Tottenham",
+    "west ham": "West Ham",
+    "west ham united": "West Ham",
+    "wolves": "Wolverhampton",
+    "wolverhampton": "Wolverhampton",
+    "wolverhampton wanderers": "Wolverhampton",
+    "leeds": "Leeds",
+    "leeds united": "Leeds",
+    "burnley": "Burnley",
+    "sunderland": "Sunderland",
+}
+
+
+def _normalize_history_team_name(team_name: Optional[str]) -> Optional[str]:
+    if not team_name:
+        return None
+    key = team_name.lower().strip()
+    key = TEAM_BADGE_ALIASES.get(key, key)
+    return HISTORY_TEAM_ALIASES.get(key, team_name)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _safe_env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _fixture_history_cache_path() -> Path:
+    return Path(PROJECT_ROOT) / "data" / "cache" / "fixture_history_live.csv"
+
+
+def _normalize_fixture_history_df(df):
+    import pandas as pd
+
+    expected_cols = ["Date", "Home", "Away", "HomeGoals", "AwayGoals"]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=expected_cols)
+
+    missing = [c for c in expected_cols if c not in df.columns]
+    if missing:
+        logger.warning(f"Fixture history frame missing columns {missing}; skipping those rows")
+        return pd.DataFrame(columns=expected_cols)
+
+    out = df[expected_cols].copy()
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
+    out = out.dropna(subset=["Date", "Home", "Away"]).copy()
+    out["Home"] = out["Home"].astype(str).map(lambda x: _normalize_history_team_name(x) or x)
+    out["Away"] = out["Away"].astype(str).map(lambda x: _normalize_history_team_name(x) or x)
+    out["HomeGoals"] = pd.to_numeric(out["HomeGoals"], errors="coerce").fillna(0).astype(int)
+    out["AwayGoals"] = pd.to_numeric(out["AwayGoals"], errors="coerce").fillna(0).astype(int)
+    out = out.drop_duplicates(subset=["Date", "Home", "Away", "HomeGoals", "AwayGoals"])
+    out = out.sort_values("Date").reset_index(drop=True)
+    return out
+
+
+def _compute_history_backfill_seasons(local_df, max_seasons: int) -> List[int]:
+    import pandas as pd
+
+    now = datetime.utcnow()
+    current_season = now.year if now.month >= 8 else now.year - 1
+    if local_df is not None and not local_df.empty:
+        local_last = pd.to_datetime(local_df["Date"], errors="coerce").max()
+        if pd.notna(local_last):
+            # Season year start: Aug->year, Jan-May->year-1
+            start = local_last.year if local_last.month >= 8 else local_last.year - 1
+        else:
+            start = current_season - 4
+    else:
+        start = current_season - 4
+
+    start = max(2010, int(start))
+    if start > current_season:
+        start = current_season
+    seasons = list(range(start, current_season + 1))
+    if len(seasons) > max_seasons:
+        seasons = seasons[-max_seasons:]
+    return seasons
+
+
+def _load_cached_live_fixture_history(cache_path: Path):
+    import pandas as pd
+
+    if not cache_path.exists():
+        return pd.DataFrame(), False
+    try:
+        cached = pd.read_csv(cache_path, usecols=["Date", "Home", "Away", "HomeGoals", "AwayGoals"])
+        cached = _normalize_fixture_history_df(cached)
+        ttl_hours = _safe_env_int("FIXTURE_HISTORY_CACHE_TTL_HOURS", 24)
+        max_age = timedelta(hours=max(1, ttl_hours))
+        age = datetime.utcnow() - datetime.utcfromtimestamp(cache_path.stat().st_mtime)
+        is_fresh = age <= max_age
+        return cached, is_fresh
+    except Exception as e:
+        logger.warning(f"Failed reading cached live fixture history: {e}")
+        return pd.DataFrame(), False
+
+
+def _fetch_live_fixture_history_backfill(local_df):
+    import pandas as pd
+
+    if not _env_flag("FIXTURE_HISTORY_ENABLE_API_BACKFILL", default=True):
+        return pd.DataFrame()
+
+    api_key = (
+        os.getenv("FOOTBALL_DATA_API_KEY")
+        or os.getenv("FOOTBALL_DATA_KEY")
+        or os.getenv("FOOTBALL_DATA_TOKEN")
+    )
+    if not api_key:
+        return pd.DataFrame()
+
+    max_seasons = max(1, _safe_env_int("FIXTURE_HISTORY_MAX_API_SEASONS", 5))
+    seasons = _compute_history_backfill_seasons(local_df, max_seasons=max_seasons)
+    if not seasons:
+        return pd.DataFrame()
+
+    try:
+        client = MatchHistoryApiClient(api_key=api_key)
+    except Exception as e:
+        logger.warning(f"Could not initialize live fixture backfill client: {e}")
+        return pd.DataFrame()
+
+    frames = []
+    for season in seasons:
+        try:
+            df = client.get_premier_league_matches(season=season, status="FINISHED")
+            if df is not None and not df.empty:
+                frames.append(df[["Date", "Home", "Away", "HomeGoals", "AwayGoals"]].copy())
+        except Exception as e:
+            logger.warning(f"Failed fetching season {season}-{season+1} for fixture backfill: {e}")
+
+    if not frames:
+        return pd.DataFrame()
+
+    live_df = pd.concat(frames, ignore_index=True)
+    live_df = _normalize_fixture_history_df(live_df)
+    if live_df.empty:
+        return live_df
+
+    # Keep mainly the post-local tail plus overlap window for safe dedupe.
+    if local_df is not None and not local_df.empty:
+        local_last = pd.to_datetime(local_df["Date"], errors="coerce").max()
+        if pd.notna(local_last):
+            overlap_cutoff = local_last - pd.Timedelta(days=380)
+            live_df = live_df[live_df["Date"] >= overlap_cutoff].copy()
+
+    return live_df.reset_index(drop=True)
+
+
+def _load_fixture_history_dataset():
+    import pandas as pd
+
+    history_path = Path(PROJECT_ROOT) / "csv" / "premier-league-matches.csv"
+    local_df = pd.DataFrame(columns=["Date", "Home", "Away", "HomeGoals", "AwayGoals"])
+    if history_path.exists():
+        try:
+            local_df = pd.read_csv(
+                history_path,
+                usecols=["Date", "Home", "Away", "HomeGoals", "AwayGoals"],
+            )
+            local_df = _normalize_fixture_history_df(local_df)
+        except Exception as e:
+            logger.warning(f"Failed loading local fixture history CSV: {e}")
+            local_df = pd.DataFrame(columns=["Date", "Home", "Away", "HomeGoals", "AwayGoals"])
+
+    cache_path = _fixture_history_cache_path()
+    cached_live_df, cache_fresh = _load_cached_live_fixture_history(cache_path)
+    live_df = cached_live_df.copy()
+
+    if not cache_fresh:
+        fetched_live_df = _fetch_live_fixture_history_backfill(local_df)
+        if fetched_live_df is not None and not fetched_live_df.empty:
+            live_df = fetched_live_df
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                live_df.to_csv(cache_path, index=False)
+                logger.info(
+                    f"Refreshed live fixture history cache: {len(live_df)} rows -> {cache_path}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed writing fixture history cache: {e}")
+
+    parts = []
+    if local_df is not None and not local_df.empty:
+        parts.append(local_df)
+    if live_df is not None and not live_df.empty:
+        parts.append(live_df)
+
+    if not parts:
+        return pd.DataFrame(columns=["Date", "Home", "Away", "HomeGoals", "AwayGoals"])
+
+    combined = _normalize_fixture_history_df(pd.concat(parts, ignore_index=True))
+    if local_df is not None and not local_df.empty and (live_df is None or live_df.empty):
+        local_last = pd.to_datetime(local_df["Date"], errors="coerce").max()
+        if pd.notna(local_last):
+            stale_days = (datetime.utcnow() - local_last.to_pydatetime()).days
+            if stale_days > 365:
+                logger.warning(
+                    f"Fixture history appears stale by {stale_days} days; "
+                    "set FOOTBALL_DATA_API_KEY to enable live backfill."
+                )
+    return combined
+
+
+def get_fixture_history_context(
+    team_name: Optional[str],
+    opponent_name: Optional[str],
+    years: int = 5,
+    recent_n: int = 6,
+) -> Optional[Dict[str, Any]]:
+    """Summarize team-v-team fixture history from blended local+live dataset."""
+    if historical_matches_df is None or team_name is None or opponent_name is None:
+        return None
+
+    team = _normalize_history_team_name(team_name)
+    opp = _normalize_history_team_name(opponent_name)
+    if not team or not opp:
+        return None
+    if team == opp:
+        return None
+
+    cache_key = (team, opp, years, recent_n)
+    if cache_key in fixture_history_cache:
+        return fixture_history_cache[cache_key]
+
+    matches = historical_matches_df[
+        ((historical_matches_df["Home"] == team) & (historical_matches_df["Away"] == opp)) |
+        ((historical_matches_df["Home"] == opp) & (historical_matches_df["Away"] == team))
+    ].copy()
+    if matches.empty:
+        fixture_history_cache[cache_key] = None
+        return None
+
+    # Prefer last N years; fallback to all-time if sparse because local csv may stop at 2023.
+    cutoff = datetime.utcnow() - timedelta(days=365 * years)
+    recent_window = matches[matches["Date"] >= cutoff].copy()
+    if recent_window.empty:
+        period_matches = matches.copy()
+        period_label = "all available seasons"
+    else:
+        period_matches = recent_window
+        period_label = f"last {years} years"
+
+    period_matches = period_matches.sort_values("Date")
+    if len(period_matches) > recent_n:
+        period_matches = period_matches.tail(recent_n).copy()
+
+    wins = draws = losses = goals_for = goals_against = 0
+    meetings = []
+    for _, m in period_matches.iterrows():
+        home = m["Home"]
+        away = m["Away"]
+        hg = int(m.get("HomeGoals", 0))
+        ag = int(m.get("AwayGoals", 0))
+        date_str = str(m["Date"])[:10]
+        if home == team:
+            gf, ga = hg, ag
+        else:
+            gf, ga = ag, hg
+        goals_for += gf
+        goals_against += ga
+        if gf > ga:
+            wins += 1
+            result = "W"
+        elif gf < ga:
+            losses += 1
+            result = "L"
+        else:
+            draws += 1
+            result = "D"
+        meetings.append({
+            "date": date_str,
+            "result": result,
+            "score": f"{gf}-{ga}",
+            "home": home,
+            "away": away,
+        })
+
+    # All-time PL context for cases where recent window is thin (e.g., promoted teams).
+    all_time_wins = all_time_draws = all_time_losses = 0
+    all_time_goals_for = all_time_goals_against = 0
+    for _, m in matches.sort_values("Date").iterrows():
+        home = m["Home"]
+        hg = int(m.get("HomeGoals", 0))
+        ag = int(m.get("AwayGoals", 0))
+        if home == team:
+            gf, ga = hg, ag
+        else:
+            gf, ga = ag, hg
+        all_time_goals_for += gf
+        all_time_goals_against += ga
+        if gf > ga:
+            all_time_wins += 1
+        elif gf < ga:
+            all_time_losses += 1
+        else:
+            all_time_draws += 1
+
+    samples = len(period_matches)
+    summary = {
+        "team": team,
+        "opponent": opp,
+        "period_label": period_label,
+        "samples": samples,
+        "wins": wins,
+        "draws": draws,
+        "losses": losses,
+        "goals_for": goals_for,
+        "goals_against": goals_against,
+        "recent_meetings": meetings[-min(3, len(meetings)):],
+        "latest_meeting_date": meetings[-1]["date"] if meetings else None,
+        "all_time_samples": int(len(matches)),
+        "all_time_wins": all_time_wins,
+        "all_time_draws": all_time_draws,
+        "all_time_losses": all_time_losses,
+        "all_time_goals_for": all_time_goals_for,
+        "all_time_goals_against": all_time_goals_against,
+    }
+    fixture_history_cache[cache_key] = summary
+    return summary
+
+
+def get_player_matchup_context(
+    player_name: str,
+    team_hint: Optional[str] = None,
+    next_fixture_data: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build opponent-specific context: recent form + historical output vs next opponent."""
+    try:
+        fpl_stats = get_fpl_stats_for_player(player_name, team_hint=team_hint or "")
+        if not fpl_stats:
+            return None
+        player_id = _safe_int(fpl_stats.get("player_id"), 0)
+        if player_id <= 0:
+            return None
+
+        client = FPLClient()
+        summary = client.get_player_summary(player_id)
+        history = summary.get("history", []) if summary else []
+        if not history:
+            return None
+
+        played = [h for h in history if _safe_int(h.get("minutes"), 0) > 0]
+        if not played:
+            return None
+        played = sorted(played, key=lambda h: h.get("kickoff_time") or "")
+
+        recent = played[-5:]
+        recent_goals = sum(_safe_int(h.get("goals_scored"), 0) for h in recent)
+        recent_assists = sum(_safe_int(h.get("assists"), 0) for h in recent)
+        recent_clean_sheets = sum(_safe_int(h.get("clean_sheets"), 0) for h in recent)
+        recent_returns = sum(
+            1 for h in recent
+            if (_safe_int(h.get("goals_scored"), 0) + _safe_int(h.get("assists"), 0)) > 0
+        )
+        recent_avg_points = round(
+            sum(_safe_int(h.get("total_points"), 0) for h in recent) / max(1, len(recent)),
+            2,
+        )
+        recent_total_xg = round(
+            sum(_safe_float(h.get("expected_goals"), 0.0) for h in recent),
+            2,
+        )
+
+        opponent = next_fixture_data.get("opponent") if next_fixture_data else None
+        opponent_id = _resolve_fpl_team_id(opponent)
+        vs_opponent = []
+        if opponent_id:
+            vs_opponent = [
+                h for h in played
+                if _safe_int(h.get("opponent_team"), -1) == opponent_id
+            ]
+
+        vs_context = None
+        if opponent:
+            if vs_opponent:
+                vs_recent = vs_opponent[-3:]
+                vs_goals = sum(_safe_int(h.get("goals_scored"), 0) for h in vs_recent)
+                vs_assists = sum(_safe_int(h.get("assists"), 0) for h in vs_recent)
+                vs_clean_sheets = sum(_safe_int(h.get("clean_sheets"), 0) for h in vs_recent)
+                vs_returns = sum(
+                    1 for h in vs_recent
+                    if (_safe_int(h.get("goals_scored"), 0) + _safe_int(h.get("assists"), 0)) > 0
+                )
+                vs_avg_points = round(
+                    sum(_safe_int(h.get("total_points"), 0) for h in vs_recent) / max(1, len(vs_recent)),
+                    2,
+                )
+                vs_context = {
+                    "samples": len(vs_opponent),
+                    "goals": vs_goals,
+                    "assists": vs_assists,
+                    "clean_sheets": vs_clean_sheets,
+                    "returns": vs_returns,
+                    "avg_points_recent": vs_avg_points,
+                    "last_meeting_kickoff": vs_opponent[-1].get("kickoff_time"),
+                }
+            else:
+                vs_context = {
+                    "samples": 0,
+                    "goals": 0,
+                    "assists": 0,
+                    "clean_sheets": 0,
+                    "returns": 0,
+                    "avg_points_recent": None,
+                    "last_meeting_kickoff": None,
+                }
+
+        opponent_defense = None
+        if opponent_id:
+            team_meta = fpl_team_meta.get((fpl_team_names_by_id.get(opponent_id, "") or "").lower())
+            defense_form = fpl_team_recent_defense.get(opponent_id)
+            if team_meta or defense_form:
+                opponent_defense = {
+                    "strength_defence_home": _safe_int((team_meta or {}).get("strength_defence_home"), 0),
+                    "strength_defence_away": _safe_int((team_meta or {}).get("strength_defence_away"), 0),
+                    "avg_goals_conceded_last5": _safe_float((defense_form or {}).get("avg_goals_conceded_last5"), 0.0),
+                    "clean_sheets_last5": _safe_int((defense_form or {}).get("clean_sheets_last5"), 0),
+                    "samples": _safe_int((defense_form or {}).get("samples"), 0),
+                }
+
+        return {
+            "recent_form": {
+                "samples": len(recent),
+                "goals": recent_goals,
+                "assists": recent_assists,
+                "clean_sheets": recent_clean_sheets,
+                "returns": recent_returns,
+                "avg_points": recent_avg_points,
+                "total_xg": recent_total_xg,
+            },
+            "opponent": opponent,
+            "is_home": bool(next_fixture_data.get("is_home")) if next_fixture_data else None,
+            "vs_opponent": vs_context,
+            "opponent_defense": opponent_defense,
+        }
+    except Exception as e:
+        logger.warning(f"Failed building matchup context for {player_name}: {e}")
+        return None
+
+
+TEAM_NICKNAME_OVERRIDES = {
+    "Manchester City": "Man City",
+    "Manchester United": "Man Utd",
+    "Tottenham": "Spurs",
+    "Wolverhampton": "Wolves",
+    "West Ham": "West Ham",
+    "Brighton Hove": "Brighton",
+    "Nottingham": "Nott'm Forest",
+    "Nott'ham Forest": "Nott'm Forest",
+    "Nottingham Forest": "Nott'm Forest",
+    "Newcastle United": "Newcastle",
+}
+
+
+def _team_nickname(name: Optional[str]) -> str:
+    if not name:
+        return "Team"
+    return TEAM_NICKNAME_OVERRIDES.get(name, name)
+
+
+def _parse_decimal_odds(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text == "-":
+        return None
+    try:
+        val = float(text)
+    except (TypeError, ValueError):
+        return None
+    if val <= 1.0:
+        return None
+    return round(val, 2)
+
+
+def _avg_decimal_odds(lines: List[Dict[str, Any]], side: str) -> Optional[float]:
+    values = []
+    for line in lines:
+        dec = _parse_decimal_odds(line.get(side))
+        if dec is not None:
+            values.append(dec)
+    if not values:
+        return None
+    return round(sum(values) / len(values), 2)
+
+
+def _top_team_risk_names(team_name: str, top_n: int = 3, threshold: float = 0.45) -> List[str]:
+    if inference_df is None:
+        return []
+    try:
+        team_rows = inference_df[inference_df["team"].str.lower() == team_name.lower()].copy()
+        if team_rows.empty:
+            return []
+        team_rows = team_rows.sort_values("ensemble_prob", ascending=False)
+        names = []
+        for _, row in team_rows.iterrows():
+            prob = _safe_float(row.get("ensemble_prob"), 0.0)
+            if prob < threshold:
+                continue
+            player_name = row.get("name", "")
+            if not player_name:
+                continue
+            fpl = get_fpl_stats_for_player(player_name, team_hint=team_name)
+            display = get_popular_player_name(player_name, fpl)
+            if display not in names:
+                names.append(display)
+            if len(names) >= top_n:
+                break
+        return names
+    except Exception:
+        return []
+
+
+def _build_team_market_insight(
+    team_name: str,
+    opponent_name: Optional[str],
+    is_home: bool,
+    moneyline_rows: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[str]:
+    team_short = _team_nickname(team_name)
+    opponent_short = _team_nickname(opponent_name) if opponent_name else "opponent"
+    odds_rows = moneyline_rows or []
+
+    home_avg = _avg_decimal_odds(odds_rows, "home")
+    draw_avg = _avg_decimal_odds(odds_rows, "draw")
+    away_avg = _avg_decimal_odds(odds_rows, "away")
+
+    team_side_avg = home_avg if is_home else away_avg
+    opp_side_avg = away_avg if is_home else home_avg
+
+    team_implied = (1.0 / team_side_avg) if team_side_avg and team_side_avg > 1 else None
+    if team_implied is not None:
+        if team_implied >= 0.64:
+            price_state = "firm favorites"
+        elif team_implied >= 0.54:
+            price_state = "slight favorites"
+        elif team_implied >= 0.46:
+            price_state = "in a balanced market"
+        elif team_implied >= 0.38:
+            price_state = "slight underdogs"
+        else:
+            price_state = "clear underdogs"
+    elif team_side_avg is not None and opp_side_avg is not None and abs(team_side_avg - opp_side_avg) < 0.35:
+        price_state = "in a balanced market"
+    else:
+        price_state = "awaiting stronger live pricing"
+
+    h2h = get_fixture_history_context(team_name, opponent_name, years=5, recent_n=6) if opponent_name else None
+    h2h_part = ""
+    if h2h and _safe_int(h2h.get("samples"), 0) > 0:
+        period = str(h2h.get("period_label", "recent")).replace(" years", "y")
+        h2h_part = (
+            " H2H "
+            f"{_safe_int(h2h.get('wins'), 0)}-"
+            f"{_safe_int(h2h.get('draws'), 0)}-"
+            f"{_safe_int(h2h.get('losses'), 0)} "
+            f"({period})."
+        )
+
+    risk_names = _top_team_risk_names(team_name)
+    risk_part = f" Risk watch: {', '.join(risk_names)}." if risk_names else ""
+
+    headline = f"Market Insight: {team_short} {price_state} vs {opponent_short}."
+    return f"{headline}{h2h_part}{risk_part}".replace("..", ".")
 
 
 def get_next_fixture_for_team(team_name: str, injury_prob: float) -> Optional[Dict]:
@@ -1027,6 +1861,12 @@ def get_next_fixture_for_team(team_name: str, injury_prob: float) -> Optional[Di
                     # Merge external odds data if available
                     if odds_data:
                         fixture_result.update(odds_data)
+                    fixture_result["fixture_insight"] = _build_team_market_insight(
+                        team_name=team_name,
+                        opponent_name=fixture_result.get("opponent"),
+                        is_home=bool(fixture_result.get("is_home")),
+                        moneyline_rows=fixture_result.get("moneyline_1x2"),
+                    )
                     return fixture_result
     except Exception as e:
         logger.warning(f"Failed to get FPL fixture for {team_name}: {e}")
@@ -1260,6 +2100,7 @@ def player_row_to_risk(row) -> PlayerRisk:
 
     # Enrich with FPL stats
     fpl_stats = get_fpl_stats_for_player(player_name)
+    enriched_row["story_name"] = get_popular_player_name(player_name, fpl_stats)
     if fpl_stats:
         enriched_row.update({
             "goals": fpl_stats.get("goals", 0),
@@ -1269,6 +2110,8 @@ def player_row_to_risk(row) -> PlayerRisk:
             "price": fpl_stats.get("price", 0),
             "form": fpl_stats.get("form", 0),
             "minutes": fpl_stats.get("minutes", 0),
+            "display_name": fpl_stats.get("name", ""),
+            "popular_name": get_popular_player_name(player_name, fpl_stats),
         })
 
     # Compute risk percentile for context (e.g. "higher risk than 92% of players")
@@ -1277,12 +2120,18 @@ def player_row_to_risk(row) -> PlayerRisk:
         risk_percentile = round(float((inference_df["ensemble_prob"] <= prob).mean()), 3)
     enriched_row["risk_percentile"] = risk_percentile
 
-    # Use enriched_row for ALL generators so they see correct injury history
-    story = generate_player_story(enriched_row)
-    scoring_odds_data = calculate_scoring_odds(enriched_row)
-    fpl_value_data = get_fpl_value_assessment(enriched_row)
-    clean_sheet_data = calculate_clean_sheet_odds(enriched_row)
     next_fixture_data = get_next_fixture_for_team(team, prob)
+    fixture_history_data = get_fixture_history_context(
+        team_name=team,
+        opponent_name=next_fixture_data.get("opponent") if next_fixture_data else None,
+        years=5,
+    )
+    clean_sheet_data = calculate_clean_sheet_odds(enriched_row)
+    matchup_context_data = get_player_matchup_context(
+        player_name=player_name,
+        team_hint=team,
+        next_fixture_data=next_fixture_data,
+    )
 
     scorer_market_snapshot = None
     if odds_client:
@@ -1291,9 +2140,25 @@ def player_row_to_risk(row) -> PlayerRisk:
     bookmaker_consensus_data = build_bookmaker_consensus(
         player_name=player_name,
         position=enriched_row.get("position", ""),
-        scoring_odds_data=scoring_odds_data,
+        scoring_odds_data=None,
         clean_sheet_data=clean_sheet_data,
         scorer_market_snapshot=scorer_market_snapshot,
+    )
+
+    narrative_context = {
+        "next_fixture": next_fixture_data,
+        "fixture_history": fixture_history_data,
+        "bookmaker_consensus": bookmaker_consensus_data,
+        "matchup_context": matchup_context_data,
+    }
+    scoring_odds_data = calculate_scoring_odds(enriched_row, extra_context=narrative_context)
+    fpl_value_data = get_fpl_value_assessment(enriched_row, extra_context=narrative_context)
+
+    # Use enriched_row for ALL generators so they see corrected injury history.
+    # Story receives fixture + market context through the lightweight retrieval layer.
+    story = generate_player_story(
+        enriched_row,
+        extra_context=narrative_context,
     )
 
     # Yara's response: compare model projection with consensus market line
@@ -1319,11 +2184,9 @@ def player_row_to_risk(row) -> PlayerRisk:
     )
 
     # Yara's Lab Notes: explainability
-    lab_notes_data = generate_lab_notes(enriched_row)
+    lab_notes_data = generate_lab_notes(enriched_row, extra_context=narrative_context)
 
-    fpl_insight_text = get_fpl_insight(enriched_row)
-    if not fpl_insight_text and next_fixture_data:
-        fpl_insight_text = next_fixture_data.get("fixture_insight")
+    fpl_insight_text = get_fpl_insight(enriched_row, extra_context=narrative_context)
 
     return PlayerRisk(
         name=player_name,
