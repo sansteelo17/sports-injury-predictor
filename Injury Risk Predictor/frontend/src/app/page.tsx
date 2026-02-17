@@ -22,7 +22,15 @@ import { PlayerCard } from "@/components/PlayerCard";
 import { LabNotes } from "@/components/LabNotes";
 import { FPLInsights } from "@/components/FPLInsights";
 import { StandingsCards } from "@/components/StandingsCards";
-import { Activity, Shield, Info, Moon, Sun, Zap, Microscope } from "lucide-react";
+import {
+  Activity,
+  Shield,
+  Info,
+  Moon,
+  Sun,
+  Zap,
+  Microscope,
+} from "lucide-react";
 
 export default function Home() {
   const [teams, setTeams] = useState<string[]>([]);
@@ -38,7 +46,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [darkMode, setDarkMode] = useState(true);
-  const [view, setView] = useState<'overview' | 'lab'>('overview');
+  const [view, setView] = useState<"overview" | "lab">("overview");
 
   // Load teams, FPL data, and badges on mount
   useEffect(() => {
@@ -89,7 +97,7 @@ export default function Home() {
     }
 
     setLoading(true);
-    setView('overview');
+    setView("overview");
     getPlayerRisk(selectedPlayer)
       .then(setPlayerRisk)
       .catch(() => setError("Failed to load player data"))
@@ -104,7 +112,9 @@ export default function Home() {
     : "bg-white border-gray-200";
 
   return (
-    <div className={`app-shell min-h-screen flex flex-col ${bgClass} ${textClass} ${darkMode ? "matrix-theme" : "light-theme"}`}>
+    <div
+      className={`app-shell min-h-screen flex flex-col ${bgClass} ${textClass} ${darkMode ? "matrix-theme" : "light-theme"}`}
+    >
       {/* Header */}
       <header
         className={`holo-header mobile-square-header ${darkMode ? "bg-[#141414] border-b border-[#1f1f1f]" : "bg-white border-b border-gray-200"} py-3 sm:py-4 px-3 sm:px-4`}
@@ -130,7 +140,9 @@ export default function Home() {
                   Sports
                 </span>
               </h1>
-              <p className={`text-[10px] sm:text-xs leading-tight max-w-[170px] sm:max-w-none ${mutedClass}`}>
+              <p
+                className={`text-[10px] sm:text-xs leading-tight max-w-[170px] sm:max-w-none ${mutedClass}`}
+              >
                 Risk-aware match intelligence for fans and analysts.
               </p>
             </div>
@@ -170,16 +182,17 @@ export default function Home() {
               <strong
                 className={darkMode ? "text-[#86efac]" : "text-emerald-600"}
               >
-                Premier League coverage is now live with more leagues coming soon.
+                Premier League coverage is now live
               </strong>{" "}
+              with more leagues coming soon.{" "}
               <span className="hidden sm:inline">
-                Yara blends public injury history, workload, and fixture
-                context to predict the risk of players getting injured in the
-                next 2 weeks.
+                Yara blends public injury history data, workload, and fixture
+                context to predict the probability of players getting injured in
+                the next 2 weeks.
               </span>
               <span className="sm:hidden">
-                Yara blends public injury history, workload, and fixture
-                context to predict the risk of players getting injured in the
+                Yara blends public injury history, workload, and fixture context
+                to predict the probability of players getting injured in the
                 next 2 weeks.
               </span>
             </div>
@@ -220,11 +233,17 @@ export default function Home() {
         {teamOverview && !loading && (
           <div className="grid lg:grid-cols-3 gap-4 sm:gap-6">
             {/* Left Column - Team Overview & Player List */}
-            <div className={`lg:col-span-1 space-y-4 sm:space-y-6 ${playerRisk ? 'order-2 lg:order-1' : ''}`}>
+            <div
+              className={`lg:col-span-1 space-y-4 sm:space-y-6 ${playerRisk ? "order-2 lg:order-1" : ""}`}
+            >
               <TeamOverview team={teamOverview} darkMode={darkMode} />
 
               {standings && (
-                <StandingsCards standings={standings} darkMode={darkMode} teamBadges={teamBadges} />
+                <StandingsCards
+                  standings={standings}
+                  darkMode={darkMode}
+                  teamBadges={teamBadges}
+                />
               )}
 
               {fplInsights && (
@@ -235,7 +254,9 @@ export default function Home() {
                 />
               )}
 
-              <div className={`holo-panel ${cardClass} border rounded-xl p-3 sm:p-4`}>
+              <div
+                className={`holo-panel ${cardClass} border rounded-xl p-3 sm:p-4`}
+              >
                 <h3
                   className={`font-semibold mb-3 flex items-center gap-2 text-sm sm:text-base ${textClass}`}
                 >
@@ -257,40 +278,54 @@ export default function Home() {
             </div>
 
             {/* Right Column - Player Card / Lab Notes */}
-            <div className={`lg:col-span-2 ${playerRisk ? 'order-1 lg:order-2' : ''}`}>
+            <div
+              className={`lg:col-span-2 ${playerRisk ? "order-1 lg:order-2" : ""}`}
+            >
               {playerRisk ? (
                 <div className="space-y-4">
                   {/* View Toggle */}
-                  <div className={`holo-panel flex gap-1 p-1 rounded-xl ${darkMode ? 'bg-[#141414] border border-[#1f1f1f]' : 'bg-gray-100'}`}>
+                  <div
+                    className={`holo-panel flex gap-1 p-1 rounded-xl ${darkMode ? "bg-[#141414] border border-[#1f1f1f]" : "bg-gray-100"}`}
+                  >
                     <button
-                      onClick={() => setView('overview')}
+                      onClick={() => setView("overview")}
                       className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        view === 'overview'
-                          ? darkMode ? 'bg-[#1f1f1f] text-white' : 'bg-white text-gray-900 shadow-sm'
-                          : darkMode ? 'text-gray-500 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700'
+                        view === "overview"
+                          ? darkMode
+                            ? "bg-[#1f1f1f] text-white"
+                            : "bg-white text-gray-900 shadow-sm"
+                          : darkMode
+                            ? "text-gray-500 hover:text-gray-300"
+                            : "text-gray-500 hover:text-gray-700"
                       }`}
                     >
                       <Shield size={14} />
                       Overview
                     </button>
                     <button
-                      onClick={() => setView('lab')}
+                      onClick={() => setView("lab")}
                       className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors ${
-                        view === 'lab'
-                          ? darkMode ? 'bg-[#1f1f1f] text-white' : 'bg-white text-gray-900 shadow-sm'
-                          : darkMode ? 'text-gray-500 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700'
+                        view === "lab"
+                          ? darkMode
+                            ? "bg-[#1f1f1f] text-white"
+                            : "bg-white text-gray-900 shadow-sm"
+                          : darkMode
+                            ? "text-gray-500 hover:text-gray-300"
+                            : "text-gray-500 hover:text-gray-700"
                       }`}
                     >
                       <Microscope size={14} />
                       <span className="leading-tight">
                         <span>Yara&apos;s Lab Notes</span>
-                        <span className="block sm:inline text-[10px] sm:text-xs opacity-80 sm:ml-1">(for builders)</span>
+                        <span className="block sm:inline text-[10px] sm:text-xs opacity-80 sm:ml-1">
+                          (for builders)
+                        </span>
                       </span>
                     </button>
                   </div>
 
                   {/* Content */}
-                  {view === 'overview' ? (
+                  {view === "overview" ? (
                     <PlayerCard player={playerRisk} darkMode={darkMode} />
                   ) : (
                     <LabNotes player={playerRisk} darkMode={darkMode} />
@@ -329,7 +364,9 @@ export default function Home() {
                 className={`absolute -top-2 -right-2 animate-pulse ${darkMode ? "text-[#86efac]" : "text-emerald-600"}`}
               />
             </div>
-            <h2 className={`text-lg sm:text-xl font-semibold mb-2 ${textClass}`}>
+            <h2
+              className={`text-lg sm:text-xl font-semibold mb-2 ${textClass}`}
+            >
               Welcome to YaraSports
             </h2>
             <p className={`text-sm max-w-md mx-auto ${mutedClass}`}>
