@@ -1090,18 +1090,30 @@ def get_clean_sheet_insight(team_name: str, injury_prob: float) -> Optional[str]
 
     # High CS odds + Low injury risk = Great pick
     if cs_prob >= 0.35 and injury_prob < 0.20:
-        return f"🛡️ Clean Sheet Alert: {team_name} are {american} for a CS {venue} vs {opponent}. With low injury risk, this is a solid defensive pick!"
+        return (
+            f"Clean Sheet Alert: {team_name} are {american} for a CS {venue} vs {opponent}. "
+            "With low injury risk, this is a solid defensive pick."
+        )
 
     # High CS odds + High injury risk = Risky
     if cs_prob >= 0.35 and injury_prob >= 0.30:
-        return f"⚠️ {team_name} have good CS odds ({american}) vs {opponent}, but this player's elevated injury risk means they might not be on the pitch to collect those points."
+        return (
+            f"{team_name} have good CS odds ({american}) vs {opponent}, but this player's elevated injury "
+            "risk means they might not be on the pitch to collect those points."
+        )
 
     # Low CS odds (tough fixture)
     if cs_prob < 0.25:
-        return f"⚔️ Tough fixture: {team_name} face {opponent} - clean sheet unlikely ({american}). Consider bench fodder for this week."
+        return (
+            f"Tough fixture: {team_name} face {opponent} - clean sheet unlikely ({american}). "
+            "Consider bench fodder for this week."
+        )
 
     # Moderate situation
     if cs_prob >= 0.25:
-        return f"📊 {team_name} are {american} for a CS vs {opponent}. {'Low injury risk makes this viable.' if injury_prob < 0.20 else 'Monitor fitness before committing.'}"
+        return (
+            f"{team_name} are {american} for a CS vs {opponent}. "
+            + ("Low injury risk makes this viable." if injury_prob < 0.20 else "Monitor fitness before committing.")
+        )
 
     return None

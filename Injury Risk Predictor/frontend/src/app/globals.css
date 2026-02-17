@@ -125,14 +125,17 @@ body {
   background-repeat: repeat, repeat;
   background-size: 1600px 1000px, 1400px 900px;
   filter:
-    grayscale(18%)
-    saturate(165%)
-    contrast(116%)
-    brightness(94%)
-    blur(0.2px)
-    drop-shadow(0 0 24px rgba(167, 243, 208, 0.26));
+    grayscale(14%)
+    saturate(176%)
+    contrast(122%)
+    brightness(100%)
+    blur(0.08px)
+    drop-shadow(0 0 28px rgba(167, 243, 208, 0.30));
   mix-blend-mode: screen;
-  opacity: 0.44;
+  opacity: 0.48;
+  will-change: transform, opacity, background-position;
+  backface-visibility: hidden;
+  transform: translateZ(0);
   transform-origin: 50% 50%;
   animation:
     art-pan-a 48s linear infinite,
@@ -152,14 +155,17 @@ body {
   background-repeat: repeat, repeat;
   background-size: 1600px 1000px, 1200px 800px;
   filter:
-    grayscale(24%)
-    saturate(185%)
-    contrast(120%)
-    brightness(92%)
-    blur(0.15px)
-    drop-shadow(0 0 18px rgba(134, 239, 172, 0.22));
+    grayscale(22%)
+    saturate(192%)
+    contrast(126%)
+    brightness(96%)
+    blur(0.07px)
+    drop-shadow(0 0 20px rgba(134, 239, 172, 0.24));
   mix-blend-mode: soft-light;
-  opacity: 0.36;
+  opacity: 0.34;
+  will-change: transform, opacity, background-position;
+  backface-visibility: hidden;
+  transform: translateZ(0);
   transform-origin: 50% 50%;
   animation:
     art-pan-b 38s ease-in-out infinite alternate,
@@ -231,20 +237,20 @@ body {
 @keyframes art-pulse-a {
   0%,
   100% {
-    opacity: 0.34;
+    opacity: 0.38;
   }
   50% {
-    opacity: 0.54;
+    opacity: 0.52;
   }
 }
 
 @keyframes art-pulse-b {
   0%,
   100% {
-    opacity: 0.28;
+    opacity: 0.26;
   }
   50% {
-    opacity: 0.44;
+    opacity: 0.38;
   }
 }
 
@@ -338,7 +344,13 @@ body {
       radial-gradient(120% 120% at 16% 0%, rgba(190, 255, 228, 0.2), transparent 62%);
     background-size: 980px 620px, 860px 560px, cover;
     mix-blend-mode: screen;
-    filter: contrast(118%) brightness(108%) drop-shadow(0 0 14px rgba(172, 255, 226, 0.28));
+    filter:
+      saturate(118%)
+      contrast(132%)
+      brightness(116%)
+      blur(0.04px)
+      drop-shadow(0 0 22px rgba(172, 255, 226, 0.36));
+    opacity: 0.84;
     animation:
       mobile-card-art-drift 44s linear infinite,
       mobile-card-art-float 12s ease-in-out infinite;
@@ -353,8 +365,8 @@ body {
     background: url("/art/psychedelic-weave.svg") repeat;
     background-size: 900px 580px;
     mix-blend-mode: color-dodge;
-    opacity: 0.16;
-    filter: brightness(112%) drop-shadow(0 0 8px rgba(172, 255, 226, 0.2));
+    opacity: 0.24;
+    filter: brightness(124%) drop-shadow(0 0 14px rgba(172, 255, 226, 0.28));
     animation: mobile-card-art-drift 34s linear infinite reverse;
   }
 

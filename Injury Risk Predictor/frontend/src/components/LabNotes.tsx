@@ -50,7 +50,7 @@ export function LabNotes({ player, darkMode = true }: LabNotesProps) {
           <div className="flex items-center gap-2 mb-3">
             <BrainCircuit size={16} className={darkMode ? 'text-cyan-300' : 'text-cyan-700'} />
             <h3 className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              § Model Drivers This Week
+              Model Drivers This Week
             </h3>
           </div>
           <ul className="space-y-2">
@@ -68,38 +68,47 @@ export function LabNotes({ player, darkMode = true }: LabNotesProps) {
         </div>
 
         <div className={`rounded-lg p-4 ${darkMode ? 'bg-[#0a0a0a] border border-[#1f1f1f]' : 'bg-gray-50 border border-gray-200'}`}>
-          <div className="flex items-center gap-2 mb-3">
-            <BarChart3 size={16} className={darkMode ? 'text-emerald-300' : 'text-emerald-700'} />
-            <h3 className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              § Feature Importance Snapshot
-            </h3>
-          </div>
-          <ul className="space-y-2">
-            {featureRows.map((feat, i) => {
-              const raw = Number(feat.value) || 0;
-              const weight = featureTotal > 0 ? Math.abs(raw) / featureTotal : 0;
-              return (
-                <li key={i} className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  • {feat.name}: {weight.toFixed(2)} weight
-                </li>
-              );
-            })}
-            {featureRows.length === 0 && (
-              <li className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                • Feature-level weights are unavailable for this player snapshot.
-              </li>
-            )}
-          </ul>
-          <p className={`text-xs mt-3 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-            Model agreement: {Math.round(player.lab_notes.technical.model_agreement * 100)}%
-          </p>
+          <details className="group">
+            <summary
+              className={`list-none cursor-pointer select-none flex items-center justify-between text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}
+            >
+              <span className="flex items-center gap-2">
+                <BarChart3 size={16} className={darkMode ? 'text-emerald-300' : 'text-emerald-700'} />
+                <span>Feature Importance Snapshot</span>
+              </span>
+              <span className={`text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                Show
+              </span>
+            </summary>
+            <div className="mt-3 space-y-3">
+              <ul className="space-y-2">
+                {featureRows.map((feat, i) => {
+                  const raw = Number(feat.value) || 0;
+                  const weight = featureTotal > 0 ? Math.abs(raw) / featureTotal : 0;
+                  return (
+                    <li key={i} className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      • {feat.name}: {weight.toFixed(2)} weight
+                    </li>
+                  );
+                })}
+                {featureRows.length === 0 && (
+                  <li className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    • Feature-level weights are unavailable for this player snapshot.
+                  </li>
+                )}
+              </ul>
+              <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                Model agreement: {Math.round(player.lab_notes.technical.model_agreement * 100)}%
+              </p>
+            </div>
+          </details>
         </div>
 
         <div className={`rounded-lg p-4 ${darkMode ? 'bg-[#0a0a0a] border border-[#1f1f1f]' : 'bg-gray-50 border border-gray-200'}`}>
           <div className="flex items-center gap-2 mb-2">
             <ScrollText size={16} className={darkMode ? 'text-amber-300' : 'text-amber-700'} />
             <h3 className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              § Transparency Note
+              Transparency Note
             </h3>
           </div>
           <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>

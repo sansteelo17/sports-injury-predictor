@@ -561,15 +561,15 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
     premium_cut, strong_cut, decent_cut, rotation_cut = tier_thresholds
 
     if adjusted_value >= premium_cut:
-        tier, emoji = "Premium", "💎"
+        tier, emoji = "Premium", "gem"
     elif adjusted_value >= strong_cut:
-        tier, emoji = "Strong", "✅"
+        tier, emoji = "Strong", "badge-check"
     elif adjusted_value >= decent_cut:
-        tier, emoji = "Decent", "👍"
+        tier, emoji = "Decent", "thumbs-up"
     elif adjusted_value >= rotation_cut:
-        tier, emoji = "Rotation", "🔄"
+        tier, emoji = "Rotation", "rotate-cw"
     else:
-        tier, emoji = "Avoid", "⛔"
+        tier, emoji = "Avoid", "ban"
 
     # Injury history context for verdict
     prev_injuries = _safe_int(player_data.get("previous_injuries", player_data.get("player_injury_count", 0)), 0)

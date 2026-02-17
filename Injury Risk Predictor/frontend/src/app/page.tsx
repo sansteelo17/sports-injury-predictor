@@ -281,8 +281,8 @@ export default function Home() {
                     >
                       <Microscope size={14} />
                       <span className="leading-tight">
-                        Yara&apos;s Lab Notes{" "}
-                        <span className="text-[10px] sm:text-xs opacity-80">(for builders)</span>
+                        <span>Yara&apos;s Lab Notes</span>
+                        <span className="block sm:inline text-[10px] sm:text-xs opacity-80 sm:ml-1">(for builders)</span>
                       </span>
                     </button>
                   </div>
