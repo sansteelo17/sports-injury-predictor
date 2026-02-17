@@ -10,6 +10,11 @@ export const viewport: Viewport = {
 export const metadata: Metadata = {
   title: 'YaraSports - Injury Risk Predictor',
   description: 'ML-powered injury risk predictions for Premier League players',
+  icons: {
+    icon: '/icon.svg',
+    shortcut: '/icon.svg',
+    apple: '/icon.svg',
+  },
 };
 
 export default function RootLayout({

@@ -170,21 +170,17 @@ export default function Home() {
               <strong
                 className={darkMode ? "text-[#86efac]" : "text-emerald-600"}
               >
-                Premier League coverage is now live
+                Premier League coverage is now live with more leagues coming soon.
               </strong>{" "}
               <span className="hidden sm:inline">
-                with more leagues coming soon. Yara blends public injury
-                history, workload, and fixture context to separate the stable
-                from the vulnerable. You get clear, match-ready insight for
-                smarter picks, sharper lineup calls, and risk-aware reads
-                before kickoff.
+                Yara blends public injury history, workload, and fixture
+                context to predict the risk of players getting injured in the
+                next 2 weeks.
               </span>
               <span className="sm:hidden">
-                with more leagues coming soon. Yara blends public injury
-                history, workload, and fixture context to separate the stable
-                from the vulnerable. You get clear, match-ready insight for
-                smarter picks, sharper lineup calls, and risk-aware reads
-                before kickoff.
+                Yara blends public injury history, workload, and fixture
+                context to predict the risk of players getting injured in the
+                next 2 weeks.
               </span>
             </div>
           </div>
