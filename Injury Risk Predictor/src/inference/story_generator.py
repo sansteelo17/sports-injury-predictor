@@ -473,9 +473,10 @@ def calculate_scoring_odds(player_data: Dict, extra_context: Optional[Dict] = No
     involvement_prob = min((goals_per_90 + assists_per_90) * availability, 0.95)
     odds = _prob_to_odds(score_prob)
 
+    player_call_name = _call_name(player_data)
     fallback_analysis = (
-        f"Scoring headline: {round(score_prob * 100)}% anytime projection after injury adjustment. "
-        f"Baseline stays at {goals_per_90:.2f} goals/90, {assists_per_90:.2f} assists/90 "
+        f"Yara estimates {player_call_name}'s chance to score at {round(score_prob * 100)}% after injury adjustment. "
+        f"Baseline sits at {goals_per_90:.2f} goals/90 and {assists_per_90:.2f} assists/90 "
         f"with availability {availability:.2f}."
     )
     scoring_context = retrieve_player_context(
