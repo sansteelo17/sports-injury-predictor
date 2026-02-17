@@ -79,6 +79,8 @@ app.add_middleware(
         "https://epl-injury-frontend.onrender.com",
         "https://injurywatch.onrender.com",
         "https://yara-sports-frontend.onrender.com",
+        "https://yaraspeaks.com",
+        "https://www.yaraspeaks.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],
