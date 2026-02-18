@@ -745,13 +745,6 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                 >
                   {player.fpl_value.verdict}
                 </p>
-                {player.fpl_value.position_insight && (
-                  <p
-                    className={`text-sm mt-2 leading-relaxed ${darkMode ? "text-gray-400" : "text-gray-500"}`}
-                  >
-                    {player.fpl_value.position_insight}
-                  </p>
-                )}
               </div>
             </div>
           </div>

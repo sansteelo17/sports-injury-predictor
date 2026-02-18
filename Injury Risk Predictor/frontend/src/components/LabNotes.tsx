@@ -114,19 +114,8 @@ export function LabNotes({ player, darkMode = true }: LabNotesProps) {
           <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
             This model does not use medical records or private data. It uses publicly available match and performance data.
           </p>
-          <p className={`text-xs mt-3 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-            {player.lab_notes.summary}
-          </p>
         </div>
       </div>
-
-      {player.lab_notes.technical?.methodology && (
-        <div className="px-4 sm:px-6 py-4">
-          <p className={`text-xs leading-relaxed ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-            {player.lab_notes.technical.methodology}
-          </p>
-        </div>
-      )}
     </div>
   );
 }

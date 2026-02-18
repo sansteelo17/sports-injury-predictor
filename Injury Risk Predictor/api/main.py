@@ -1690,6 +1690,53 @@ def _avg_decimal_odds(lines: List[Dict[str, Any]], side: str) -> Optional[float]
     return round(sum(values) / len(values), 2)
 
 
+def _classify_price_state(
+    team_implied: Optional[float],
+    opp_implied: Optional[float],
+    team_side_avg: Optional[float],
+    opp_side_avg: Optional[float],
+) -> str:
+    # Primary classification is relative: team price vs opponent price.
+    if team_implied is not None and opp_implied is not None:
+        edge = team_implied - opp_implied
+        if abs(edge) < 0.03:
+            return "in a balanced market"
+        if edge >= 0.10:
+            return "firm favorites"
+        if edge >= 0.03:
+            return "slight favorites"
+        if edge <= -0.10:
+            return "clear underdogs"
+        return "slight underdogs"
+
+    # Decimal fallback if implied probabilities are unavailable.
+    if team_side_avg is not None and opp_side_avg is not None:
+        diff = opp_side_avg - team_side_avg
+        if abs(diff) < 0.20:
+            return "in a balanced market"
+        if diff >= 0.60:
+            return "firm favorites"
+        if diff > 0:
+            return "slight favorites"
+        if diff <= -0.60:
+            return "clear underdogs"
+        return "slight underdogs"
+
+    # Last resort when only one side is known.
+    if team_implied is not None:
+        if team_implied >= 0.62:
+            return "firm favorites"
+        if team_implied >= 0.55:
+            return "slight favorites"
+        if team_implied >= 0.45:
+            return "in a balanced market"
+        if team_implied >= 0.38:
+            return "slight underdogs"
+        return "clear underdogs"
+
+    return "awaiting stronger live pricing"
+
+
 def _top_team_risk_names(team_name: str, top_n: int = 3, threshold: float = 0.45) -> List[str]:
     if inference_df is None:
         return []
@@ -1735,21 +1782,8 @@ def _build_team_market_insight(
     opp_side_avg = away_avg if is_home else home_avg
 
     team_implied = (1.0 / team_side_avg) if team_side_avg and team_side_avg > 1 else None
-    if team_implied is not None:
-        if team_implied >= 0.64:
-            price_state = "firm favorites"
-        elif team_implied >= 0.54:
-            price_state = "slight favorites"
-        elif team_implied >= 0.46:
-            price_state = "in a balanced market"
-        elif team_implied >= 0.38:
-            price_state = "slight underdogs"
-        else:
-            price_state = "clear underdogs"
-    elif team_side_avg is not None and opp_side_avg is not None and abs(team_side_avg - opp_side_avg) < 0.35:
-        price_state = "in a balanced market"
-    else:
-        price_state = "awaiting stronger live pricing"
+    opp_implied = (1.0 / opp_side_avg) if opp_side_avg and opp_side_avg > 1 else None
+    price_state = _classify_price_state(team_implied, opp_implied, team_side_avg, opp_side_avg)
 
     h2h = get_fixture_history_context(team_name, opponent_name, years=5, recent_n=6) if opponent_name else None
     h2h_part = ""
