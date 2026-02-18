@@ -76,6 +76,17 @@ def _count_phrase(count: int, singular: str, plural: Optional[str] = None) -> st
     return f"{count} {label}"
 
 
+def _days_to_years_label(days: int) -> str:
+    if days < 365:
+        return f"{days} days"
+    years = days / 365.0
+    if years >= 3:
+        return f"Over {years:.1f} years"
+    if years >= 2:
+        return f"About {years:.1f} years"
+    return "Over 1 year"
+
+
 def _parse_scoreline(score: str) -> Optional[tuple[int, int]]:
     text = (score or "").strip()
     match = re.match(r"^\s*(\d+)\s*-\s*(\d+)\s*$", text)
@@ -203,6 +214,8 @@ def _build_dynamic_open_question(
     all_time_samples: int,
     days_since: int,
     market_prob: float,
+    opponent_defense_avg_conceded: float = 0.0,
+    opponent_defense_samples: int = 0,
 ) -> str:
     opp = _display_team_name(matchup_opponent) if matchup_opponent else None
     team_display = _display_team_name(team_name) if team_name else "their side"
@@ -284,6 +297,11 @@ def _build_dynamic_open_question(
             if recent_samples > 0
             else "limited recent attacking sample"
         )
+        opponent_defense_phrase = (
+            f"{opp} are conceding {opponent_defense_avg_conceded:.2f} per game lately"
+            if opp and opponent_defense_samples > 0 and opponent_defense_avg_conceded > 0
+            else ""
+        )
         h2h_attack_phrase = (
             f"{_count_phrase(vs_goals, 'goal')} and {_count_phrase(vs_assists, 'assist')} in {vs_samples} meetings vs {opp}"
             if opp and vs_samples >= 2
@@ -292,10 +310,19 @@ def _build_dynamic_open_question(
         if opp and recent_samples > 0:
             if (recent_goals + recent_assists) > 0:
                 candidates.extend([
-                    f"With {recent_goals} goals and {recent_assists} assists in the last {recent_samples}, does {call_name} deliver output against {opp}?",
-                    f"Can {call_name} carry this recent return profile into the {opp} fixture?",
-                    f"Is this where {call_name}'s current form turns into another attacking return versus {opp}?",
+                    (
+                        f"{call_name} has {recent_goals} goals and {recent_assists} assists in the last {recent_samples}; "
+                        f"does that form produce another return against {opp}?"
+                    ),
+                    (
+                        f"With {recent_goals + recent_assists} goal involvements in the last {recent_samples}, "
+                        f"can {call_name} hit again versus {opp}?"
+                    ),
                 ])
+                if opponent_defense_phrase:
+                    candidates.append(
+                        f"{call_name} has {recent_goals + recent_assists} involvements in the last {recent_samples}, and {opponent_defense_phrase}; does {call_name} return again?"
+                    )
             else:
                 candidates.extend([
                     f"No goals or assists in the last {recent_samples} - does {call_name} break through against {opp} now?",
@@ -320,9 +347,16 @@ def _build_dynamic_open_question(
         if opp and recent_samples > 0:
             candidates.extend([
                 f"Can {call_name} run this game from midfield and turn control into returns against {opp}?",
-                f"After {recent_goals} goals and {recent_assists} assists in the last {recent_samples}, does {call_name} deliver decisive moments versus {opp}?",
+                (
+                    f"{recent_goals} goals and {recent_assists} assists in the last {recent_samples}: "
+                    f"does {call_name} turn midfield volume into returns against {opp}?"
+                ),
                 f"At {recent_avg_points:.1f} average FPL points recently, does {call_name} convert midfield volume into output against {opp}?",
             ])
+            if opponent_defense_samples > 0 and opponent_defense_avg_conceded > 0:
+                candidates.append(
+                    f"With {opp} conceding {opponent_defense_avg_conceded:.2f} per game lately, does {call_name} find the final pass or shot that decides this fixture?"
+                )
         if opp and vs_samples >= 2:
             candidates.extend([
                 (
@@ -513,7 +547,7 @@ def build_player_context_chunks(
         _add_chunk(
             chunks,
             "recency",
-            f"{days_since} days injury-free is a strong current availability signal.",
+            f"{_days_to_years_label(days_since)} injury-free ({days_since} days) is a strong current availability signal.",
             ["recency", "availability", "protective"],
             2.8,
         )
@@ -627,8 +661,8 @@ def build_player_context_chunks(
                 chunks,
                 "fixture_history",
                 (
-                    f"Only {fixture_samples} recent tracked meeting for {fh_team} vs {fh_opp}, "
-                    "so fixture trend confidence is limited."
+                    f"Only {fixture_samples} recent meeting for {fh_team} vs {fh_opp}, "
+                    "so there is not enough recent history to call a clear trend yet."
                 ),
                 ["fixture", "history", "sample", "uncertainty"],
                 2.5,
@@ -740,7 +774,7 @@ def build_player_context_chunks(
                     "vs_opponent",
                     (
                         f"Against {matchup_opponent_display}: {vs_opponent.get('clean_sheets', 0)} clean sheets "
-                        f"across {vs_opponent.get('samples', 0)} tracked matches."
+                        f"across {vs_opponent.get('samples', 0)} meetings."
                     ),
                     ["opponent", "history", "head_to_head", "defense", "clean_sheet"],
                     2.9,
@@ -751,7 +785,7 @@ def build_player_context_chunks(
                     "vs_opponent",
                     (
                         f"Against {matchup_opponent_display}: {vs_opponent.get('goals', 0)} goals and "
-                        f"{vs_opponent.get('assists', 0)} assists across {vs_opponent.get('samples', 0)} tracked matches."
+                        f"{vs_opponent.get('assists', 0)} assists across {vs_opponent.get('samples', 0)} meetings."
                     ),
                     ["opponent", "history", "head_to_head", "form"],
                     2.9,
@@ -805,6 +839,8 @@ def build_player_context_chunks(
         all_time_samples=all_time_samples,
         days_since=days_since,
         market_prob=market_prob,
+        opponent_defense_avg_conceded=_safe_float(opponent_defense.get("avg_goals_conceded_last5", 0.0), 0.0),
+        opponent_defense_samples=_safe_int(opponent_defense.get("samples", 0), 0),
     )
     if open_question:
         _add_chunk(

@@ -384,8 +384,15 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
     matchup_context = extra_context.get("matchup_context") or {}
     recent_form = matchup_context.get("recent_form") or {}
     recent_samples = _safe_int(recent_form.get("samples", 0), 0)
+    recent_goals = _safe_int(recent_form.get("goals", 0), 0)
+    recent_assists = _safe_int(recent_form.get("assists", 0), 0)
     recent_returns = _safe_int(recent_form.get("returns", 0), 0)
     recent_clean_sheets = _safe_int(recent_form.get("clean_sheets", 0), 0)
+    recent_goal_involvements = recent_goals + recent_assists
+
+    opponent_defense = matchup_context.get("opponent_defense") or {}
+    opp_conceded = _safe_float(opponent_defense.get("avg_goals_conceded_last5", 0.0), 0.0)
+    opp_def_samples = _safe_int(opponent_defense.get("samples", 0), 0)
 
     next_fixture = extra_context.get("next_fixture") or {}
     opponent = _display_team_name((
@@ -397,35 +404,71 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
     if is_home is None:
         is_home = next_fixture.get("is_home")
     venue_label = "at home" if is_home else "away" if is_home is not None else ""
+    availability_pct = round((1 - injury_prob) * 100)
 
     # Baseline manager action (kept distinct from FPL value tiers)
     if minutes < 180:
         action = "Bench for now"
-        reason = "minutes sample is too light to trust for immediate starts"
+        reason = f"only {minutes} recent minutes, so starts are not secure yet"
     elif days_since < 21:
         action = "Bench unless needed"
-        reason = "still in the short-term return window"
+        reason = f"just {days_since} days since the last injury, so availability is still volatile"
     elif injury_prob >= 0.45:
         action = "Start only with bench cover"
-        reason = "availability risk is still elevated"
+        reason = f"availability risk is still elevated ({round(injury_prob * 100)}%)"
     elif role == "defender":
         if recent_clean_sheets >= 2 and injury_prob < 0.35:
             action = "Start"
-            reason = "clean-sheet form is trending up"
+            reason = (
+                f"{recent_clean_sheets} clean sheets in the last {recent_samples} and availability near {availability_pct}%"
+                if recent_samples > 0
+                else f"clean-sheet trajectory is positive with availability near {availability_pct}%"
+            )
         else:
             action = "Playable, not a lock"
-            reason = "defensive return floor is still matchup-dependent"
+            if recent_samples > 0:
+                reason = f"{recent_clean_sheets} clean sheets in the last {recent_samples}, so the clean-sheet floor is still matchup-dependent"
+            else:
+                reason = "defensive floor is still matchup-dependent"
     else:
         output_signal = goals_per_90 + assists_per_90
         if output_signal >= 0.55 and recent_returns >= 2 and injury_prob < 0.35:
             action = "Start with confidence"
-            reason = "output and availability both support the pick"
+            if recent_samples > 0:
+                reason = (
+                    f"{recent_goal_involvements} goal involvements in the last {recent_samples} "
+                    f"with availability near {availability_pct}%"
+                )
+            else:
+                reason = "output and availability both support the pick"
         elif output_signal < 0.2 and recent_returns == 0:
             action = "Bench/avoid this week"
-            reason = "current output profile is too quiet"
+            if recent_samples > 0:
+                reason = f"no returns in the last {recent_samples}, and baseline output is {output_signal:.2f} involvements per 90"
+            else:
+                reason = "current output profile is too quiet"
         else:
             action = "Start if owned"
-            reason = "decent floor, but ceiling depends on fixture state"
+            if recent_samples > 0 and opp_def_samples > 0 and opp_conceded > 0:
+                reason = (
+                    f"{recent_goal_involvements} involvements in the last {recent_samples}; "
+                    f"{opponent} are conceding {opp_conceded:.2f} goals per game lately"
+                )
+            elif recent_samples > 0:
+                reason = f"{recent_goal_involvements} involvements in the last {recent_samples}, with steady minutes behind that profile"
+            else:
+                reason = "minutes are stable, but the return trend is mixed"
+
+    # Align phrasing with FPL value tier to avoid contradictions.
+    value_assessment = get_fpl_value_assessment(player_data, extra_context=extra_context)
+    if value_assessment:
+        tier = (value_assessment.get("tier") or "").strip().lower()
+        if tier == "avoid":
+            action = "Bench/avoid this week"
+            reason = "overall availability-plus-output signal is weak right now"
+        elif tier == "rotation":
+            action = "Start only if needed"
+            reason = "minutes are usable, but projection is closer to squad depth than a locked starter"
 
     insight = f"{action} for {first_name} {venue_label} vs {opponent}: {reason}."
     return _as_sentence(re.sub(r"\s{2,}", " ", insight).strip())
@@ -872,6 +915,7 @@ def generate_lab_notes(player_data: Dict, extra_context: Optional[Dict] = None) 
     name = player_data.get("name", "This player")
     first_name = _call_name(player_data)
     prob = _safe_float(player_data.get("ensemble_prob", 0.5), 0.5)
+    archetype = str(player_data.get("archetype", "") or "").strip()
 
     # RAG context used to ground plain-language explanation.
     lab_context = retrieve_player_context(
@@ -890,19 +934,19 @@ def generate_lab_notes(player_data: Dict, extra_context: Optional[Dict] = None) 
 
     # 1. ACWR (Acute:Chronic Workload Ratio)
     acwr = _safe_float(player_data.get("acwr", 0), 0.0)
-    if acwr >= 1.3:
+    if acwr >= 1.25:
         drivers.append({
             "name": "Workload Ratio",
             "value": round(acwr, 2),
             "impact": "risk_increasing",
             "explanation": f"Workload ratio is {acwr:.2f}, above the safe range, so physical stress is running hot."
         })
-    elif acwr > 0:
+    elif 0 < acwr <= 0.8:
         drivers.append({
             "name": "Workload Ratio",
             "value": round(acwr, 2),
             "impact": "protective",
-            "explanation": f"Workload ratio is {acwr:.2f}, which suggests load is being managed well."
+            "explanation": f"Workload ratio is {acwr:.2f}, so recent load is lighter and recovery pressure is lower."
         })
 
     # 2. Fatigue Index
@@ -992,12 +1036,18 @@ def generate_lab_notes(player_data: Dict, extra_context: Optional[Dict] = None) 
 
     # 7. Injury Prone Flag
     is_ip = _safe_int(player_data.get("is_injury_prone", 0), 0)
-    if is_ip == 1:
+    prone_archetypes = {"Injury Prone", "Fragile", "Recurring", "Currently Vulnerable"}
+    if (
+        is_ip == 1
+        and inj_count >= 4
+        and days_since <= 240
+        and archetype in prone_archetypes
+    ):
         drivers.append({
             "name": "Injury Prone Profile",
             "value": "Yes",
             "impact": "risk_increasing",
-            "explanation": "Historical injury frequency is above the model's baseline threshold."
+            "explanation": f"Recurring injury frequency is still part of {first_name}'s short-term risk profile."
         })
 
     # 8. Spike Flag
@@ -1008,6 +1058,21 @@ def generate_lab_notes(player_data: Dict, extra_context: Optional[Dict] = None) 
             "value": "Detected",
             "impact": "risk_increasing",
             "explanation": "A sharp workload spike is detected, which raises short-term setback risk."
+        })
+
+    # 9. Add one contextual RAG driver so notes feel player/fixture-specific.
+    context_driver = (
+        _first_chunk_text(lab_context, "fixture_latest")
+        or _first_chunk_text(lab_context, "fixture_history")
+        or _first_chunk_text(lab_context, "recent_form")
+        or _first_chunk_text(lab_context, "opponent_defense")
+    )
+    if context_driver:
+        drivers.append({
+            "name": "Fixture Context",
+            "value": "Live",
+            "impact": "neutral",
+            "explanation": _as_sentence(context_driver).replace("tracked matches", "meetings"),
         })
 
     if not drivers:
@@ -1024,10 +1089,10 @@ def generate_lab_notes(player_data: Dict, extra_context: Optional[Dict] = None) 
     if risk_drivers:
         driver_names = [d["name"].lower() for d in risk_drivers[:3]]
         if len(driver_names) == 1:
-            summary = f"The biggest pressure on {first_name}'s risk this week is {driver_names[0]}."
+            summary = f"This week, {first_name}'s main pressure point is {driver_names[0]}."
         else:
             summary = (
-                f"The main risk pressures for {first_name} are "
+                f"This week, {first_name}'s key risk drivers are "
                 f"{', '.join(driver_names[:-1])} and {driver_names[-1]}."
             )
         if protective_drivers:
@@ -1035,15 +1100,6 @@ def generate_lab_notes(player_data: Dict, extra_context: Optional[Dict] = None) 
             summary += f" What helps: {', '.join(prot_names)}."
     else:
         summary = f"{first_name}'s profile is steady right now, without strong risk spikes."
-
-    rag_line = build_dynamic_rag_line(
-        player_data=player_data,
-        extra_context=extra_context,
-        section="story",
-        context_chunks=lab_context,
-    )
-    if rag_line:
-        summary = f"{summary} {rag_line}"
 
     llm_context = list(lab_context)
     for d in drivers[:4]:
@@ -1086,10 +1142,7 @@ def generate_lab_notes(player_data: Dict, extra_context: Optional[Dict] = None) 
 
     technical = {
         "model_agreement": agreement,
-        "methodology": (
-            "This note blends model output with public match context, workload trend, "
-            "injury history pattern, and fixture pressure. It does not use private medical records."
-        ),
+        "methodology": "",
         "feature_highlights": tech_features[:8],
     }
 
