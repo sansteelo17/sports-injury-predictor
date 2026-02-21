@@ -14,6 +14,8 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
+      - key: REFRESH_CRON_TOKEN
+        sync: false
     healthCheckPath: /api/health
 
   # Next.js Frontend
@@ -30,3 +32,23 @@ services:
         value: "20"
       - key: NEXT_PUBLIC_API_URL
         value: "https://yara-sports-api.onrender.com"
+
+  # Scheduled predictions refresh (runs separately; +$1/mo minimum billing)
+  - type: cron
+    name: yara-predictions-refresh
+    runtime: python
+    region: oregon
+    plan: starter
+    rootDir: Injury Risk Predictor
+    schedule: "0 */12 * * *"
+    buildCommand: pip install -r api/requirements.txt
+    startCommand: python scripts/trigger_refresh.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: REFRESH_TRIGGER_URL
+        value: "https://yara-sports-api.onrender.com/api/admin/refresh-predictions"
+      - key: REFRESH_MODE
+        value: "api"
+      - key: REFRESH_CRON_TOKEN
+        sync: false
