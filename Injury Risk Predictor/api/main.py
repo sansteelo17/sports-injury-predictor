@@ -4,13 +4,16 @@ FastAPI backend for EPL Injury Risk Predictor.
 Serves predictions from the trained ML models to the React frontend.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import sys
 import os
 from datetime import datetime, timedelta
+import asyncio
+import subprocess
+import threading
 
 from pathlib import Path
 try:
@@ -117,6 +120,74 @@ fpl_players_by_team = {}  # Team name -> set of FPL player names (for filtering)
 historical_matches_df = None  # Local historical PL fixtures from csv
 fixture_history_cache = {}  # (team, opponent, years) -> summary
 odds_client = None
+refresh_state = {
+    "running": False,
+    "last_status": "idle",
+    "last_started_at": None,
+    "last_finished_at": None,
+    "last_mode": None,
+    "last_error": None,
+    "last_exit_code": None,
+    "last_log_tail": "",
+}
+refresh_state_lock = threading.Lock()
+
+
+def _utc_now_iso() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _require_refresh_token(x_refresh_token: Optional[str]) -> None:
+    expected = (os.environ.get("REFRESH_CRON_TOKEN") or "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="Refresh endpoint is not configured. Set REFRESH_CRON_TOKEN.",
+        )
+    provided = (x_refresh_token or "").strip()
+    if provided != expected:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+
+def _run_refresh_job(mode: str = "api") -> None:
+    """Run refresh_predictions and hot-reload artifacts into API memory."""
+    global artifacts, inference_df
+
+    cmd = [sys.executable, "scripts/refresh_predictions.py", "--mode", mode]
+    output = ""
+    exit_code = 1
+    status = "failed"
+    error = None
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        exit_code = int(proc.returncode)
+        output = "\n".join(
+            [part for part in [(proc.stdout or "").strip(), (proc.stderr or "").strip()] if part]
+        )
+        if exit_code != 0:
+            error = f"refresh_predictions exited with code {exit_code}"
+        else:
+            # Reload all runtime artifacts/caches the same way startup does.
+            asyncio.run(load_models())
+            status = "success"
+    except Exception as exc:
+        error = str(exc)
+
+    log_tail = "\n".join((output or "").splitlines()[-40:])
+    with refresh_state_lock:
+        refresh_state["running"] = False
+        refresh_state["last_status"] = status
+        refresh_state["last_finished_at"] = _utc_now_iso()
+        refresh_state["last_exit_code"] = exit_code
+        refresh_state["last_error"] = error
+        refresh_state["last_log_tail"] = log_tail
 
 
 @app.on_event("startup")
@@ -124,6 +195,17 @@ async def load_models():
     global artifacts, inference_df, fpl_stats_cache, fpl_team_ids, fpl_team_name_to_id
     global fpl_team_names_by_id, fpl_team_meta, fpl_team_recent_defense
     global fpl_player_codes, fpl_players_by_team, historical_matches_df, fixture_history_cache, odds_client
+    # Reset caches so manual/cron refreshes don't accumulate stale keys.
+    fpl_stats_cache = {}
+    fpl_team_ids = {}
+    fpl_team_name_to_id = {}
+    fpl_team_names_by_id = {}
+    fpl_team_meta = {}
+    fpl_team_recent_defense = {}
+    fpl_player_codes = {}
+    fpl_players_by_team = {}
+    fixture_history_cache = {}
+
     artifacts = load_artifacts()
     if artifacts and "inference_df" in artifacts:
         inference_df = artifacts["inference_df"]
@@ -2281,6 +2363,58 @@ async def health_check():
         models_loaded=inference_df is not None,
         player_count=len(inference_df) if inference_df is not None else 0,
     )
+
+
+@app.post("/api/admin/refresh-predictions")
+async def trigger_prediction_refresh(
+    mode: str = "api",
+    x_refresh_token: Optional[str] = Header(default=None, alias="X-Refresh-Token"),
+):
+    """Trigger background prediction refresh and hot-reload artifacts."""
+    _require_refresh_token(x_refresh_token)
+    mode_key = (mode or "api").strip().lower()
+    if mode_key not in {"api", "fbref"}:
+        raise HTTPException(status_code=400, detail="mode must be 'api' or 'fbref'")
+
+    with refresh_state_lock:
+        if refresh_state["running"]:
+            return {
+                "status": "running",
+                "message": "Refresh already in progress",
+                "state": dict(refresh_state),
+            }
+        refresh_state["running"] = True
+        refresh_state["last_status"] = "running"
+        refresh_state["last_started_at"] = _utc_now_iso()
+        refresh_state["last_mode"] = mode_key
+        refresh_state["last_error"] = None
+        refresh_state["last_exit_code"] = None
+        refresh_state["last_log_tail"] = ""
+
+    worker = threading.Thread(
+        target=_run_refresh_job,
+        args=(mode_key,),
+        daemon=True,
+        name="refresh-predictions-worker",
+    )
+    worker.start()
+
+    return {
+        "status": "started",
+        "message": "Prediction refresh started",
+        "mode": mode_key,
+        "started_at": refresh_state["last_started_at"],
+    }
+
+
+@app.get("/api/admin/refresh-status")
+async def get_prediction_refresh_status(
+    x_refresh_token: Optional[str] = Header(default=None, alias="X-Refresh-Token"),
+):
+    """Check status of the last/active prediction refresh run."""
+    _require_refresh_token(x_refresh_token)
+    with refresh_state_lock:
+        return dict(refresh_state)
 
 
 @app.get("/api/odds/status")
