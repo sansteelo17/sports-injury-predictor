@@ -63,25 +63,28 @@ def _string_array_compat(*args, **kwargs):
 def _strip_stringdtype(df):
     """Convert any StringDtype/extension columns to plain numpy for pickle compatibility.
 
-    Pandas StringDtype stores columns as ExtensionArrays which can fail to
-    unpickle across different pandas versions. We rebuild the DataFrame from
-    plain numpy arrays to eliminate all extension type metadata.
+    Pandas 3.0 uses StringDtype by default for string columns AND for the
+    column Index itself. Both must be converted to plain object dtype to
+    ensure pickles can be loaded by pandas 2.x.
     """
-    data = {}
-    for col in df.columns:
-        series = df[col]
-        dtype_str = str(series.dtype)
-        if dtype_str in ("str", "string", "String", "string[python]") or "String" in dtype_str:
-            # Convert to plain Python strings in a numpy object array
-            arr = np.empty(len(series), dtype=object)
-            for i, v in enumerate(series):
-                arr[i] = None if (v is pd.NA or v is None or (isinstance(v, float) and np.isnan(v))) else str(v)
-            data[col] = arr
-        else:
-            # Keep other columns as-is but extract numpy array
-            data[col] = series.values
-    # Rebuild from scratch — no leftover ExtensionArray block metadata
-    return pd.DataFrame(data, index=df.index)
+    # Temporarily disable pandas 3.0 string inference so pd.DataFrame()
+    # doesn't re-infer StringDtype from object arrays.
+    old_setting = pd.options.future.infer_string
+    try:
+        pd.options.future.infer_string = False
+        data = {}
+        for col in df.columns:
+            series = df[col]
+            dtype_str = str(series.dtype)
+            if dtype_str in ("str", "string", "String", "string[python]") or "String" in dtype_str:
+                data[str(col)] = series.astype(object).values
+            else:
+                data[str(col)] = series.values
+        # Rebuild with plain object-dtype column Index (no StringDtype re-inference)
+        out = pd.DataFrame(data, index=df.index)
+    finally:
+        pd.options.future.infer_string = old_setting
+    return out
 
 # File names for each artifact
 ARTIFACT_FILES = {

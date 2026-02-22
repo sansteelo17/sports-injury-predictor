@@ -568,9 +568,10 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
         if play_ratio is None:
             play_ratio = 0.5
 
-        # Scale workload metrics by playing time ratio
-        player_acute = team_workload["acute_load"] * play_ratio
-        player_chronic = team_workload["chronic_load"] * play_ratio
+        # Use team-level acute/chronic loads (integer match counts)
+        # Model was trained on integer rolling match counts, not scaled fractions
+        player_acute = team_workload["acute_load"]
+        player_chronic = team_workload["chronic_load"]
 
         # Compute player-level ACWR with workload variation
         # ACWR was designed for active players. For bench/youth players who
@@ -592,21 +593,23 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
 
         player_acwr = max(0.5, min(2.5, player_acwr))
 
-        # Player-level fatigue: acute - chronic (positive = overloaded)
+        # Fatigue: acute - chronic (uses integer match counts, same as training)
         player_fatigue = player_acute - player_chronic
 
         scaled_workload = {
+            # Workload metrics: scale by play_ratio for player-level estimate
             "acute_load": round(player_acute, 2),
             "chronic_load": round(player_chronic, 2),
             "acwr": round(player_acwr, 3),
             "monotony": team_workload["monotony"],
-            "strain": round(team_workload["strain"] * play_ratio, 2),
+            "strain": team_workload["strain"],
             "fatigue_index": round(player_fatigue, 2),
             "workload_slope": team_workload["workload_slope"],
             "spike_flag": 1 if player_acwr > 1.5 else 0,
-            "matches_last_7": round(team_workload["matches_last_7"] * play_ratio, 1),
-            "matches_last_14": round(team_workload["matches_last_14"] * play_ratio, 1),
-            "matches_last_30": round(team_workload["matches_last_30"] * play_ratio, 1),
+            # Match counts: keep as integers (model trained on integer counts)
+            "matches_last_7": team_workload["matches_last_7"],
+            "matches_last_14": team_workload["matches_last_14"],
+            "matches_last_30": team_workload["matches_last_30"],
         }
 
         if player_name in minutes_lookup:
