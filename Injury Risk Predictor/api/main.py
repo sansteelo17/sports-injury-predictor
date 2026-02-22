@@ -420,8 +420,9 @@ def assign_rule_based_archetypes(df):
         # Injury Prone: many injuries AND they're not just minor knocks
         if count >= 5 and avg_sev >= 20:
             return "Injury Prone"
-        # Recurring Issues: frequent and recent injuries
-        if count >= 3 and days_since < 180 and avg_sev >= 12:
+        # Recurring Issues: genuinely frequent AND recent injuries
+        # Must have 5+ injuries with the last one within 90 days
+        if count >= 5 and days_since < 90:
             return "Recurring Issues"
         # Durable: few injuries, long time since last
         if count <= 2 and days_since > 365:
@@ -1005,27 +1006,28 @@ TEAM_BADGE_ALIASES = {
 
 
 def get_risk_level(prob: float, row=None) -> str:
-    """Classify 2-week injury risk using percentile rank from model output.
+    """Classify 2-week injury risk using percentile-based ranking.
 
-    Uses percentile-based thresholds from the actual data distribution so that
-    ~25% of players are High, ~45% Medium, ~30% Low. The model now incorporates
-    injury history features (player_injury_count, player_avg_severity, etc.)
-    so no manual overrides are needed.
+    The model's raw probabilities are calibrated to the training base rate
+    (~10% with 10:1 negative sampling), so absolute thresholds don't work.
+    Instead, rank players relative to each other:
+    - High: top 20% of risk (80th percentile and above)
+    - Medium: 40th-80th percentile
+    - Low: bottom 40%
     """
     if inference_df is not None and "ensemble_prob" in inference_df.columns:
-        p75 = inference_df["ensemble_prob"].quantile(0.75)
-        p30 = inference_df["ensemble_prob"].quantile(0.30)
-        if prob >= p75:
+        percentile = float((inference_df["ensemble_prob"] <= prob).mean())
+        if percentile >= 0.80:
             return "High"
-        elif prob >= p30:
+        elif percentile >= 0.40:
             return "Medium"
         else:
             return "Low"
     else:
-        # Fallback absolute thresholds
-        if prob >= 0.30:
+        # Fallback without inference_df context
+        if prob >= 0.20:
             return "High"
-        elif prob >= 0.15:
+        elif prob >= 0.10:
             return "Medium"
         else:
             return "Low"
@@ -2194,10 +2196,10 @@ def get_personalized_insights(row: dict) -> List[str]:
 
 def player_row_to_risk(row) -> PlayerRisk:
     """Convert a DataFrame row to a PlayerRisk response."""
-    prob = row.get("ensemble_prob", row.get("calibrated_prob", 0.5))
+    prob = _safe_float(row.get("ensemble_prob", row.get("calibrated_prob", 0.5)), 0.5)
     # Use player_injury_count (has data) instead of previous_injuries (all zeros in inference_df)
-    prev_injuries = int(row.get("player_injury_count", row.get("previous_injuries", 0)))
-    avg_severity = row.get("player_avg_severity", 0)
+    prev_injuries = _safe_int(row.get("player_injury_count", row.get("previous_injuries", 0)))
+    avg_severity = _safe_float(row.get("player_avg_severity", 0))
     total_days = int(prev_injuries * avg_severity) if prev_injuries > 0 else 0
     player_name = row.get("name", "Unknown")
     team = row.get("team", row.get("player_team", "Unknown"))
@@ -2208,12 +2210,12 @@ def player_row_to_risk(row) -> PlayerRisk:
     enriched_row = dict(row)
     enriched_row["previous_injuries"] = prev_injuries
     # Use total_days_lost from scraped data if available, otherwise estimate
-    total_days_from_scrape = row.get("total_days_lost", 0)
-    if total_days_from_scrape and int(total_days_from_scrape) > 0:
-        total_days = int(total_days_from_scrape)
+    total_days_from_scrape = _safe_int(row.get("total_days_lost", 0))
+    if total_days_from_scrape > 0:
+        total_days = total_days_from_scrape
     enriched_row["total_days_lost"] = total_days
     # Use days_since_last_injury from scraped data (real value, not default 365)
-    days_since = int(row.get("days_since_last_injury", 365))
+    days_since = _safe_int(row.get("days_since_last_injury", 365), 365)
     enriched_row["days_since_last_injury"] = days_since
 
     # Enrich with FPL stats

@@ -160,8 +160,9 @@ def build_classification_dataset(final_df: pd.DataFrame,
         if team_matches.empty:
             continue
 
-        # Sample up to 10 negatives per player (keeps dataset manageable)
-        n_sample = min(10, len(team_matches))
+        # Sample up to 3 negatives per player (~25% base rate gives meaningful
+        # probability spread; 10:1 compressed all probs below 30%)
+        n_sample = min(3, len(team_matches))
         sampled = team_matches.sample(n=n_sample, random_state=hash(name) % 2**31)
 
         # Assign this player's real info to their negatives
