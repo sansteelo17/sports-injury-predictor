@@ -420,9 +420,8 @@ def assign_rule_based_archetypes(df):
         # Injury Prone: many injuries AND they're not just minor knocks
         if count >= 5 and avg_sev >= 20:
             return "Injury Prone"
-        # Recurring Issues: genuinely frequent AND recent injuries
-        # Must have 5+ injuries with the last one within 90 days
-        if count >= 5 and days_since < 90:
+        # Recurring Issues: frequent, recent, AND not just minor knocks
+        if count >= 5 and days_since < 90 and avg_sev >= 20:
             return "Recurring Issues"
         # Durable: few injuries, long time since last
         if count <= 2 and days_since > 365:
@@ -1779,32 +1778,43 @@ def _classify_price_state(
     opp_implied: Optional[float],
     team_side_avg: Optional[float],
     opp_side_avg: Optional[float],
+    draw_avg: Optional[float] = None,
 ) -> str:
     # Primary classification is relative: team price vs opponent price.
+    # edge = team_implied - opp_implied (positive = team favored)
+    # A high draw probability means the market sees this as tight,
+    # so we dampen the edge accordingly.
+    draw_implied = (1.0 / draw_avg) if draw_avg and draw_avg > 1 else None
     if team_implied is not None and opp_implied is not None:
         edge = team_implied - opp_implied
-        if abs(edge) < 0.03:
+        if draw_implied is not None and draw_implied >= 0.27:
+            edge *= 0.5
+        if abs(edge) < 0.10:
             return "in a balanced market"
-        if edge >= 0.10:
+        if edge >= 0.25:
             return "firm favorites"
-        if edge >= 0.03:
+        if edge >= 0.08:
             return "slight favorites"
-        if edge <= -0.10:
+        if edge <= -0.25:
             return "clear underdogs"
-        return "slight underdogs"
+        if edge <= -0.08:
+            return "slight underdogs"
+        return "in a balanced market"
 
     # Decimal fallback if implied probabilities are unavailable.
     if team_side_avg is not None and opp_side_avg is not None:
         diff = opp_side_avg - team_side_avg
-        if abs(diff) < 0.20:
+        if abs(diff) < 0.30:
             return "in a balanced market"
-        if diff >= 0.60:
+        if diff >= 1.00:
             return "firm favorites"
-        if diff > 0:
+        if diff > 0.30:
             return "slight favorites"
-        if diff <= -0.60:
+        if diff <= -1.00:
             return "clear underdogs"
-        return "slight underdogs"
+        if diff <= -0.30:
+            return "slight underdogs"
+        return "in a balanced market"
 
     # Last resort when only one side is known.
     if team_implied is not None:
@@ -1867,7 +1877,7 @@ def _build_team_market_insight(
 
     team_implied = (1.0 / team_side_avg) if team_side_avg and team_side_avg > 1 else None
     opp_implied = (1.0 / opp_side_avg) if opp_side_avg and opp_side_avg > 1 else None
-    price_state = _classify_price_state(team_implied, opp_implied, team_side_avg, opp_side_avg)
+    price_state = _classify_price_state(team_implied, opp_implied, team_side_avg, opp_side_avg, draw_avg)
 
     h2h = get_fixture_history_context(team_name, opponent_name, years=5, recent_n=6) if opponent_name else None
     h2h_part = ""

@@ -186,14 +186,14 @@ export default function Home() {
               </strong>{" "}
               with more leagues coming soon.{" "}
               <span className="hidden sm:inline">
-                Yara blends public injury history data, workload, and fixture
-                context to predict injury risk probability over the next 2
-                weeks.
+                Yara explains why a player might get injured in the next 2 weeks
+                by blending injury history, workload patterns, and fixture
+                context into risk narratives.
               </span>
               <span className="sm:hidden">
-                Yara blends public injury history data, workload, and fixture
-                context to predict injury risk probability over the next 2
-                weeks.
+                Yara explains why a player might get injured in the next 2 weeks
+                by blending injury history, workload patterns, and fixture
+                context into risk narratives.
               </span>
             </div>
           </div>
