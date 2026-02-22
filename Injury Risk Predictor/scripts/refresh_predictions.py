@@ -891,6 +891,42 @@ def run_inference(snapshots_df, ensemble, severity_clf, player_history, archetyp
 # MAIN
 # =============================================================================
 
+def run_injury_scraper(max_age_days: int = 1):
+    """Run the injury scraper to update player_injuries_detail.pkl.
+
+    Only re-scrapes players whose data is older than max_age_days,
+    so this is fast when run frequently (only new/stale players).
+    """
+    import subprocess
+    script = os.path.join(os.path.dirname(__file__), "scrape_injuries.py")
+    if not os.path.exists(script):
+        logger.warning("scrape_injuries.py not found, skipping injury update")
+        return False
+
+    print(f"\n   Running injury scraper (max-age={max_age_days} days)...")
+    try:
+        result = subprocess.run(
+            [sys.executable, script, "--max-age", str(max_age_days)],
+            capture_output=True, text=True, timeout=1800  # 30 min max
+        )
+        # Print summary lines only
+        for line in result.stdout.splitlines():
+            if any(kw in line.lower() for kw in ["done!", "scraped", "final", "players to scrape", "nothing to do"]):
+                print(f"   {line.strip()}")
+        if result.returncode != 0:
+            logger.warning(f"Scraper exited with code {result.returncode}")
+            if result.stderr:
+                logger.warning(result.stderr[-500:])
+            return False
+        return True
+    except subprocess.TimeoutExpired:
+        logger.warning("Injury scraper timed out after 30 minutes")
+        return False
+    except Exception as e:
+        logger.warning(f"Injury scraper failed: {e}")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="Refresh predictions with live data")
     parser.add_argument("--mode", choices=["fbref", "api"], default="fbref",
@@ -900,12 +936,21 @@ def main():
     parser.add_argument("--players", help="Comma-separated player names to filter to")
     parser.add_argument("--transfermarkt", action="store_true",
                         help="Fetch injury history from Transfermarkt for missing players (slower)")
+    parser.add_argument("--scrape-injuries", action="store_true",
+                        help="Update injury history from Transfermarkt before refreshing predictions")
+    parser.add_argument("--scrape-max-age", type=int, default=1,
+                        help="Max age in days before re-scraping a player's injury data (default: 1)")
     args = parser.parse_args()
 
     print("=" * 60)
     print("INJURY RISK PREDICTOR - Live Data Refresh")
     print("=" * 60)
     print(f"Mode: {args.mode.upper()}")
+
+    # Step 0: Update injury history if requested
+    if args.scrape_injuries:
+        print("\n0. Updating injury history from Transfermarkt...")
+        run_injury_scraper(max_age_days=args.scrape_max_age)
 
     # Load models
     print("\n1. Loading trained models...")
