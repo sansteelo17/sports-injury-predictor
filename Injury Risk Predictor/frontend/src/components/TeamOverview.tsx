@@ -62,6 +62,38 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
   const dynamicMarketInsight = team.next_fixture?.fixture_insight?.trim() ?? '';
   const showDynamicInsight = dynamicMarketInsight.length > 0;
 
+  // Determine insight sentiment from context
+  // Green: team favored + low squad risk
+  // Blue: balanced market or mixed signals (watchful)
+  // Amber: team underdogs or high squad risk
+  const squadAvgRisk = team.avg_risk ?? 0;
+  const insightSentiment: 'positive' | 'caution' | 'warning' = (() => {
+    // Use squad-level data, not text parsing
+    const highRiskRatio = team.high_risk_count / Math.max(team.total_players, 1);
+    if (highRiskRatio >= 0.4 || keyPlayersAtRisk.length >= 3) return 'warning';
+    if (squadAvgRisk < 0.30 && keyPlayersAtRisk.length === 0) return 'positive';
+    return 'caution';
+  })();
+
+  const sentimentStyles = {
+    positive: {
+      bg: darkMode ? 'bg-[#1a1a1a] border-l-[3px] border-l-emerald-400' : 'bg-emerald-50 border-l-[3px] border-l-emerald-500',
+      text: darkMode ? 'text-gray-300' : 'text-emerald-700',
+      icon: darkMode ? 'text-emerald-400' : 'text-emerald-600',
+    },
+    caution: {
+      bg: darkMode ? 'bg-[#1a1a1a] border-l-[3px] border-l-indigo-400' : 'bg-indigo-50 border-l-[3px] border-l-indigo-500',
+      text: darkMode ? 'text-gray-300' : 'text-indigo-800',
+      icon: darkMode ? 'text-indigo-400' : 'text-indigo-600',
+    },
+    warning: {
+      bg: darkMode ? 'bg-[#1a1a1a] border-l-[3px] border-l-amber-400' : 'bg-orange-50 border-l-[3px] border-l-orange-500',
+      text: darkMode ? 'text-gray-300' : 'text-orange-800',
+      icon: darkMode ? 'text-amber-400' : 'text-orange-600',
+    },
+  };
+  const sStyle = sentimentStyles[insightSentiment];
+
   return (
     <div className={`holo-card rounded-2xl overflow-hidden ${
       darkMode ? 'bg-[#141414] border border-[#1f1f1f]' : 'bg-white shadow-lg'
@@ -252,47 +284,33 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
         </div>
       )}
 
-      {/* Market Insight Banner - Dynamic */}
-      {showDynamicInsight && (
-        <div className={`px-4 py-3 ${
-          darkMode ? 'bg-amber-500/10 border-t border-amber-500/20' : 'bg-amber-50 border-t border-amber-200'
-        }`}>
+      {/* Market Insight Banner */}
+      {(showDynamicInsight || showNegativeInsight || showPositiveInsight) && (
+        <div className={`px-4 py-3 ${sStyle.bg}`}>
           <div className="flex items-start gap-2">
-            <TrendingDown className="text-amber-500 flex-shrink-0 mt-0.5" size={16} />
-            <p className={`text-xs ${darkMode ? 'text-amber-200' : 'text-amber-800'}`}>
-              {dynamicMarketInsight}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Market Insight Banner - Negative (fallback) */}
-      {!showDynamicInsight && showNegativeInsight && (
-        <div className={`px-4 py-3 ${
-          darkMode ? 'bg-amber-500/10 border-t border-amber-500/20' : 'bg-amber-50 border-t border-amber-200'
-        }`}>
-          <div className="flex items-start gap-2">
-            <TrendingDown className="text-amber-500 flex-shrink-0 mt-0.5" size={16} />
-            <p className={`text-xs ${darkMode ? 'text-amber-200' : 'text-amber-800'}`}>
-              <span className="font-semibold">Market Insight:</span>{' '}
-              Key players {keyPlayersAtRisk.join(', ')} at elevated injury risk — could affect{' '}
-              {team.team}&apos;s match odds.
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Market Insight Banner - Positive (fallback) */}
-      {!showDynamicInsight && showPositiveInsight && (
-        <div className={`px-4 py-3 ${
-          darkMode ? 'bg-[#86efac]/10 border-t border-[#86efac]/20' : 'bg-emerald-50 border-t border-emerald-200'
-        }`}>
-          <div className="flex items-start gap-2">
-            <TrendingUp className={darkMode ? 'text-[#86efac]' : 'text-emerald-600'} size={16} />
-            <p className={`text-xs ${darkMode ? 'text-[#86efac]' : 'text-emerald-700'}`}>
-              <span className="font-semibold">Market Insight:</span>{' '}
-              Key players {keyPlayersHealthy.join(', ')} all low risk.{' '}
-              Strong availability may favor {team.team} in upcoming fixtures.
+            {insightSentiment === 'positive' ? (
+              <TrendingUp className={`${sStyle.icon} flex-shrink-0 mt-0.5`} size={14} />
+            ) : insightSentiment === 'caution' ? (
+              <AlertTriangle className={`${sStyle.icon} flex-shrink-0 mt-0.5`} size={14} />
+            ) : (
+              <TrendingDown className={`${sStyle.icon} flex-shrink-0 mt-0.5`} size={14} />
+            )}
+            <p className={`text-xs ${sStyle.text}`}>
+              {showDynamicInsight ? (
+                dynamicMarketInsight
+              ) : showNegativeInsight ? (
+                <>
+                  <span className="font-semibold">Market Insight:</span>{' '}
+                  Key players {keyPlayersAtRisk.join(', ')} at elevated injury risk. Could affect{' '}
+                  {team.team}&apos;s match odds.
+                </>
+              ) : (
+                <>
+                  <span className="font-semibold">Market Insight:</span>{' '}
+                  Key players {keyPlayersHealthy.join(', ')} all low risk.{' '}
+                  Strong availability may favor {team.team} in upcoming fixtures.
+                </>
+              )}
             </p>
           </div>
         </div>
