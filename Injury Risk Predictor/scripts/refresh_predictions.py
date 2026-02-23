@@ -130,6 +130,21 @@ def refresh_with_fbref(artifacts, dry_run=False, player_filter=None):
 # API MODE: Team-level workload (less accurate but faster)
 # =============================================================================
 
+# Normalize team names between squad API and match API
+_TEAM_NAME_MAP = {
+    "Man City": "Manchester City",
+    "Man United": "Manchester United",
+    "Brighton Hove": "Brighton",
+    "Leeds United": "Leeds",
+    "Nottingham": "Nottingham Forest",
+}
+
+
+def _normalize_match_team(team: str) -> str:
+    """Map squad team name to match data team name."""
+    return _TEAM_NAME_MAP.get(team, team)
+
+
 def compute_team_workload(matches_df, team, as_of_date):
     """
     Compute team-level workload metrics.
@@ -139,6 +154,7 @@ def compute_team_workload(matches_df, team, as_of_date):
     - monotony, strain, fatigue_index (advanced)
     - workload_slope, spike_flag (trend indicators)
     """
+    team = _normalize_match_team(team)
     team_matches = matches_df[
         ((matches_df["Home"] == team) | (matches_df["Away"] == team)) &
         (matches_df["Date"] < as_of_date)
@@ -423,6 +439,7 @@ def compute_team_form(matches_df, team, as_of_date, n_matches=5):
     avg_goal_diff_last_5, form_last_5, form_avg_last_5, win_ratio_last_5,
     win_streak, loss_streak, rest_days_before_injury, avg_rest_last_5.
     """
+    team = _normalize_match_team(team)
     team_matches = matches_df[
         ((matches_df["Home"] == team) | (matches_df["Away"] == team)) &
         (matches_df["Date"] < as_of_date)
