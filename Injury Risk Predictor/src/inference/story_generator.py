@@ -406,56 +406,89 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
     venue_label = "at home" if is_home else "away" if is_home is not None else ""
     availability_pct = round((1 - injury_prob) * 100)
 
+    # Use name hash for deterministic phrasing variety
+    _v = hash(first_name or "x") % 3
+
     # Baseline manager action (kept distinct from FPL value tiers)
     if minutes < 180:
-        action = "Bench for now"
-        reason = f"only {minutes} recent minutes, so starts are not secure yet"
+        action = ["Bench for now", "Hold off", "Wait and see"][_v]
+        reason = [
+            f"only {minutes} recent minutes — starts aren't nailed yet",
+            f"{minutes} minutes is too thin a sample to trust the game time",
+            f"not enough pitch time yet ({minutes} mins) to feel safe starting",
+        ][_v]
     elif days_since < 21:
-        action = "Bench unless needed"
-        reason = f"just {days_since} days since the last injury, so availability is still volatile"
+        action = ["Bench unless needed", "Cautious bench", "Monitor"][_v]
+        reason = [
+            f"just {days_since} days since the last injury — availability is still volatile",
+            f"the {days_since}-day gap since injury is too short to commit",
+            f"fresh off a setback ({days_since} days) so tread carefully with the start",
+        ][_v]
     elif injury_prob >= 0.45:
-        action = "Start only with bench cover"
-        reason = f"availability risk is still elevated ({round(injury_prob * 100)}%)"
+        action = ["Start only with bench cover", "Risky start", "Start with safety net"][_v]
+        reason = [
+            f"availability risk is still elevated ({round(injury_prob * 100)}%)",
+            f"the body is flagging at {round(injury_prob * 100)}% risk — have a sub ready",
+            f"injury probability is running hot, so you need cover if {first_name} can't finish",
+        ][_v]
     elif role == "defender":
         if recent_clean_sheets >= 2 and injury_prob < 0.35:
-            action = "Start"
+            action = ["Start", "Lock in", "Nailed starter"][_v]
             reason = (
-                f"{recent_clean_sheets} clean sheets in the last {recent_samples} and availability near {availability_pct}%"
+                [
+                    f"{recent_clean_sheets} clean sheets in the last {recent_samples} and availability near {availability_pct}%",
+                    f"the clean-sheet run ({recent_clean_sheets} in {recent_samples}) is bankable with {availability_pct}% availability",
+                    f"clean sheets are flowing and the body is holding — {recent_clean_sheets} shutouts recently",
+                ][_v]
                 if recent_samples > 0
                 else f"clean-sheet trajectory is positive with availability near {availability_pct}%"
             )
         else:
-            action = "Playable, not a lock"
+            action = ["Playable, not a lock", "Matchup-dependent", "Fixture swing"][_v]
             if recent_samples > 0:
-                reason = f"{recent_clean_sheets} clean sheets in the last {recent_samples}, so the clean-sheet floor is still matchup-dependent"
+                reason = [
+                    f"{recent_clean_sheets} clean sheets in the last {recent_samples} — the defensive floor is fixture-dependent",
+                    f"only {recent_clean_sheets}/{recent_samples} clean sheets lately, so pick your spots",
+                    f"the clean-sheet rate ({recent_clean_sheets} in {recent_samples}) needs a kind draw to pay off",
+                ][_v]
             else:
                 reason = "defensive floor is still matchup-dependent"
     else:
         output_signal = goals_per_90 + assists_per_90
         if output_signal >= 0.55 and recent_returns >= 2 and injury_prob < 0.35:
-            action = "Start with confidence"
+            action = ["Start with confidence", "Must-start", "Captain shout"][_v]
             if recent_samples > 0:
-                reason = (
-                    f"{recent_goal_involvements} goal involvements in the last {recent_samples} "
-                    f"with availability near {availability_pct}%"
-                )
+                reason = [
+                    f"{recent_goal_involvements} goal involvements in the last {recent_samples} with availability near {availability_pct}%",
+                    f"form is hot ({recent_goal_involvements} involvements in {recent_samples}) and the body is cooperating",
+                    f"returning consistently and fit — {recent_goal_involvements} involvements in {recent_samples} is the proof",
+                ][_v]
             else:
                 reason = "output and availability both support the pick"
         elif output_signal < 0.2 and recent_returns == 0:
-            action = "Bench/avoid this week"
+            action = ["Bench/avoid this week", "Skip", "Fade"][_v]
             if recent_samples > 0:
-                reason = f"no returns in the last {recent_samples}, and baseline output is {output_signal:.2f} involvements per 90"
+                reason = [
+                    f"no returns in the last {recent_samples} and baseline output is {output_signal:.2f} per 90",
+                    f"blanked in the last {recent_samples} — the underlying numbers ({output_signal:.2f}/90) don't inspire",
+                    f"quiet spell with zero returns in {recent_samples}; wait for a spark before committing",
+                ][_v]
             else:
-                reason = "current output profile is too quiet"
+                reason = "current output profile is too quiet to justify a start"
         else:
-            action = "Start if owned"
+            action = ["Start if owned", "Hold and play", "Back if you have him"][_v]
             if recent_samples > 0 and opp_def_samples > 0 and opp_conceded > 0:
-                reason = (
-                    f"{recent_goal_involvements} involvements in the last {recent_samples}; "
-                    f"{opponent} are conceding {opp_conceded:.2f} goals per game lately"
-                )
+                reason = [
+                    f"{recent_goal_involvements} involvements in the last {recent_samples}; {opponent} conceding {opp_conceded:.2f}/game",
+                    f"the fixture helps — {opponent} are leaking {opp_conceded:.2f} goals/game and {first_name} has {recent_goal_involvements} involvements in {recent_samples}",
+                    f"{opponent}'s defence ({opp_conceded:.2f} conceded/game) plays into {first_name}'s hands after {recent_goal_involvements} recent involvements",
+                ][_v]
             elif recent_samples > 0:
-                reason = f"{recent_goal_involvements} involvements in the last {recent_samples}, with steady minutes behind that profile"
+                reason = [
+                    f"{recent_goal_involvements} involvements in the last {recent_samples} with steady minutes behind that profile",
+                    f"ticking along with {recent_goal_involvements} involvements in {recent_samples} — minutes are secure",
+                    f"the platform is there ({recent_goal_involvements} in {recent_samples}) even if the ceiling hasn't been hit yet",
+                ][_v]
             else:
                 reason = "minutes are stable, but the return trend is mixed"
 
@@ -464,11 +497,19 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
     if value_assessment:
         tier = (value_assessment.get("tier") or "").strip().lower()
         if tier == "avoid":
-            action = "Bench/avoid this week"
-            reason = "overall availability-plus-output signal is weak right now"
+            action = ["Bench/avoid", "Fade this week", "Skip"][_v]
+            reason = [
+                "overall availability-plus-output signal is weak right now",
+                "the numbers aren't there — park and reassess next week",
+                "neither fitness nor form justify a start this gameweek",
+            ][_v]
         elif tier == "rotation":
-            action = "Start only if needed"
-            reason = "minutes are usable, but projection is closer to squad depth than a locked starter"
+            action = ["Start only if needed", "Bench-first", "Use as backup"][_v]
+            reason = [
+                "minutes are usable, but projection is closer to squad depth than a locked starter",
+                "there's a path to points, but it's narrow — treat as depth",
+                "fine as an emergency option, but don't build your week around it",
+            ][_v]
 
     insight = f"{action} for {first_name} {venue_label} vs {opponent}: {reason}."
     return _as_sentence(re.sub(r"\s{2,}", " ", insight).strip())
@@ -625,58 +666,131 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
     low_output = output_signal < (0.18 if role == "defender" else 0.18)
     durability_signal = days_since >= 240 and prev_injuries <= 2
 
+    # Use name hash to deterministically pick phrasing variants
+    _variant = hash(name) % 3
+
     if tier == "Avoid":
         if low_output and high_risk:
-            verdict = (
-                f"{first_name} is an avoid this week: output is too thin and availability drag is still heavy."
-            )
+            verdict = [
+                f"{first_name} is an avoid: output is too thin and availability drag is still heavy.",
+                f"Hard to justify {first_name} right now — low ceiling and elevated injury risk make this a clear fade.",
+                f"Steer clear of {first_name}: the output hasn't been there and the body is flagging.",
+            ][_variant]
         elif low_output and durability_signal:
-            verdict = (
-                f"{first_name} is an avoid this week: upside is too thin for the price. "
-                f"Durability is not the main issue ({prev_injuries} prior injury, {days_since} days injury-free)."
-            )
+            verdict = [
+                f"{first_name} is an avoid: upside is too thin for the price. Durability is fine ({days_since} days injury-free) — just not producing.",
+                f"Not an injury concern, but {first_name} isn't returning enough to hold a squad spot at £{price:.1f}m.",
+                f"{first_name}'s body is holding up ({prev_injuries} prior injury), but the output isn't matching the price tag.",
+            ][_variant]
         elif low_output:
-            verdict = f"{first_name} is an avoid this week: output is too thin for this price bracket."
+            verdict = [
+                f"{first_name} is an avoid: output is too thin for this price bracket.",
+                f"At £{price:.1f}m, {first_name} needs to be returning more than {ga_per_90:.2f} G+A/90 to hold a slot.",
+                f"The numbers don't add up for {first_name} — move the funds elsewhere.",
+            ][_variant]
         elif high_risk:
-            verdict = f"{first_name} is an avoid this week: injury drag is too high for the expected return."
+            verdict = [
+                f"{first_name} is an avoid: injury drag is too high for the expected return.",
+                f"Too much availability risk on {first_name} right now — the upside doesn't compensate.",
+                f"Can't trust {first_name}'s minutes this week; bench or sell.",
+            ][_variant]
         else:
-            verdict = f"{first_name} is an avoid this week: projected return is too low for the price."
+            verdict = [
+                f"{first_name} is an avoid: projected return is too low for the price.",
+                f"At £{price:.1f}m, {first_name} is dead weight — reinvest elsewhere.",
+                f"Not enough going on with {first_name} to justify the roster spot right now.",
+            ][_variant]
     elif tier == "Rotation":
         if low_output:
-            verdict = f"{first_name} is a rotation-only pick: minutes are usable, upside is limited."
+            verdict = [
+                f"{first_name} is rotation-only: minutes are usable, but upside is limited.",
+                f"Serviceable minutes from {first_name}, but don't expect fireworks — bench fodder territory.",
+                f"{first_name} ticks the 'playing' box but not much else. Rotation depth only.",
+            ][_variant]
         elif high_risk:
-            verdict = f"{first_name} is a rotation-only pick until availability risk cools."
+            verdict = [
+                f"{first_name} is rotation-only until the availability risk cools off.",
+                f"Keep {first_name} on the bench for now — the talent is there but the body needs more runway.",
+                f"Risky to start {first_name} cold; park and revisit when fitness stabilises.",
+            ][_variant]
         else:
-            verdict = f"{first_name} is fixture-dependent value, better as depth than a locked starter."
+            verdict = [
+                f"{first_name} is fixture-dependent value, better as depth than a locked starter.",
+                f"Playable in the right fixture, but {first_name} isn't a set-and-forget asset yet.",
+                f"{first_name} can do a job in a kind fixture, but don't build your team around it.",
+            ][_variant]
     elif tier == "Decent":
         if high_risk:
-            verdict = f"{first_name} is decent value but still carries availability drag."
+            verdict = [
+                f"{first_name} is decent value but still carries availability drag — monitor closely.",
+                f"There's FPL upside with {first_name}, but the injury risk means you need a backup plan.",
+                f"{first_name} can return points when fit, but availability is the wildcard this week.",
+            ][_variant]
         else:
-            verdict = f"{first_name} is decent value with balanced upside and risk."
+            verdict = [
+                f"{first_name} is decent value with balanced upside and risk.",
+                f"Solid if unspectacular — {first_name} offers a reliable floor without eating budget.",
+                f"{first_name} won't win you your mini-league alone, but the value-to-risk ratio is sensible.",
+            ][_variant]
     elif tier == "Strong":
-        verdict = f"{first_name} is strong value right now with reliable return potential."
-    else:
-        verdict = f"{first_name} is premium value right now and can justify a starter slot."
+        if recent_returns >= 3 and recent_samples > 0:
+            verdict = [
+                f"{first_name} is strong value with {recent_returns} returns in the last {recent_samples} — the form is real.",
+                f"Locked-in starter material: {first_name} is converting chances and staying healthy.",
+                f"{first_name} is ticking every box right now — output, minutes, availability. Strong hold.",
+            ][_variant]
+        else:
+            verdict = [
+                f"{first_name} is strong value right now with reliable return potential.",
+                f"The profile is there for {first_name} — consistent output and manageable risk at £{price:.1f}m.",
+                f"{first_name} is quietly one of the better value picks in this price range.",
+            ][_variant]
+    else:  # Premium
+        if goals_per_90 >= 0.5:
+            verdict = [
+                f"{first_name} is premium value — {goals_per_90:.2f} goals/90 with low injury drag makes this a captaincy contender.",
+                f"Elite output from {first_name}: {goals} goals this season and availability looks secure. Armband candidate.",
+                f"{first_name} is the real deal at £{price:.1f}m — the goal threat alone justifies the premium.",
+            ][_variant]
+        else:
+            verdict = [
+                f"{first_name} is premium value and can justify a starter slot week in, week out.",
+                f"Set and forget {first_name} — the underlying numbers and availability both scream premium.",
+                f"{first_name} belongs in your team. The output ceiling and floor are both elite for the price.",
+            ][_variant]
 
     if archetype == "Currently Vulnerable" and days_since < 60:
-        verdict = f"{first_name} is still in a vulnerable return window, which caps FPL trust this week."
+        verdict = [
+            f"{first_name} is still in a vulnerable return window — caps FPL trust this week.",
+            f"Careful with {first_name}: only {days_since} days since the last setback. Give it another week.",
+            f"{first_name} is back but fragile — don't rush the transfer in just yet.",
+        ][_variant]
     elif injury_prone and days_since < 120 and tier in {"Decent", "Strong", "Premium"}:
-        verdict = (
-            f"{first_name} has real upside, but volatility is high "
-            f"({prev_injuries} injuries, {avg_days_per_injury:.0f} days average layoff)."
-        )
+        verdict = [
+            f"{first_name} has real upside, but volatility is high ({prev_injuries} injuries, {avg_days_per_injury:.0f} days avg layoff).",
+            f"The talent is obvious, but {first_name}'s body is a ticking clock — {prev_injuries} injuries and counting.",
+            f"{first_name} can be electric when fit, but the {prev_injuries}-injury history means you need insurance on the bench.",
+        ][_variant]
 
     position_insight = None
     if role == "attacker" and ga_per_90 >= 0.5 and injury_prob < 0.20:
-        position_insight = (
-            f"As a forward with {goals} goals this season and low injury drag, {first_name} is captain-viable."
-        )
+        position_insight = [
+            f"As a forward with {goals} goals this season and low injury drag, {first_name} is captain-viable.",
+            f"{first_name}'s goal threat ({goals_per_90:.2f}/90) combined with elite availability makes this a captaincy no-brainer.",
+            f"When a striker is scoring at {goals_per_90:.2f}/90 and staying fit, you give them the armband.",
+        ][_variant]
     elif role == "midfielder" and assists_per_90 >= 0.3 and injury_prob < 0.20:
-        position_insight = f"Creative midfield profile with {assists} assists - strong slot efficiency."
+        position_insight = [
+            f"Creative midfield profile with {assists} assists — strong slot efficiency.",
+            f"{first_name} is a chance-creation machine ({assists_per_90:.2f} assists/90) and barely misses games.",
+            f"The assist numbers ({assists} this season) are legit, and the availability floor is rock-solid.",
+        ][_variant]
     elif role == "defender" and (recent_clean_sheet_rate >= 0.4 or ga_per_90 >= 0.2):
-        position_insight = (
-            f"Defender value is live when clean sheets hold and attacking threat ({ga_per_90:.2f} G+A/90) stays active."
-        )
+        position_insight = [
+            f"Defender value is live when clean sheets hold and attacking threat ({ga_per_90:.2f} G+A/90) stays active.",
+            f"A defender contributing {ga_per_90:.2f} G+A/90 is rare — that attacking upside adds a points ceiling most don't have.",
+            f"Clean sheets are the floor, but {first_name}'s attacking output ({ga_per_90:.2f}/90) makes this a premium defensive slot.",
+        ][_variant]
 
     verdict = _as_sentence(verdict)
 

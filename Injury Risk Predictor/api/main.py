@@ -15,6 +15,7 @@ import asyncio
 import subprocess
 import threading
 
+import unicodedata
 from pathlib import Path
 try:
     from dotenv import load_dotenv
@@ -116,6 +117,7 @@ fpl_team_names_by_id = {}  # FPL numeric team ID -> team name
 fpl_team_meta = {}  # Team name -> full FPL team metadata
 fpl_team_recent_defense = {}  # Team ID -> recent defensive snapshot
 fpl_player_codes = {}  # Player name -> FPL code (for photos)
+fpl_player_team = {}  # Player name -> team name (for photo disambiguation)
 fpl_players_by_team = {}  # Team name -> set of FPL player names (for filtering)
 historical_matches_df = None  # Local historical PL fixtures from csv
 fixture_history_cache = {}  # (team, opponent, years) -> summary
@@ -223,21 +225,55 @@ async def load_models():
             full_lower = p["full_name"].lower()
             fpl_stats_cache[name_lower] = p
             fpl_stats_cache[full_lower] = p
+            # Also index accent-stripped versions
+            for k in [name_lower, full_lower]:
+                ascii_k = _strip_accents(k)
+                if ascii_k != k:
+                    fpl_stats_cache[ascii_k] = p
             # Index by last name
             last_name = p["full_name"].split()[-1].lower() if p["full_name"] else ""
             if last_name and len(last_name) >= 4:
                 fpl_stats_cache[last_name] = p
+                ascii_ln = _strip_accents(last_name)
+                if ascii_ln != last_name:
+                    fpl_stats_cache[ascii_ln] = p
             # Index by first + last (skipping middle names)
             parts = p["full_name"].split()
             if len(parts) >= 2:
                 first_last = f"{parts[0]} {parts[-1]}".lower()
                 fpl_stats_cache[first_last] = p
-            # Store photo codes
+                ascii_fl = _strip_accents(first_last)
+                if ascii_fl != first_last:
+                    fpl_stats_cache[ascii_fl] = p
+            # Store photo codes with team for disambiguation
             if p.get("photo_code"):
-                fpl_player_codes[name_lower] = p["photo_code"]
-                fpl_player_codes[full_lower] = p["photo_code"]
+                code = p["photo_code"]
+                for k in [name_lower, full_lower]:
+                    fpl_player_codes[k] = code
+                    ascii_k = _strip_accents(k)
+                    if ascii_k != k:
+                        fpl_player_codes[ascii_k] = code
                 if last_name and len(last_name) >= 4:
-                    fpl_player_codes[last_name] = p["photo_code"]
+                    fpl_player_codes[last_name] = code
+                    ascii_ln = _strip_accents(last_name)
+                    if ascii_ln != last_name:
+                        fpl_player_codes[ascii_ln] = code
+                if len(parts) >= 2:
+                    fl = f"{parts[0]} {parts[-1]}".lower()
+                    fpl_player_codes[fl] = code
+                    ascii_fl = _strip_accents(fl)
+                    if ascii_fl != fl:
+                        fpl_player_codes[ascii_fl] = code
+                # Store team mapping for disambiguation
+                player_team = p.get("team", "")
+                if player_team:
+                    for k in [name_lower, full_lower]:
+                        fpl_player_team[k] = player_team
+                        ascii_k = _strip_accents(k)
+                        if ascii_k != k:
+                            fpl_player_team[ascii_k] = player_team
+                    if last_name and len(last_name) >= 4:
+                        fpl_player_team[last_name] = player_team
             # Build per-team player sets for filtering
             team_name = p.get("team", "")
             if team_name:
@@ -1065,19 +1101,71 @@ def get_team_badge_url(team_name: str) -> Optional[str]:
     return None
 
 
-def get_player_image_url(player_name: str) -> Optional[str]:
+def _normalize_team(t: str) -> str:
+    """Normalize team name for comparison."""
+    return t.lower().replace("fc", "").replace("city", "").replace("united", "").strip()
+
+
+def _strip_accents(s: str) -> str:
+    """Remove diacritics: 'Guimarães' → 'Guimaraes', 'Martín' → 'Martin'."""
+    return "".join(
+        c for c in unicodedata.normalize("NFD", s)
+        if unicodedata.category(c) != "Mn"
+    )
+
+
+def get_player_image_url(player_name: str, team_name: Optional[str] = None) -> Optional[str]:
     """Get Premier League player photo URL."""
+    _photo_url = lambda code: f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{code}.png"
     name_lower = player_name.lower()
-    # Try exact match
+
+    # Try exact match first
     if name_lower in fpl_player_codes:
         code = fpl_player_codes[name_lower]
-        return f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{code}.png"
-    # Try partial match on significant name parts
-    parts = [p for p in name_lower.split() if len(p) >= 4]
+        return _photo_url(code)
+
+    # Try last name exact match (must be an exact key, not substring)
+    last_name = name_lower.split()[-1] if name_lower.split() else ""
+    if last_name and len(last_name) >= 4 and last_name in fpl_player_codes:
+        # If team provided, verify it matches to avoid cross-team collisions
+        # e.g. "bruno" exists for both Fernandes (Man Utd) and Guimarães (Newcastle)
+        matched_team = fpl_player_team.get(last_name, "")
+        if team_name and matched_team and _normalize_team(team_name) != _normalize_team(matched_team):
+            pass  # Skip — wrong team
+        else:
+            return _photo_url(fpl_player_codes[last_name])
+
+    # Try first+last name combo
+    parts = name_lower.split()
+    if len(parts) >= 2:
+        first_last = f"{parts[0]} {parts[-1]}"
+        if first_last in fpl_player_codes:
+            return _photo_url(fpl_player_codes[first_last])
+
+    # Strict partial: only match if a name part IS a key (not substring of a key)
     for part in parts:
-        for key, code in fpl_player_codes.items():
-            if part in key:
-                return f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{code}.png"
+        if len(part) >= 5 and part in fpl_player_codes:
+            matched_team = fpl_player_team.get(part, "")
+            if team_name and matched_team and _normalize_team(team_name) != _normalize_team(matched_team):
+                continue
+            return _photo_url(fpl_player_codes[part])
+
+    # Containment fallback: search name in key or key in search name
+    # Score by overlap length to pick the best match
+    best_code, best_overlap = None, 0
+    name_ascii = _strip_accents(name_lower)
+    for key, code in fpl_player_codes.items():
+        if name_lower in key or name_ascii in key:
+            overlap = max(len(name_lower), len(key))
+            if overlap > best_overlap:
+                # Team check if available
+                matched_team = fpl_player_team.get(key, "")
+                if team_name and matched_team and _normalize_team(team_name) != _normalize_team(matched_team):
+                    continue
+                best_code, best_overlap = code, overlap
+    if best_code:
+        return _photo_url(best_code)
+
     return None
 
 
@@ -1150,27 +1238,35 @@ def get_fpl_stats_for_player(name: str, team_hint: str = None) -> Optional[Dict]
         return None
     name_lower = name.lower()
 
-    # Exact match (most reliable)
+    # Exact match (most reliable) — try with and without accents
     if name_lower in fpl_stats_cache:
         return fpl_stats_cache[name_lower]
+    name_ascii = _strip_accents(name_lower)
+    if name_ascii != name_lower and name_ascii in fpl_stats_cache:
+        return fpl_stats_cache[name_ascii]
 
     # Full name containment (e.g. "Bukayo Saka" in "Bukayo Saka" or vice versa)
+    # Score candidates by match quality to avoid false positives
     candidates = []
     for key, stats in fpl_stats_cache.items():
         if name_lower in key or key in name_lower:
-            candidates.append(stats)
+            # Score: longer overlap = better match
+            overlap = len(key) if key in name_lower else len(name_lower)
+            candidates.append((overlap, stats))
+    # Sort by match quality (longest overlap first)
+    candidates.sort(key=lambda x: -x[0])
 
     # If team_hint provided, prefer candidates matching the team
     if candidates and team_hint:
         team_lower = team_hint.lower()
-        team_matches = [s for s in candidates if _teams_match(s.get("team", ""), team_lower)]
+        team_matches = [(o, s) for o, s in candidates if _teams_match(s.get("team", ""), team_lower)]
         if team_matches:
-            return team_matches[0]
+            return team_matches[0][1]  # Already sorted by overlap
 
     if len(candidates) == 1:
-        return candidates[0]
+        return candidates[0][1]
     if candidates:
-        return candidates[0]
+        return candidates[0][1]
 
     # Last resort: match by last name only (must be unique and long enough)
     parts = name_lower.split()
@@ -2229,7 +2325,7 @@ def player_row_to_risk(row) -> PlayerRisk:
     enriched_row["days_since_last_injury"] = days_since
 
     # Enrich with FPL stats
-    fpl_stats = get_fpl_stats_for_player(player_name)
+    fpl_stats = get_fpl_stats_for_player(player_name, team_hint=team)
     enriched_row["story_name"] = get_popular_player_name(player_name, fpl_stats)
     if fpl_stats:
         enriched_row.update({
@@ -2358,7 +2454,7 @@ def player_row_to_risk(row) -> PlayerRisk:
             technical=TechnicalDetails(**lab_notes_data["technical"]),
         ) if lab_notes_data else None,
         risk_percentile=risk_percentile,
-        player_image_url=get_player_image_url(player_name),
+        player_image_url=get_player_image_url(player_name, team),
         team_badge_url=get_team_badge_url(team),
     )
 
@@ -2482,7 +2578,7 @@ async def list_players(team: Optional[str] = None, risk_level: Optional[str] = N
             archetype=row.get("archetype", "Unknown"),
             minutes_played=minutes,
             is_starter=minutes >= 900,
-            player_image_url=get_player_image_url(name),
+            player_image_url=get_player_image_url(name, row.get("team")),
         ))
 
     return players
@@ -2594,7 +2690,7 @@ async def get_team_overview(team_name: str):
             archetype=row.get("archetype", "Unknown"),
             minutes_played=minutes,
             is_starter=minutes >= 900,
-            player_image_url=get_player_image_url(name),
+            player_image_url=get_player_image_url(name, row.get("team")),
         ))
 
     actual_team = team_df.iloc[0]["team"]
