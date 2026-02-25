@@ -13,6 +13,15 @@ from .context_rag import build_dynamic_rag_line, retrieve_player_context
 from .llm_client import generate_grounded_narrative
 
 
+def _pl(n: int, word: str) -> str:
+    """Pluralize: _pl(1, 'goal') -> '1 goal', _pl(2, 'goal') -> '2 goals'."""
+    if n == 1:
+        return f"{n} {word}"
+    if word.endswith("y") and word[-2:] not in ("ay", "ey", "oy", "uy"):
+        return f"{n} {word[:-1]}ies"
+    return f"{n} {word}s"
+
+
 POPULAR_NAME_OVERRIDES = {
     "mohamed salah": "Salah",
     "bruno fernandes": "Bruno",
@@ -131,119 +140,435 @@ def _first_chunk_text(chunks: List[Dict], kind: str) -> Optional[str]:
 
 
 def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = None) -> str:
-    """
-    Generate a personalized risk story for a player.
-
-    Args:
-        player_data: Dict with player info including:
-            - name, team, age, position
-            - previous_injuries, total_days_lost, days_since_last_injury
-            - archetype, ensemble_prob
-            - last_injury_date (optional)
-
-    Returns:
-        Human-readable story explaining the player's risk
-    """
+    """Generate a personalized, journalistic risk story for a player."""
     name = player_data.get("name", "This player")
     first_name = _call_name(player_data)
-
     prev_injuries = _safe_int(player_data.get("previous_injuries", 0))
     days_lost = _safe_float(player_data.get("total_days_lost", 0))
     days_since = _safe_int(player_data.get("days_since_last_injury", 365), 365)
     archetype = player_data.get("archetype", "Unknown")
     prob = _safe_float(player_data.get("ensemble_prob", 0.5), 0.5)
     age = _safe_int(player_data.get("age", 25), 25)
-
-    # Calculate derived stats
+    acwr = _safe_float(player_data.get("acwr", 1.0), 1.0)
+    fatigue = _safe_float(player_data.get("fatigue_index", 0.0), 0.0)
+    role = _position_group(str(player_data.get("position", "") or ""))
+    goals = _safe_int(player_data.get("goals", 0), 0)
+    assists = _safe_int(player_data.get("assists", 0), 0)
     avg_days = days_lost / prev_injuries if prev_injuries > 0 else 0
+    risk_pct = round(prob * 100)
 
-    # Opening with percentile context
-    percentile = player_data.get("risk_percentile")
-    opening = ""
-    if prob >= 0.45:
-        opening = f"{first_name} currently profiles as high injury risk ({round(prob * 100)}%)."
-    elif prob >= 0.30:
-        opening = f"{first_name} currently profiles as moderate injury risk ({round(prob * 100)}%)."
-    else:
-        opening = f"{first_name} currently profiles as lower injury risk ({round(prob * 100)}%)."
+    extra_context = extra_context or {}
+    matchup_context = extra_context.get("matchup_context") or {}
+    recent_form = matchup_context.get("recent_form") or {}
+    recent_samples = _safe_int(recent_form.get("samples", 0), 0)
+    recent_goals = _safe_int(recent_form.get("goals", 0), 0)
+    recent_assists = _safe_int(recent_form.get("assists", 0), 0)
+    recent_gi = recent_goals + recent_assists
+    vs_opp = matchup_context.get("vs_opponent") or {}
+    vs_samples = _safe_int(vs_opp.get("samples", 0), 0)
+    vs_goals = _safe_int(vs_opp.get("goals", 0), 0)
+    vs_assists = _safe_int(vs_opp.get("assists", 0), 0)
+    opponent_defense = matchup_context.get("opponent_defense") or {}
+    opp_conceded = _safe_float(opponent_defense.get("avg_goals_conceded_last5", 0.0), 0.0)
+    next_fixture = extra_context.get("next_fixture") or {}
+    opponent = _display_team_name(matchup_context.get("opponent") or next_fixture.get("opponent") or "")
+    is_home = matchup_context.get("is_home")
+    if is_home is None:
+        is_home = next_fixture.get("is_home")
 
-    if percentile and percentile >= 0.85:
-        top_bucket = max(1, 100 - int(float(percentile) * 100))
-        opening = opening.rstrip(".") + f" That places them in roughly the top {top_bucket}% of risk in the current pool."
+    # Per-injury detail records (sorted most recent first)
+    injury_records = extra_context.get("injury_records") or []
 
-    # Retrieve context chunks (lightweight RAG over structured context)
-    context_chunks = retrieve_player_context(
-        player_data,
-        extra_context=extra_context,
-        top_k=12,
-        include_open_question=True,
+    # Additional context for richer narratives
+    matches_last_7 = _safe_int(player_data.get("matches_last_7", 0), 0)
+    matches_last_14 = _safe_int(player_data.get("matches_last_14", 0), 0)
+    matches_last_30 = _safe_int(player_data.get("matches_last_30", 0), 0)
+    fixture_history = extra_context.get("fixture_history") or {}
+    fixture_samples = _safe_int(fixture_history.get("samples", 0), 0)
+    fh_wins = _safe_int(fixture_history.get("wins", 0), 0)
+    fh_losses = _safe_int(fixture_history.get("losses", 0), 0)
+    vs_cs = _safe_int(vs_opp.get("clean_sheets", 0), 0)
+
+    # Sparse profile: player has thin injury data, so lean on performance/fixture context
+    is_sparse_profile = (
+        prev_injuries <= 2 and days_since >= 60 and acwr < 1.3 and 21 <= age <= 31
     )
 
-    chunk_by_kind = {}
-    for chunk in context_chunks:
-        kind = chunk.get("kind")
-        if kind and kind not in chunk_by_kind:
-            chunk_by_kind[kind] = chunk.get("text", "")
+    sentences = []
 
-    details: List[str] = []
-    for kind in [
-        "history",
-        "sample_sensitivity",
-        "severity_pattern",
-        "recency",
-        "fixture_history",
-        "fixture_history_all_time",
-        "fixture_latest",
-        "recent_form",
-        "vs_opponent",
-        "opponent_defense",
-        "workload",
-        "fixture",
-        "market",
-        "output",
-    ]:
-        text = chunk_by_kind.get(kind, "")
-        sentence = _as_sentence(text)
-        if sentence and sentence not in details:
-            details.append(sentence)
+    # LEAD: headline risk story
+    if prob >= 0.60 and days_since < 60:
+        sentences.append(
+            f"{first_name} sits at {risk_pct}% injury risk and is only {days_since} days "
+            f"removed from the last setback. This is about as high-alert as it gets"
+        )
+    elif prob >= 0.60 and prev_injuries >= 5:
+        sentences.append(
+            f"{first_name} carries {risk_pct}% injury risk, driven by a history of "
+            f"{prev_injuries} previous injuries that have cost {_safe_int(days_lost)} days in total"
+        )
+    elif prob >= 0.60 and acwr > 1.3:
+        sentences.append(
+            f"{first_name} is flagging at {risk_pct}% risk with a workload spike "
+            f"that suggests the body is under more stress than usual"
+        )
+    elif prob >= 0.60 and avg_days >= 30:
+        sentences.append(
+            f"{first_name} is at {risk_pct}% injury risk, driven largely by an average "
+            f"layoff of {avg_days:.0f} days per injury across {_pl(prev_injuries, 'setback')}"
+        )
+    elif prob >= 0.60 and matches_last_30 >= 5:
+        sentences.append(
+            f"{first_name} is at {risk_pct}% injury risk with {matches_last_30} matches "
+            f"in the last 30 days pushing the workload into uncomfortable territory"
+        )
+    elif prob >= 0.60:
+        sentences.append(
+            f"{first_name} is at {risk_pct}% injury risk, "
+            f"with {_pl(prev_injuries, 'previous injury')} and {_safe_int(days_lost)} total days lost "
+            f"contributing to an elevated baseline"
+        )
+    elif prob >= 0.40 and days_since < 60:
+        sentences.append(
+            f"{first_name} profiles at {risk_pct}% risk and is still in the danger window "
+            f"at just {days_since} days post-injury"
+        )
+    elif prob >= 0.40 and prev_injuries >= 4:
+        sentences.append(
+            f"{first_name} sits at {risk_pct}% risk, not alarming in isolation, "
+            f"but {prev_injuries} career injuries mean the baseline is elevated"
+        )
+    elif prob >= 0.40 and avg_days >= 30:
+        sentences.append(
+            f"{first_name} is at {risk_pct}% injury risk, moderate but the severity history "
+            f"({avg_days:.0f} days out on average) means each setback tends to be costly"
+        )
+    elif prob >= 0.40:
+        sentences.append(
+            f"{first_name} is at {risk_pct}% injury risk, in the moderate-to-elevated bracket "
+            f"with {_pl(prev_injuries, 'injury')} on file and {_safe_int(days_lost)} total days lost"
+        )
+    elif prob >= 0.25 and prev_injuries >= 3:
+        sentences.append(
+            f"{first_name} profiles at {risk_pct}%, manageable, though "
+            f"{prev_injuries} previous injuries mean the history can't be ignored"
+        )
+    elif prob < 0.20 and days_since >= 365:
+        sentences.append(
+            f"{first_name} is one of the safer picks in the pool at just {risk_pct}% risk, "
+            f"backed by over a year without injury"
+        )
+    elif prob < 0.20:
+        sentences.append(
+            f"{first_name} profiles as low risk at {risk_pct}%, "
+            f"backed by {_pl(prev_injuries, 'recorded injury') if prev_injuries > 0 else 'a clean injury record'} "
+            f"and a manageable workload"
+        )
+    else:
+        sentences.append(
+            f"{first_name} sits at {risk_pct}% injury risk with "
+            f"{_pl(prev_injuries, 'injury')} on file and {_safe_int(days_lost)} total days lost, "
+            f"nothing too alarming"
+        )
 
-    # Age context (kept explicit because it is not always present in retrieved chunks)
-    if age >= 32:
-        details.append(f"At {age}, recovery windows can tighten under fixture congestion.")
-    elif age <= 21:
-        details.append(f"At {age}, physical development can be both protective and volatile.")
+    # HISTORY — with specific injury detail when available
+    # Analyze injury records for skew, recurring body areas, worst injury
+    worst_record = None
+    recurring_area = None
+    severity_skewed = False
+    if injury_records:
+        severities = [r["severity_days"] for r in injury_records if r.get("severity_days", 0) > 0]
+        if severities and len(severities) >= 2:
+            max_sev = max(severities)
+            others = [s for s in severities if s != max_sev]
+            if others and max_sev >= 2 * (sum(others) / len(others)):
+                severity_skewed = True
+        # Worst injury
+        for r in injury_records:
+            if r.get("severity_days", 0) > 0:
+                if worst_record is None or r["severity_days"] > worst_record["severity_days"]:
+                    worst_record = r
+        # Most common body area (excluding "unknown")
+        areas = [r["body_area"] for r in injury_records if r.get("body_area") and r["body_area"] != "unknown"]
+        if areas:
+            from collections import Counter
+            area_counts = Counter(areas)
+            top_area, top_count = area_counts.most_common(1)[0]
+            if top_count >= 2:
+                recurring_area = top_area
 
-    # Archetype interpretation
-    archetype_insights = {
-        "Currently Vulnerable": "The return window is still open, so short-term re-injury risk remains elevated.",
-        "Fragile": "When setbacks happen, they have tended to require longer recoveries.",
-        "Injury Prone": "Frequency is the key concern rather than one isolated injury spell.",
-        "Recurring": "The pattern is repeat events with relatively manageable layoff lengths.",
-        "Durable": "Recent availability trends point to resilience under normal load.",
-        "Clean Record": "Data history is light, which keeps uncertainty higher but baseline risk lower.",
-        "Moderate Risk": "The profile is mixed, with no single dominant red flag.",
-    }
-    if archetype in archetype_insights:
-        details.append(archetype_insights[archetype])
-
-    # Guardrail for small-sample histories (e.g., 1-2 injuries with one severe event)
-    if 0 < prev_injuries <= 2:
-        if days_since >= 365:
-            details.append(
-                f"Only {prev_injuries} injuries are logged, so one major event can skew averages, and the {days_since}-day healthy run should carry real weight."
+    if prev_injuries == 0:
+        sentences.append(
+            "There's no injury history on file, which keeps the baseline low "
+            "but also means there's less data to work with"
+        )
+    elif severity_skewed and worst_record:
+        # One injury is disproportionately large — explain the skew
+        worst_area = worst_record.get("injury_raw") or worst_record.get("body_area", "injury")
+        worst_days = worst_record["severity_days"]
+        worst_date = worst_record.get("date", "")
+        date_str = f" in {worst_date[:7]}" if worst_date and len(worst_date) >= 7 else ""
+        others_avg = round((days_lost - worst_days) / max(prev_injuries - 1, 1))
+        sentences.append(
+            f"The {avg_days:.0f}-day average is skewed by a {worst_area}{date_str} "
+            f"that kept {first_name} out for {worst_days} days and missed {worst_record.get('games_missed', 0)} games. "
+            f"The other {_pl(prev_injuries - 1, 'injury')} averaged just {others_avg} days"
+        )
+    elif recurring_area and prev_injuries >= 3:
+        sentences.append(
+            f"A pattern stands out: {recurring_area} issues keep recurring, "
+            f"and with {_pl(prev_injuries, 'injury')} totalling {_safe_int(days_lost)} days lost, "
+            f"the body has a clear weak point"
+        )
+    elif worst_record and avg_days >= 40:
+        worst_area = worst_record.get("injury_raw") or worst_record.get("body_area", "injury")
+        worst_date = worst_record.get("date", "")
+        date_str = f" ({worst_date[:7]})" if worst_date and len(worst_date) >= 7 else ""
+        sentences.append(
+            f"When {first_name} gets injured, it tends to be serious — "
+            f"the worst was a {worst_area}{date_str}, {worst_record['severity_days']} days out. "
+            f"Average layoff is {avg_days:.0f} days across {_pl(prev_injuries, 'injury')}"
+        )
+    elif prev_injuries <= 2 and days_since >= 365:
+        sentences.append(
+            f"Just {_pl(prev_injuries, 'injury')} logged with a {days_since}-day healthy run since, "
+            f"so the small sample paints a positive picture"
+        )
+    elif prev_injuries <= 2:
+        if worst_record:
+            worst_area = worst_record.get("injury_raw") or worst_record.get("body_area", "injury")
+            sentences.append(
+                f"Only {_pl(prev_injuries, 'injury')} on record, the most notable being a {worst_area} "
+                f"that cost {worst_record['severity_days']} days. Small sample, but worth tracking"
             )
         else:
-            details.append(
-                f"Only {prev_injuries} injuries are logged, so this profile is more sample-sensitive than most."
+            sentences.append(
+                f"Only {_pl(prev_injuries, 'injury')} on record, not enough to draw firm conclusions, "
+                f"but the profile leans cautiously optimistic"
+            )
+    elif prev_injuries >= 8 and avg_days >= 30:
+        sentences.append(
+            f"{prev_injuries} injuries averaging {avg_days:.0f} days out each time. "
+            f"The frequency and severity are both concerning"
+        )
+    elif prev_injuries >= 5:
+        sentences.append(
+            f"A track record of {prev_injuries} injuries totalling {_safe_int(days_lost)} days lost "
+            f"is hard to overlook, even if not all have been long-term"
+        )
+    elif avg_days <= 15 and prev_injuries > 0:
+        sentences.append(
+            f"The good news is that past injuries have typically been minor, "
+            f"averaging just {avg_days:.0f} days out"
+        )
+
+    # RECENCY & WORKLOAD
+    if days_since < 30:
+        sentences.append(
+            f"At just {days_since} days since the last injury, {first_name} is still "
+            f"in the highest-risk window for a recurrence"
+        )
+    elif days_since < 60:
+        sentences.append(
+            f"{first_name} is {days_since} days post-injury, past the acute danger zone "
+            f"but not yet in the clear"
+        )
+    if acwr >= 1.5:
+        sentences.append(
+            "The workload ratio has spiked recently, which is one of the strongest "
+            "predictors of soft-tissue injuries in the research"
+        )
+    elif acwr >= 1.3 and fatigue >= 1.0:
+        sentences.append(
+            "Workload and fatigue indicators are both elevated, suggesting the body "
+            "is being asked to do more than it's conditioned for"
+        )
+
+    # WORKLOAD NARRATIVE — explain the "why" even when workload is normal
+    if not any("workload" in s.lower() or "fatigue" in s.lower() or "spike" in s.lower() for s in sentences):
+        if matches_last_7 >= 2:
+            sentences.append(
+                f"{first_name} has played {matches_last_7} matches in the last 7 days, "
+                f"which is a demanding schedule regardless of what the model reads"
+            )
+        elif matches_last_30 >= 6:
+            sentences.append(
+                f"With {matches_last_30} matches in the last 30 days, {first_name} has been "
+                f"carrying a heavy fixture load that tests recovery capacity"
+            )
+        elif is_sparse_profile and acwr > 0:
+            if acwr <= 0.8:
+                sentences.append(
+                    f"Workload has been light recently (ACWR {acwr:.2f}), which keeps "
+                    f"the physical stress low but can also mean less match conditioning"
+                )
+            else:
+                sentences.append(
+                    f"Workload is well managed right now with an ACWR of {acwr:.2f}, "
+                    f"no spike, no fatigue flag, which is part of why the risk reads this way"
+                )
+
+    # AGE
+    if age >= 34:
+        sentences.append(
+            f"At {age}, recovery timelines naturally stretch and the margin for error "
+            f"in load management gets thinner"
+        )
+    elif age >= 32:
+        sentences.append(
+            f"At {age}, the physical demands of fixture congestion hit harder "
+            f"than they would for a younger player"
+        )
+    elif age <= 20:
+        sentences.append(
+            f"At {age}, the body is still developing, which can be protective "
+            f"but also means unpredictability"
+        )
+
+    # FIXTURE — context about the upcoming opponent (all positions)
+    if opponent:
+        team = _display_team_name(str(player_data.get("team", "") or ""))
+        if role in ("defender", "goalkeeper"):
+            # Defensive angle: opponent scoring threat
+            if opp_conceded >= 1.2 and opp_conceded < 1.8:
+                sentences.append(
+                    f"{opponent} have been scoring {opp_conceded:.1f} per game, "
+                    f"which lightens the defensive pressure for {first_name}"
+                )
+            elif opp_conceded > 0 and opp_conceded < 0.8:
+                sentences.append(
+                    f"{opponent} are dangerous going forward, which means "
+                    f"{first_name} faces a stern test at the back"
+                )
+            elif vs_samples >= 1 and vs_cs > 0:
+                sentences.append(
+                    f"{first_name} has {_pl(vs_cs, 'clean sheet')} in "
+                    f"{_pl(vs_samples, 'meeting')} against {opponent}, a positive record"
+                )
+            elif fixture_samples >= 2 and is_sparse_profile:
+                sentences.append(
+                    f"{team} have faced {opponent} {fixture_samples} times recently, "
+                    f"winning {fh_wins} and losing {fh_losses}"
+                )
+        else:
+            # Attacking angle
+            if opp_conceded >= 1.2 and recent_gi >= 3 and recent_samples > 0:
+                sentences.append(
+                    f"Up next is {opponent}, who have been conceding {opp_conceded:.1f} goals a game, "
+                    f"and with {_pl(recent_goals, 'goal')} and {_pl(recent_assists, 'assist')} "
+                    f"in the last {recent_samples}, the form is there to exploit it"
+                )
+            elif opp_conceded >= 1.2:
+                sentences.append(
+                    f"{opponent} have been conceding {opp_conceded:.1f} goals a game, "
+                    f"which makes this an appealing fixture on paper"
+                )
+            elif vs_samples >= 1 and vs_goals + vs_assists >= 1:
+                qual = "a strong" if vs_samples >= 3 and vs_goals + vs_assists >= 3 else "a"
+                sentences.append(
+                    f"{first_name} has {qual} record against {opponent} with "
+                    f"{_pl(vs_goals, 'goal')} and {_pl(vs_assists, 'assist')} in "
+                    f"{_pl(vs_samples, 'meeting')}"
+                    + (". History favours a return here" if vs_samples >= 3 else
+                       ", limited sample but a positive sign" if vs_goals + vs_assists > 0 else "")
+                )
+            elif opp_conceded > 0 and opp_conceded < 0.8:
+                sentences.append(
+                    f"{opponent} have been one of the tighter defences around, "
+                    f"conceding just {opp_conceded:.1f} per game. Not the easiest assignment"
+                )
+            elif fixture_samples >= 2 and is_sparse_profile:
+                sentences.append(
+                    f"{team} have played {opponent} {fixture_samples} times recently, "
+                    f"winning {fh_wins} and losing {fh_losses}, which frames the difficulty"
+                )
+            elif opp_conceded >= 0.8 and opp_conceded < 1.2 and is_sparse_profile:
+                sentences.append(
+                    f"{opponent} sit around the league average defensively at "
+                    f"{opp_conceded:.1f} conceded per game, a fixture that could go either way"
+                )
+
+    # RECENT FORM — compensate for thin injury data with performance context
+    if is_sparse_profile and recent_samples > 0 and len(sentences) < 5:
+        if recent_gi >= 3:
+            sentences.append(
+                f"Form is a bright spot: {_pl(recent_goals, 'goal')} and "
+                f"{_pl(recent_assists, 'assist')} in the last {recent_samples} "
+                f"suggests {first_name} is match-sharp and in rhythm"
+            )
+        elif recent_gi == 0 and recent_samples >= 3:
+            sentences.append(
+                f"Output has been quiet with no goal involvements in the last "
+                f"{recent_samples}, which could point to fatigue or tactical factors "
+                f"worth monitoring"
+            )
+        elif recent_gi > 0:
+            sentences.append(
+                f"{first_name} has ticked along with {_pl(recent_goals, 'goal')} "
+                f"and {_pl(recent_assists, 'assist')} in the last {recent_samples}, "
+                f"staying involved without overexerting"
             )
 
-    # Build final narrative with controlled length
-    open_question = _as_sentence(_first_chunk_text(context_chunks, "open_question") or "")
-    story_parts = [_as_sentence(opening)] + [d for d in details if d][:5]
+    # HOME/AWAY — venue context when fixture block didn't already cover it
+    fixture_already_mentioned = any(opponent in s for s in sentences) if opponent else False
+    if opponent and is_home is not None and not fixture_already_mentioned:
+        if is_home:
+            sentences.append(
+                f"The home fixture against {opponent} is a tailwind worth noting"
+            )
+        elif is_sparse_profile:
+            sentences.append(
+                f"An away trip to {opponent} adds a small travel and adaptation factor"
+            )
+
+    # Minimum sentence guarantee for sparse profiles
+    if is_sparse_profile and len(sentences) < 3 and opponent:
+        sentences.append(
+            f"With limited injury data to go on, the {opponent} fixture and "
+            f"current workload carry more weight in this assessment"
+        )
+
+    # ARCHETYPE
+    archetype_flavour = {
+        "Currently Vulnerable": (
+            f"The 'Currently Vulnerable' tag reflects that the return window is still open. "
+            f"Re-injury risk stays elevated until a proper run of games is under the belt"
+        ),
+        "Fragile": (
+            f"Yara profiles {first_name} as 'Fragile'. When injuries happen, "
+            f"they tend to be the kind that keep a player out for weeks rather than days"
+        ),
+        "Injury Prone": (
+            f"The 'Injury Prone' tag reflects frequency rather than one bad spell. "
+            f"The body seems to break down more often than average"
+        ),
+        "Recurring": (
+            f"The pattern here is repeat injuries that are manageable individually "
+            f"but create a nagging availability concern over a season"
+        ),
+        "Durable": (
+            f"{first_name}'s 'Durable' tag speaks for itself. "
+            f"The availability record is one of the better ones in the pool"
+        ),
+    }
+    if archetype in archetype_flavour:
+        sentences.append(archetype_flavour[archetype])
+
+    # OPEN QUESTION
+    context_chunks = retrieve_player_context(
+        player_data, extra_context=extra_context, top_k=12, include_open_question=True,
+    )
+    open_question = ""
+    for chunk in context_chunks:
+        if chunk.get("kind") == "open_question":
+            open_question = _as_sentence(chunk.get("text", ""))
+            break
+
+    story = ". ".join(s.rstrip(".") for s in sentences[:5]) + "."
     if open_question:
-        story_parts.append(open_question)
-    fallback_story = " ".join(part for part in story_parts if part).strip()
-    fallback_story = fallback_story or f"{first_name} currently profiles as moderate injury risk."
+        story += " " + open_question
+    story = _as_sentence(story)
+    fallback_story = story or f"{first_name} profiles at moderate injury risk."
 
     return generate_grounded_narrative(
         task="Write a risk analysis narrative that explains injury profile clearly for football users.",
@@ -329,6 +654,36 @@ def generate_risk_factors_list(player_data: Dict) -> List[Dict]:
             "factor": "Young Player",
             "impact": "neutral",
             "description": f"At {age}, still developing physically"
+        })
+
+    # Workload
+    acwr = _safe_float(player_data.get("acwr", 0.0), 0.0)
+    if acwr >= 1.3:
+        factors.append({
+            "factor": "Workload Spike",
+            "impact": "high_risk",
+            "description": f"ACWR at {acwr:.2f} — workload has ramped up faster than the body is conditioned for"
+        })
+    elif 0 < acwr <= 0.8:
+        factors.append({
+            "factor": "Light Workload",
+            "impact": "protective",
+            "description": f"ACWR at {acwr:.2f} — recent load is lighter, reducing physical stress"
+        })
+    elif acwr > 0:
+        factors.append({
+            "factor": "Managed Workload",
+            "impact": "neutral",
+            "description": f"ACWR at {acwr:.2f} — workload is in the safe zone"
+        })
+
+    # Match density
+    matches_30 = _safe_int(player_data.get("matches_last_30", 0), 0)
+    if matches_30 >= 6:
+        factors.append({
+            "factor": "Fixture Congestion",
+            "impact": "moderate_risk",
+            "description": f"{matches_30} matches in 30 days is a demanding schedule"
         })
 
     # Sort by impact (high_risk first, then moderate, then neutral, then protective)

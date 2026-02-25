@@ -110,6 +110,7 @@ def _fpl_team_to_df_team(fpl_team: str) -> str:
 # Load models at startup
 artifacts = None
 inference_df = None
+injury_detail_df = None  # Per-injury records from player_injuries_detail.pkl
 fpl_stats_cache = {}  # FPL stats indexed by name
 fpl_team_ids = {}  # Team name -> FPL team ID (for badges)
 fpl_team_name_to_id = {}  # Team name -> FPL numeric team ID
@@ -408,6 +409,17 @@ async def load_models():
                     print(f"Enriched injury history: {has_data}/{len(inference_df)} players have injury records")
         except Exception as e:
             print(f"WARNING: Failed to enrich injury history: {e}")
+
+    # Load per-injury detail records for narrative enrichment
+    global injury_detail_df
+    try:
+        import pandas as pd
+        detail_path = os.path.join(PROJECT_ROOT, "models", "player_injuries_detail.pkl")
+        if os.path.exists(detail_path):
+            injury_detail_df = pd.read_pickle(detail_path)
+            print(f"Loaded {len(injury_detail_df)} injury detail records for {injury_detail_df['name'].nunique()} players")
+    except Exception as e:
+        print(f"WARNING: Failed to load injury detail: {e}")
 
     # Re-assign archetypes: KMeans for players with per-injury detail, rule-based fallback
     if inference_df is not None:
@@ -2371,11 +2383,27 @@ def player_row_to_risk(row) -> PlayerRisk:
         scorer_market_snapshot=scorer_market_snapshot,
     )
 
+    # Look up per-injury detail records for this player
+    injury_records = []
+    if injury_detail_df is not None:
+        player_detail = injury_detail_df[injury_detail_df["name"].str.lower() == player_name.lower()]
+        if not player_detail.empty:
+            for _, irow in player_detail.sort_values("injury_datetime", ascending=False).iterrows():
+                injury_records.append({
+                    "date": str(irow.get("injury_datetime", ""))[:10] if irow.get("injury_datetime") is not None else None,
+                    "body_area": irow.get("body_area", "unknown"),
+                    "injury_type": irow.get("injury_type", "unknown"),
+                    "injury_raw": irow.get("injury_raw", ""),
+                    "severity_days": int(irow.get("severity_days", 0)),
+                    "games_missed": int(irow.get("games_missed", 0)),
+                })
+
     narrative_context = {
         "next_fixture": next_fixture_data,
         "fixture_history": fixture_history_data,
         "bookmaker_consensus": bookmaker_consensus_data,
         "matchup_context": matchup_context_data,
+        "injury_records": injury_records,
     }
     scoring_odds_data = calculate_scoring_odds(enriched_row, extra_context=narrative_context)
     fpl_value_data = get_fpl_value_assessment(enriched_row, extra_context=narrative_context)

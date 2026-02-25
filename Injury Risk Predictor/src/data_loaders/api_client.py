@@ -26,6 +26,7 @@ logger = get_logger(__name__)
 # API Configuration
 BASE_URL = "https://api.football-data.org/v4"
 PREMIER_LEAGUE_ID = "PL"
+CHAMPIONS_LEAGUE_ID = "CL"
 RATE_LIMIT_DELAY = 6.5  # seconds between requests (free tier: 10/min)
 
 
@@ -237,6 +238,125 @@ class FootballDataClient:
         logger.info(f"Fetched {len(df)} players from {len(teams)} teams")
         return df
 
+    def get_champions_league_matches(
+        self,
+        season: int = 2024,
+        status: str = "FINISHED",
+    ) -> pd.DataFrame:
+        """
+        Fetch Champions League matches for PL teams.
+
+        Only keeps matches involving Premier League teams so we can add
+        their CL workload to the PL fixture schedule.
+        """
+        params = {"season": season}
+        if status:
+            params["status"] = status
+
+        try:
+            data = self._get(f"competitions/{CHAMPIONS_LEAGUE_ID}/matches", params)
+        except requests.exceptions.HTTPError as e:
+            logger.warning(f"Failed to fetch CL matches: {e}")
+            return pd.DataFrame()
+
+        matches = data.get("matches", [])
+        logger.info(f"Fetched {len(matches)} CL matches from API")
+
+        if not matches:
+            return pd.DataFrame()
+
+        rows = []
+        for m in matches:
+            if m["status"] != "FINISHED":
+                continue
+
+            home_goals = m["score"]["fullTime"]["home"]
+            away_goals = m["score"]["fullTime"]["away"]
+
+            if home_goals > away_goals:
+                ftr = "H"
+            elif away_goals > home_goals:
+                ftr = "A"
+            else:
+                ftr = "D"
+
+            home = self._normalize_team_name(m["homeTeam"]["shortName"])
+            away = self._normalize_team_name(m["awayTeam"]["shortName"])
+
+            rows.append({
+                "Season_End_Year": season + 1,
+                "Wk": m.get("matchday", 0),
+                "Date": m["utcDate"][:10],
+                "Home": home,
+                "Away": away,
+                "HomeGoals": home_goals,
+                "AwayGoals": away_goals,
+                "FTR": ftr,
+                "competition": "CL",
+            })
+
+        df = pd.DataFrame(rows)
+        if len(df) == 0:
+            return df
+
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date").reset_index(drop=True)
+
+        logger.info(f"Processed {len(df)} finished CL matches")
+        return df
+
+    def get_all_matches_for_pl_teams(self, season: int = 2024) -> pd.DataFrame:
+        """
+        Fetch PL + all other competitions for accurate workload calculation.
+
+        Teams in Champions League, Europa League, FA Cup, League Cup play
+        midweek fixtures that significantly increase acute workload.
+
+        Strategy:
+        1. PL matches from football-data.org (primary, reliable)
+        2. CL matches from football-data.org free tier (backup)
+        3. All other cups/European matches from API-Football (if key available)
+        """
+        # Fetch PL matches (primary source)
+        pl_df = self.get_premier_league_matches(season=season)
+        if "competition" not in pl_df.columns:
+            pl_df["competition"] = "Premier League"
+
+        pl_teams = set(pl_df["Home"].unique()) | set(pl_df["Away"].unique())
+
+        # Try API-Football for all other competitions (CL, EL, FA Cup, League Cup)
+        cup_df = fetch_all_competition_fixtures(pl_teams, season=season)
+
+        if len(cup_df) > 0:
+            # Deduplicate: API-Football might overlap with football-data.org CL data
+            combined = pd.concat([pl_df, cup_df], ignore_index=True)
+            combined = combined.drop_duplicates(
+                subset=["Date", "Home", "Away"], keep="first"
+            )
+            combined = combined.sort_values("Date").reset_index(drop=True)
+
+            non_pl = len(combined) - len(pl_df)
+            comps = cup_df["competition"].value_counts().to_dict()
+            logger.info(f"Combined: {len(combined)} matches ({len(pl_df)} PL + {non_pl} cups/European)")
+            logger.info(f"  Breakdown: {comps}")
+            return combined
+
+        # Fallback: try CL from football-data.org free tier
+        cl_df = self.get_champions_league_matches(season=season)
+        if len(cl_df) > 0:
+            cl_pl = cl_df[
+                cl_df["Home"].isin(pl_teams) | cl_df["Away"].isin(pl_teams)
+            ].copy()
+
+            if len(cl_pl) > 0:
+                combined = pd.concat([pl_df, cl_pl], ignore_index=True)
+                combined = combined.sort_values("Date").reset_index(drop=True)
+                logger.info(f"Combined: {len(combined)} matches ({len(pl_df)} PL + {len(cl_pl)} CL)")
+                return combined
+
+        logger.info("No cup/European matches found, using PL only")
+        return pl_df
+
     def get_upcoming_fixtures(self, days_ahead: int = 14) -> pd.DataFrame:
         """
         Fetch upcoming fixtures.
@@ -345,3 +465,156 @@ def fetch_historical_matches(
         all_matches.append(df)
 
     return pd.concat(all_matches, ignore_index=True)
+
+
+# =============================================================================
+# API-FOOTBALL: All-competitions fixture fetching
+# =============================================================================
+
+# API-Football league IDs for English competitions + European cups
+_AF_COMPETITIONS = {
+    39: "Premier League",
+    2: "Champions League",
+    3: "Europa League",
+    848: "Conference League",
+    45: "FA Cup",
+    48: "League Cup",
+}
+
+# API-Football team name → our normalized name
+# API-Football uses full official names; we normalize to match football-data.org output
+_AF_TEAM_MAP = {
+    "Manchester United": "Manchester United",
+    "Manchester City": "Manchester City",
+    "Tottenham": "Tottenham",
+    "Tottenham Hotspur": "Tottenham",
+    "Wolverhampton": "Wolverhampton",
+    "Wolverhampton Wanderers": "Wolverhampton",
+    "Wolves": "Wolverhampton",
+    "Brighton": "Brighton",
+    "Brighton & Hove Albion": "Brighton",
+    "Brighton and Hove Albion": "Brighton",
+    "Newcastle": "Newcastle",
+    "Newcastle United": "Newcastle",
+    "West Ham": "West Ham",
+    "West Ham United": "West Ham",
+    "Nottingham Forest": "Nottingham Forest",
+    "Leicester": "Leicester",
+    "Leicester City": "Leicester",
+    "Leeds": "Leeds",
+    "Leeds United": "Leeds",
+    "Ipswich": "Ipswich",
+    "Ipswich Town": "Ipswich",
+    "AFC Bournemouth": "Bournemouth",
+}
+
+
+def _af_normalize_team(name: str) -> str:
+    """Normalize API-Football team name to our standard."""
+    return _AF_TEAM_MAP.get(name, name)
+
+
+def fetch_all_competition_fixtures(
+    pl_teams: set,
+    season: int = 2025,
+) -> pd.DataFrame:
+    """
+    Fetch finished fixtures across all competitions for PL teams via API-Football.
+
+    Covers: Champions League, Europa League, Conference League, FA Cup, League Cup.
+    Only returns matches involving teams in `pl_teams`.
+
+    Note: API-Football free tier only covers seasons 2022-2024. For the current
+    season, this will return empty and we fall back to football-data.org CL data.
+    If on a paid plan, this covers all competitions for the current season.
+
+    Args:
+        pl_teams: Set of normalized PL team names
+        season: Season year (e.g. 2025 for 2025-26)
+
+    Returns:
+        DataFrame with Date, Home, Away, HomeGoals, AwayGoals, competition columns
+    """
+    api_key = os.environ.get("API_FOOTBALL_KEY", "")
+    if not api_key:
+        logger.info("No API_FOOTBALL_KEY set — skipping all-competition fixture fetch")
+        return pd.DataFrame()
+
+    session = requests.Session()
+    all_rows = []
+
+    for league_id, comp_name in _AF_COMPETITIONS.items():
+        # Skip PL — we already fetch that from football-data.org (more reliable)
+        if league_id == 39:
+            continue
+
+        try:
+            resp = session.get(
+                "https://v3.football.api-sports.io/fixtures",
+                params={"league": league_id, "season": season, "status": "FT"},
+                headers={"x-apisports-key": api_key},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            logger.warning(f"Failed to fetch {comp_name} fixtures: {e}")
+            continue
+
+        # Check for plan limitation errors
+        errors = data.get("errors", {})
+        if errors:
+            if "plan" in errors:
+                logger.info(f"API-Football free tier: {errors['plan']}")
+                break  # All competitions will have the same limitation
+            logger.warning(f"API-Football error for {comp_name}: {errors}")
+            continue
+
+        fixtures = data.get("response", [])
+        if not fixtures:
+            continue
+
+        comp_rows = 0
+        for fix in fixtures:
+            home_raw = fix["teams"]["home"]["name"]
+            away_raw = fix["teams"]["away"]["name"]
+            home = _af_normalize_team(home_raw)
+            away = _af_normalize_team(away_raw)
+
+            # Only keep matches involving PL teams
+            if home not in pl_teams and away not in pl_teams:
+                continue
+
+            goals = fix.get("goals", {})
+            home_goals = goals.get("home", 0) or 0
+            away_goals = goals.get("away", 0) or 0
+
+            if home_goals > away_goals:
+                ftr = "H"
+            elif away_goals > home_goals:
+                ftr = "A"
+            else:
+                ftr = "D"
+
+            all_rows.append({
+                "Date": fix["fixture"]["date"][:10],
+                "Home": home,
+                "Away": away,
+                "HomeGoals": home_goals,
+                "AwayGoals": away_goals,
+                "FTR": ftr,
+                "competition": comp_name,
+            })
+            comp_rows += 1
+
+        if comp_rows > 0:
+            logger.info(f"  {comp_name}: {comp_rows} matches involving PL teams")
+
+    if not all_rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_rows)
+    df["Date"] = pd.to_datetime(df["Date"])
+    df = df.sort_values("Date").reset_index(drop=True)
+    logger.info(f"All-competition fixtures: {len(df)} non-PL matches for PL teams")
+    return df
