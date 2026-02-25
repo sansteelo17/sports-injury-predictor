@@ -542,12 +542,17 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
     minutes_lookup = load_player_minutes_lookup()
     print(f"   Loaded playing time ratios for {len(minutes_lookup)} players")
 
-    # Fetch matches
-    print("\n4. Fetching current season matches...")
+    # Fetch matches (PL + all other competitions for accurate workload)
+    print("\n4. Fetching current season matches (PL + cups/European)...")
     now = datetime.now()
     season = now.year if now.month >= 8 else now.year - 1
-    matches = client.get_premier_league_matches(season=season)
-    print(f"   Fetched {len(matches)} matches from {season}-{season+1} season")
+    matches = client.get_all_matches_for_pl_teams(season=season)
+    if "competition" in matches.columns:
+        comp_counts = matches["competition"].value_counts().to_dict()
+        comp_str = ", ".join(f"{v} {k}" for k, v in comp_counts.items())
+        print(f"   Fetched {len(matches)} matches ({comp_str}) from {season}-{season+1}")
+    else:
+        print(f"   Fetched {len(matches)} matches from {season}-{season+1}")
 
     # Fetch squads
     print("\n5. Fetching current Premier League squads...")
