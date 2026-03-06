@@ -822,7 +822,11 @@ class OddsClient:
         cache_key = f"moneyline_1x2_{self.odds_provider}_{team_name.lower()}"
         if cache_key in self._cache:
             cached = self._cache[cache_key]
-            if cached is not None:
+            # Don't serve cached mock results — retry for real data
+            if cached is not None and not any(
+                "Mock" in b.get("source", "") or "Mock" in b.get("bookmaker", "")
+                for b in cached.get("books", [])
+            ):
                 return cached
 
         # Explicit provider override.

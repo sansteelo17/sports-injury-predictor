@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { PlayerSummary } from '@/types/api';
 import { RiskBadge } from './RiskBadge';
-import { User } from 'lucide-react';
+import { User, Cross } from 'lucide-react';
 
 interface PlayerListProps {
   players: PlayerSummary[];
@@ -56,8 +56,11 @@ export function PlayerList({ players, onSelectPlayer, selectedPlayer, darkMode =
             <div className="flex items-center gap-2.5 min-w-0">
               <PlayerImage url={player.player_image_url} name={player.name} darkMode={darkMode} />
               <div className="min-w-0">
-                <div className={`font-medium text-sm truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                <div className={`font-medium text-sm truncate flex items-center gap-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                   {player.name}
+                  {player.is_currently_injured && (
+                    <Cross size={10} className="text-red-400 flex-shrink-0" />
+                  )}
                 </div>
                 <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
                   {player.position} {player.minutes_played > 0 ? `\u00B7 ${player.minutes_played}'` : ''}
@@ -66,7 +69,11 @@ export function PlayerList({ players, onSelectPlayer, selectedPlayer, darkMode =
             </div>
             <div className="text-right flex-shrink-0">
               <RiskBadge level={player.risk_level} size="sm" darkMode={darkMode} />
-              <div className={`text-xs mt-0.5 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+              <div className={`text-xs mt-0.5 font-medium ${
+                player.risk_level === 'High' ? 'text-red-400' :
+                player.risk_level === 'Medium' ? 'text-amber-400' :
+                darkMode ? 'text-[#86efac]' : 'text-emerald-600'
+              }`}>
                 {Math.round(player.risk_probability * 100)}%
               </div>
             </div>

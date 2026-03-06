@@ -61,6 +61,7 @@ from src.inference.story_generator import (
     generate_yara_response,
     generate_lab_notes,
 )
+from src.inference.llm_client import generate_grounded_narrative
 from src.data_loaders.fpl_api import FPLClient, get_fpl_insights
 from src.data_loaders.football_data_api import FootballDataClient, get_standings_summary
 from src.data_loaders.api_client import FootballDataClient as MatchHistoryApiClient
@@ -754,6 +755,10 @@ class PlayerSummary(BaseModel):
     minutes_played: int = 0
     is_starter: bool = False
     player_image_url: Optional[str] = None
+    days_since_last_injury: int = 365
+    is_currently_injured: bool = False
+    injury_news: Optional[str] = None
+    chance_of_playing: Optional[int] = None
 
 
 class RiskFactors(BaseModel):
@@ -802,6 +807,27 @@ class FPLValue(BaseModel):
     assists_per_90: float
     price: float
     risk_factor: float
+
+
+class FPLPointsProjection(BaseModel):
+    """Expected FPL points for next gameweek, discounted by injury risk."""
+    expected_points: float
+    base_points: float
+    injury_discount_pct: float
+    fixture_multiplier: float
+    confidence: str
+    breakdown: str
+
+
+class RiskComparison(BaseModel):
+    """Player risk compared to squad and position averages."""
+    squad_avg_risk: float
+    position_avg_risk: float
+    squad_rank: int
+    squad_total: int
+    position_group: str
+    position_rank: int
+    position_total: int
 
 
 class CleanSheetOdds(BaseModel):
@@ -874,6 +900,23 @@ class LabNotes(BaseModel):
     technical: TechnicalDetails
 
 
+class UpcomingFixture(BaseModel):
+    """A single upcoming fixture with FDR difficulty."""
+    opponent: str
+    is_home: bool
+    difficulty: int = 3
+    match_time: Optional[str] = None
+
+
+class InjuryRecord(BaseModel):
+    date: Optional[str] = None
+    body_area: str = "unknown"
+    injury_type: str = "unknown"
+    injury_raw: str = ""
+    severity_days: int = 0
+    games_missed: int = 0
+
+
 class PlayerRisk(BaseModel):
     name: str
     team: str
@@ -900,6 +943,28 @@ class PlayerRisk(BaseModel):
     risk_percentile: Optional[float] = None
     player_image_url: Optional[str] = None
     team_badge_url: Optional[str] = None
+    is_currently_injured: bool = False
+    injury_news: Optional[str] = None
+    chance_of_playing: Optional[int] = None
+    upcoming_fixtures: Optional[List[UpcomingFixture]] = None
+    injury_records: List[InjuryRecord] = []
+    acwr: Optional[float] = None
+    acute_load: Optional[float] = None
+    chronic_load: Optional[float] = None
+    spike_flag: Optional[bool] = None
+    fpl_points_projection: Optional[FPLPointsProjection] = None
+    risk_comparison: Optional[RiskComparison] = None
+
+
+class WhatIfProjection(BaseModel):
+    """Result of a what-if scenario projection."""
+    player_name: str
+    current_risk: float
+    projected_risk: float
+    scenario: str
+    delta: float
+    acwr_current: float
+    acwr_projected: float
 
 
 class TeamOverview(BaseModel):
@@ -2085,6 +2150,7 @@ def get_next_fixture_for_team(team_name: str, injury_prob: float) -> Optional[Di
                         "clean_sheet_odds": None,
                         "win_probability": None,
                         "fixture_insight": None,
+                        "difficulty": f.get("team_h_difficulty"),
                     }
                 elif f.get("team_a") == team_id:
                     fixture_result = {
@@ -2094,6 +2160,7 @@ def get_next_fixture_for_team(team_name: str, injury_prob: float) -> Optional[Di
                         "clean_sheet_odds": None,
                         "win_probability": None,
                         "fixture_insight": None,
+                        "difficulty": f.get("team_a_difficulty"),
                     }
                 if fixture_result:
                     # Merge external odds data if available
@@ -2110,6 +2177,72 @@ def get_next_fixture_for_team(team_name: str, injury_prob: float) -> Optional[Di
         logger.warning(f"Failed to get FPL fixture for {team_name}: {e}")
 
     return None
+
+
+def get_upcoming_fixtures(team_name: str, count: int = 5) -> List[Dict]:
+    """Get the next N fixtures for a team with FDR difficulty ratings."""
+    try:
+        client = FPLClient()
+        teams_list = client.get_teams()
+        team_map = {t["id"]: t["short_name"] for t in teams_list}
+
+        team_lower = team_name.lower()
+        team_id = None
+        for t in teams_list:
+            if (team_lower in t["name"].lower() or t["name"].lower() in team_lower
+                    or team_lower in t.get("short_name", "").lower()):
+                team_id = t["id"]
+                break
+        if not team_id:
+            search = TEAM_BADGE_ALIASES.get(team_lower, team_lower)
+            for t in teams_list:
+                if search in t["name"].lower() or t["name"].lower() in search:
+                    team_id = t["id"]
+                    break
+        if not team_id:
+            return []
+
+        # Get all remaining fixtures for the season
+        data = client.get_bootstrap()
+        current_gw = None
+        for event in data.get("events", []):
+            if event.get("is_current"):
+                current_gw = event["id"]
+                break
+        if not current_gw:
+            return []
+
+        upcoming = []
+        for gw_id in range(current_gw, current_gw + 10):
+            if len(upcoming) >= count:
+                break
+            try:
+                fixtures = client.get_fixtures(gw_id)
+            except Exception:
+                break
+            for f in fixtures:
+                if f.get("finished") or f.get("finished_provisional"):
+                    continue
+                if f.get("team_h") == team_id:
+                    upcoming.append({
+                        "opponent": team_map.get(f["team_a"], "???"),
+                        "is_home": True,
+                        "difficulty": f.get("team_h_difficulty", 3),
+                        "match_time": f.get("kickoff_time"),
+                    })
+                elif f.get("team_a") == team_id:
+                    upcoming.append({
+                        "opponent": team_map.get(f["team_h"], "???"),
+                        "is_home": False,
+                        "difficulty": f.get("team_a_difficulty", 3),
+                        "match_time": f.get("kickoff_time"),
+                    })
+                if len(upcoming) >= count:
+                    break
+        return upcoming
+    except Exception as e:
+        logger.warning(f"Failed to get upcoming fixtures for {team_name}: {e}")
+        return []
 
 
 def _is_defensive_position(position: str) -> bool:
@@ -2217,6 +2350,7 @@ def enhance_yara_response(
     market_consensus: Optional[Dict],
     scoring_odds_data: Optional[Dict] = None,
     clean_sheet_data: Optional[Dict] = None,
+    injury_records: Optional[List[Dict]] = None,
 ) -> Optional[Dict]:
     """Blend model narrative with fixture context and bookmaker consensus."""
     if not base_response and not market_consensus:
@@ -2256,34 +2390,87 @@ def enhance_yara_response(
         else (base_response.get("market_probability") if base_response else None)
     )
 
-    venue_context = ""
-    if opponent:
-        venue = "host" if is_home else "travel to"
-        venue_context = f" {team} {venue} {opponent} next."
+    is_defensive = _is_defensive_position(player_row.get("position", ""))
+    market_type_label = "to keep a clean sheet" if is_defensive else "to score"
+    yara_pct = round(float(yara_probability) * 100)
+    risk_pct = round(injury_prob * 100)
 
-    availability_context = "load risk is elevated" if injury_prob >= 0.4 else "availability profile is steady"
+    # Stat-first template fallback — OptaJoe voice
     if market_consensus and market_probability is not None:
-        response_text = (
-            f"I'm projecting {round(float(yara_probability) * 100)}%. "
-            f"Bookies average {round(float(market_probability) * 100)}%. "
-            f"{first_name} is at {goals_per_90:.2f} goals/90 and {assists_per_90:.2f} assists/90, "
-            f"and the injury-adjusted view says {availability_context}.{venue_context}"
-        )
+        market_pct = round(float(market_probability) * 100)
+        edge = yara_pct - market_pct
+        if edge > 0:
+            template_text = (
+                f"{abs(edge)}% — That's the gap between my model and the bookies on {first_name}. "
+                f"I have {yara_pct}% {market_type_label}, they have {market_pct}%. "
+                f"{goals_per_90:.2f} goals/90 at {risk_pct}% injury risk."
+            )
+        elif edge < 0:
+            template_text = (
+                f"{market_pct}% — Bookies are generous on {first_name}. "
+                f"I'm at {yara_pct}% {market_type_label}. "
+                f"The scoring rate ({goals_per_90:.2f}/90) doesn't justify the market price."
+            )
+        else:
+            template_text = (
+                f"~{yara_pct}% — Market and model agree on {first_name} {market_type_label}. "
+                f"{goals_per_90:.2f} goals/90 and {assists_per_90:.2f} assists/90 at {risk_pct}% risk."
+            )
     else:
-        response_text = (
-            f"I'm projecting {round(float(yara_probability) * 100)}%. "
-            f"{first_name} is at {goals_per_90:.2f} goals/90 and {assists_per_90:.2f} assists/90; "
-            f"{availability_context}.{venue_context}"
+        template_text = (
+            f"{yara_pct}% — My projection for {first_name} {market_type_label}. "
+            f"{goals_per_90:.2f} goals/90, {assists_per_90:.2f} assists/90, {risk_pct}% injury risk."
         )
+    if opponent:
+        venue = "home" if is_home else "away"
+        template_text += f" Next: {venue} vs {opponent}."
+
+    # Use RAG context for richer LLM enrichment
+    response_text = template_text
+    try:
+        from src.inference.context_rag import retrieve_player_context
+        context_chunks = retrieve_player_context(
+            player_row,
+            extra_context={"next_fixture": {"opponent": opponent, "is_home": is_home}} if opponent else None,
+            query="scoring odds injury availability fixture market opponent goals assists",
+            top_k=10,
+            include_open_question=False,
+        )
+        # Add market data as a chunk if available
+        if market_consensus and market_probability is not None:
+            context_chunks.append({
+                "kind": "market",
+                "text": f"Bookmaker average: {round(float(market_probability) * 100)}% {market_type_label}. Yara model: {yara_pct}%.",
+                "tags": set(),
+                "weight": 1.5,
+            })
+
+        llm_task = (
+            f"Lead with the gap between your projection and the bookmakers on {first_name}. "
+            f"Say whether the market is right or wrong and why. "
+            f"Reference {first_name}'s scoring rate, injury risk, and the opponent. "
+            f"End with a one-word kicker."
+        )
+        enriched = generate_grounded_narrative(
+            task=llm_task,
+            player_name=name,
+            context_chunks=context_chunks,
+            fallback_text=template_text,
+            require_open_question=False,
+        )
+        if enriched and enriched != template_text:
+            response_text = enriched
+    except Exception:
+        pass  # Fall back to template text
 
     fpl_tip = base_response.get("fpl_tip") if base_response else None
     if not fpl_tip:
         if injury_prob >= 0.45:
-            fpl_tip = "Start only with bench cover. Captain only if chasing upside."
+            fpl_tip = f"Start with cover only. {risk_pct}% risk caps the ceiling."
         elif yara_probability >= 0.4:
-            fpl_tip = "Start if you own. Captain only if fixture upside matches your rank goals."
+            fpl_tip = f"Start if owned. {yara_pct}% projection supports confidence."
         else:
-            fpl_tip = "Playable, but not a captain priority this week."
+            fpl_tip = "Playable, not a captain priority this week."
 
     return {
         "response_text": response_text,
@@ -2310,6 +2497,106 @@ def get_personalized_insights(row: dict) -> List[str]:
         elif factor["impact"] == "protective":
             insights.append(f"{factor['factor']}: {factor['description']}")
     return insights[:4]
+
+
+def calculate_expected_points(
+    enriched_row: Dict,
+    fpl_stats: Optional[Dict],
+    next_fixture: Optional[Dict],
+    injury_prob: float,
+) -> Optional[Dict]:
+    """Calculate FPL expected points for next gameweek, discounted by injury risk."""
+    if not fpl_stats:
+        return None
+
+    ppg = _safe_float(fpl_stats.get("points_per_game", 0))
+    form = _safe_float(fpl_stats.get("form", 0))
+    minutes = _safe_int(fpl_stats.get("minutes", 0))
+
+    if minutes < 270 or ppg == 0:
+        return None
+
+    position = str(enriched_row.get("position", "")).lower()
+    if any(t in position for t in ("forward", "striker", "winger", "attack")):
+        pos_baseline = 4.0
+    elif any(t in position for t in ("def", "back")):
+        pos_baseline = 3.8
+    elif any(t in position for t in ("gk", "goalkeeper")):
+        pos_baseline = 3.2
+    else:
+        pos_baseline = 3.5
+
+    base = ppg * 0.50 + form * 0.35 + pos_baseline * 0.15
+
+    fdr = int(next_fixture.get("difficulty", 3)) if next_fixture else 3
+    fdr_map = {1: 1.15, 2: 1.05, 3: 1.0, 4: 0.90, 5: 0.80}
+    fixture_multiplier = fdr_map.get(fdr, 1.0)
+
+    risk_weight = 0.6 if injury_prob >= 0.4 else (0.4 if injury_prob >= 0.2 else 0.25)
+    injury_discount = injury_prob * risk_weight
+
+    expected = round(base * fixture_multiplier * (1 - injury_discount), 1)
+    confidence = "high" if minutes >= 900 and ppg >= 2.0 else ("medium" if minutes >= 450 else "low")
+
+    opponent = next_fixture.get("opponent", "opponent") if next_fixture else "their next opponent"
+    venue = "at home" if next_fixture and next_fixture.get("is_home") else "away"
+    breakdown = (
+        f"Base {base:.1f}pts (PPG {ppg:.1f}, form {form:.1f}). "
+        f"Fixture vs {opponent} ({venue}, FDR {fdr}) gives {fixture_multiplier:.2f}x. "
+        f"Injury risk {round(injury_prob * 100)}% applies {round(injury_discount * 100)}% discount."
+    )
+
+    return {
+        "expected_points": max(0.5, expected),
+        "base_points": round(base, 1),
+        "injury_discount_pct": round(injury_discount, 3),
+        "fixture_multiplier": fixture_multiplier,
+        "confidence": confidence,
+        "breakdown": breakdown,
+    }
+
+
+def calculate_risk_comparison(player_name: str, team: str, position: str, prob: float) -> Optional[Dict]:
+    """Compare player's risk to squad and position averages."""
+    if inference_df is None:
+        return None
+
+    team_players = inference_df[inference_df["team"] == team]
+    if team_players.empty:
+        return None
+
+    squad_avg = round(float(team_players["ensemble_prob"].mean()), 3)
+    squad_rank = int((team_players["ensemble_prob"] >= prob).sum())
+    squad_total = len(team_players)
+
+    pos_lower = position.lower()
+    if any(t in pos_lower for t in ("forward", "striker", "winger", "attack")):
+        pos_group = "Forward"
+        pos_filter = inference_df["position"].str.lower().str.contains("forward|striker|winger|attack", regex=True, na=False)
+    elif any(t in pos_lower for t in ("midfield",)):
+        pos_group = "Midfielder"
+        pos_filter = inference_df["position"].str.lower().str.contains("midfield", na=False)
+    elif any(t in pos_lower for t in ("def", "back")):
+        pos_group = "Defender"
+        pos_filter = inference_df["position"].str.lower().str.contains("def|back", regex=True, na=False)
+    else:
+        pos_group = "Goalkeeper"
+        pos_filter = inference_df["position"].str.lower().str.contains("gk|goalkeeper", regex=True, na=False)
+
+    pos_players = inference_df[pos_filter]
+    pos_avg = round(float(pos_players["ensemble_prob"].mean()), 3) if not pos_players.empty else squad_avg
+    pos_rank = int((pos_players["ensemble_prob"] >= prob).sum()) if not pos_players.empty else 1
+    pos_total = len(pos_players) if not pos_players.empty else 1
+
+    return {
+        "squad_avg_risk": squad_avg,
+        "position_avg_risk": pos_avg,
+        "squad_rank": max(1, squad_rank),
+        "squad_total": squad_total,
+        "position_group": pos_group,
+        "position_rank": max(1, pos_rank),
+        "position_total": pos_total,
+    }
 
 
 def player_row_to_risk(row) -> PlayerRisk:
@@ -2435,12 +2722,29 @@ def player_row_to_risk(row) -> PlayerRisk:
         market_consensus=bookmaker_consensus_data,
         scoring_odds_data=scoring_odds_data,
         clean_sheet_data=clean_sheet_data,
+        injury_records=injury_records,
     )
 
     # Yara's Lab Notes: explainability
     lab_notes_data = generate_lab_notes(enriched_row, extra_context=narrative_context)
 
     fpl_insight_text = get_fpl_insight(enriched_row, extra_context=narrative_context)
+
+    # FPL Points Projection
+    fpl_points_data = calculate_expected_points(
+        enriched_row=enriched_row,
+        fpl_stats=fpl_stats,
+        next_fixture=next_fixture_data,
+        injury_prob=prob,
+    )
+
+    # Risk Comparison vs squad/position
+    risk_comparison_data = calculate_risk_comparison(
+        player_name=player_name,
+        team=team,
+        position=enriched_row.get("position", "Unknown"),
+        prob=prob,
+    )
 
     return PlayerRisk(
         name=player_name,
@@ -2484,6 +2788,17 @@ def player_row_to_risk(row) -> PlayerRisk:
         risk_percentile=risk_percentile,
         player_image_url=get_player_image_url(player_name, team),
         team_badge_url=get_team_badge_url(team),
+        is_currently_injured=fpl_stats.get("status", "a") in ("i", "u") if fpl_stats else False,
+        injury_news=fpl_stats.get("news") or None if fpl_stats else None,
+        chance_of_playing=fpl_stats.get("chance_of_playing") if fpl_stats else None,
+        upcoming_fixtures=[UpcomingFixture(**uf) for uf in get_upcoming_fixtures(team, count=5)] or None,
+        injury_records=[InjuryRecord(**ir) for ir in injury_records],
+        acwr=round(float(enriched_row.get("acwr", 0)), 2) if enriched_row.get("acwr") is not None else None,
+        acute_load=round(float(enriched_row.get("acute_load", 0)), 1) if enriched_row.get("acute_load") is not None else None,
+        chronic_load=round(float(enriched_row.get("chronic_load", 0)), 1) if enriched_row.get("chronic_load") is not None else None,
+        spike_flag=bool(enriched_row.get("spike_flag", 0)),
+        fpl_points_projection=FPLPointsProjection(**fpl_points_data) if fpl_points_data else None,
+        risk_comparison=RiskComparison(**risk_comparison_data) if risk_comparison_data else None,
     )
 
 
@@ -2597,6 +2912,7 @@ async def list_players(team: Optional[str] = None, risk_level: Optional[str] = N
         name = row.get("name", "Unknown")
         fpl = get_fpl_stats_for_player(name)
         minutes = fpl.get("minutes", 0) if fpl else 0
+        fpl_status = fpl.get("status", "a") if fpl else "a"
         players.append(PlayerSummary(
             name=name,
             team=row.get("team", "Unknown"),
@@ -2607,6 +2923,10 @@ async def list_players(team: Optional[str] = None, risk_level: Optional[str] = N
             minutes_played=minutes,
             is_starter=minutes >= 900,
             player_image_url=get_player_image_url(name, row.get("team")),
+            days_since_last_injury=_safe_int(row.get("days_since_last_injury", 365), 365),
+            is_currently_injured=fpl_status in ("i", "u"),
+            injury_news=fpl.get("news") or None if fpl else None,
+            chance_of_playing=fpl.get("chance_of_playing") if fpl else None,
         ))
 
     return players
@@ -2709,6 +3029,7 @@ async def get_team_overview(team_name: str):
         name = row.get("name", "Unknown")
         fpl = get_fpl_stats_for_player(name)
         minutes = fpl.get("minutes", 0) if fpl else 0
+        fpl_status = fpl.get("status", "a") if fpl else "a"
         players.append(PlayerSummary(
             name=name,
             team=row.get("team", "Unknown"),
@@ -2719,6 +3040,10 @@ async def get_team_overview(team_name: str):
             minutes_played=minutes,
             is_starter=minutes >= 900,
             player_image_url=get_player_image_url(name, row.get("team")),
+            days_since_last_injury=_safe_int(row.get("days_since_last_injury", 365), 365),
+            is_currently_injured=fpl_status in ("i", "u"),
+            injury_news=fpl.get("news") or None if fpl else None,
+            chance_of_playing=fpl.get("chance_of_playing") if fpl else None,
         ))
 
     actual_team = team_df.iloc[0]["team"]
@@ -2812,6 +3137,100 @@ async def get_double_gameweeks():
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"FPL API error: {str(e)}")
+
+
+@app.get("/api/players/{player_name}/what-if", response_model=WhatIfProjection)
+async def what_if_projection(player_name: str, rest_next: bool = False, play_all: bool = False):
+    """Project how resting or playing all matches affects a player's injury risk."""
+    if inference_df is None or artifacts is None:
+        raise HTTPException(status_code=503, detail="Models not loaded")
+
+    ensemble = artifacts.get("ensemble")
+    if ensemble is None:
+        raise HTTPException(status_code=503, detail="Ensemble model not loaded")
+
+    matches = inference_df[inference_df["name"].str.lower() == player_name.lower()]
+    if matches.empty:
+        matches = inference_df[inference_df["name"].str.lower().str.contains(player_name.lower())]
+    if matches.empty:
+        raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found")
+
+    try:
+        import pandas as pd
+
+        row = matches.iloc[0]
+        current_prob = float(row.get("ensemble_prob", 0.5))
+        acwr_current = float(row.get("acwr", 1.0))
+
+        # Clone the row and modify workload features
+        modified = row.copy()
+        feature_cols = ensemble.feature_names_
+
+        if rest_next:
+            acute = float(modified.get("acute_load", 1))
+            modified["acute_load"] = max(0.5, acute - 1)
+            modified["rest_days_before_injury"] = float(modified.get("rest_days_before_injury", 3)) + 5
+            modified["avg_rest_last_5"] = float(modified.get("avg_rest_last_5", 4)) + 2
+            modified["matches_last_7"] = max(0, float(modified.get("matches_last_7", 1)) - 1)
+            modified["matches_last_14"] = max(1, float(modified.get("matches_last_14", 2)) - 1)
+            if "strain" in modified.index:
+                modified["strain"] = max(0.1, float(modified.get("strain", 0)) * 0.5)
+            if "monotony" in modified.index:
+                modified["monotony"] = max(0.2, float(modified.get("monotony", 0)) * 0.6)
+            if "spike_flag" in modified.index:
+                modified["spike_flag"] = 0
+            scenario = "Rest next match"
+        elif play_all:
+            acute = float(modified.get("acute_load", 1))
+            modified["acute_load"] = acute + 2
+            modified["rest_days_before_injury"] = max(2, float(modified.get("rest_days_before_injury", 3)) - 2)
+            modified["avg_rest_last_5"] = max(2, float(modified.get("avg_rest_last_5", 4)) - 1.5)
+            modified["matches_last_7"] = float(modified.get("matches_last_7", 1)) + 2
+            modified["matches_last_14"] = float(modified.get("matches_last_14", 2)) + 3
+            if "strain" in modified.index:
+                modified["strain"] = float(modified.get("strain", 0)) * 2.0
+            if "monotony" in modified.index:
+                modified["monotony"] = min(5, float(modified.get("monotony", 0)) * 1.8)
+            scenario = "Play all upcoming matches"
+        else:
+            raise HTTPException(status_code=400, detail="Specify rest_next=true or play_all=true")
+
+        # Recalculate ACWR
+        chronic = float(modified.get("chronic_load", 1))
+        if chronic > 0:
+            modified["acwr"] = float(modified["acute_load"]) / chronic
+        acwr_projected = float(modified.get("acwr", acwr_current))
+
+        # Recalculate derived features if present
+        if "fatigue_index" in modified.index:
+            modified["fatigue_index"] = float(modified["acute_load"]) - chronic
+        if "spike_flag" in modified.index:
+            modified["spike_flag"] = 1 if acwr_projected > 1.5 else 0
+
+        # Patch sklearn compat: older pickled LogisticRegression may have removed attrs
+        meta = getattr(ensemble, "meta_model_", None)
+        if meta and not hasattr(meta, "multi_class"):
+            meta.multi_class = "auto"
+
+        # Predict with modified features
+        modified_df = pd.DataFrame([modified])
+        X = modified_df[feature_cols].copy()
+        projected_prob = float(ensemble.predict_proba(X)[0, 1])
+
+        return WhatIfProjection(
+            player_name=str(row.get("name", player_name)),
+            current_risk=round(current_prob, 3),
+            projected_risk=round(projected_prob, 3),
+            scenario=scenario,
+            delta=round(projected_prob - current_prob, 3),
+            acwr_current=round(acwr_current, 2),
+            acwr_projected=round(acwr_projected, 2),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"What-if projection failed for {player_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Projection failed: {str(e)}")
 
 
 if __name__ == "__main__":

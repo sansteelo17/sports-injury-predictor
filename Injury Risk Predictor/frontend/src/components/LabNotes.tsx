@@ -104,6 +104,32 @@ export function LabNotes({ player, darkMode = true }: LabNotesProps) {
           </details>
         </div>
 
+        {/* Model Predictions */}
+        <div className={`rounded-lg p-4 ${darkMode ? 'bg-[#0a0a0a] border border-[#1f1f1f]' : 'bg-gray-50 border border-gray-200'}`}>
+          <div className="flex items-center gap-2 mb-3">
+            <BarChart3 size={16} className={darkMode ? 'text-indigo-300' : 'text-indigo-700'} />
+            <h3 className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              Model Predictions
+            </h3>
+          </div>
+          <div className="grid grid-cols-3 gap-3 text-center">
+            {[
+              { label: 'LightGBM', value: player.model_predictions.lgb },
+              { label: 'XGBoost', value: player.model_predictions.xgb },
+              { label: 'CatBoost', value: player.model_predictions.catboost },
+            ].map((m) => (
+              <div key={m.label}>
+                <div className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-800'}`}>
+                  {Math.round(m.value * 100)}%
+                </div>
+                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                  {m.label}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
         <div className={`rounded-lg p-4 ${darkMode ? 'bg-[#0a0a0a] border border-[#1f1f1f]' : 'bg-gray-50 border border-gray-200'}`}>
           <div className="flex items-center gap-2 mb-2">
             <ScrollText size={16} className={darkMode ? 'text-amber-300' : 'text-amber-700'} />
