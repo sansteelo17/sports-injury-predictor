@@ -63,7 +63,9 @@ export function PlayerList({ players, onSelectPlayer, selectedPlayer, darkMode =
                   )}
                 </div>
                 <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                  {player.position} {player.minutes_played > 0 ? `\u00B7 ${player.minutes_played}'` : ''}
+                  {player.position}
+                  {player.shirt_number != null ? ` \u00B7 #${player.shirt_number}` : ''}
+                  {player.minutes_played > 0 ? ` \u00B7 ${player.minutes_played}'` : ''}
                 </div>
               </div>
             </div>

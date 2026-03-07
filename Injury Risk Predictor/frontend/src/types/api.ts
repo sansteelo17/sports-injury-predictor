@@ -2,6 +2,7 @@ export interface PlayerSummary {
   name: string;
   team: string;
   position: string;
+  shirt_number: number | null;
   risk_level: 'High' | 'Medium' | 'Low';
   risk_probability: number;
   archetype: string;
@@ -161,6 +162,7 @@ export interface PlayerRisk {
   name: string;
   team: string;
   position: string;
+  shirt_number: number | null;
   age: number;
   risk_level: 'High' | 'Medium' | 'Low';
   risk_probability: number;

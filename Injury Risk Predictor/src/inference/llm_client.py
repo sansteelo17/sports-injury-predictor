@@ -28,49 +28,14 @@ YARA_SYSTEM_PROMPT = (
     "VOICE RULES:\n"
     "- Lead with the single most surprising or decisive stat. Make it the first thing the reader sees.\n"
     "- Short, declarative sentences. No hedging. No 'it remains to be seen'. No 'could potentially'.\n"
-    "- End EVERY response with a one-word sentence as a kicker "
-    "(e.g. 'Fragile.', 'Overdue.', 'Inevitable.', 'Cautious.', 'Alarming.', 'Nailed.').\n"
     "- Never start two consecutive sentences the same way.\n"
     "- Every sentence must contain a specific number, name, or fact. No filler.\n"
     "- Use football shorthand: 'clean sheet' not 'shutout', 'return' not 'goal involvement'.\n"
     "- Reference the opponent by name when available.\n"
     "- No markdown. No bullet points. No lists. No emojis.\n"
     "- Never invent stats, injuries, fixtures, or odds. Use ONLY the provided facts.\n"
-    "- 3 to 5 sentences maximum, including the kicker.\n"
+    "- 2 to 5 sentences maximum.\n"
 )
-
-
-# ── Kicker safety net ───────────────────────────────────────────────────────
-
-KICKER_POOLS = {
-    "high_risk": ["Fragile.", "Alarming.", "Exposed.", "Volatile.", "Dangerous."],
-    "moderate_risk": ["Watchful.", "Wary.", "Loaded.", "Teetering.", "Cautious."],
-    "low_risk": ["Bankable.", "Steady.", "Reliable.", "Durable.", "Nailed."],
-    "form_hot": ["Scorching.", "Relentless.", "Inevitable.", "Clinical.", "Unstoppable."],
-    "form_cold": ["Barren.", "Stalled.", "Drifting.", "Fading.", "Quiet."],
-    "default": ["Noted.", "Telling.", "Significant.", "Sharp.", "Clear."],
-}
-
-
-def _ensure_kicker(text: str, risk_level: str = "default", salt: str = "") -> str:
-    """Append a one-word kicker if the LLM forgot one."""
-    if not text:
-        return text
-    # Check if it already ends with a one-word sentence
-    sentences = [s.strip() for s in text.rstrip().split(".") if s.strip()]
-    if sentences:
-        last = sentences[-1]
-        if len(last.split()) == 1 and last[0].isupper():
-            return text  # already has a kicker
-
-    pool = KICKER_POOLS.get(risk_level, KICKER_POOLS["default"])
-    idx = abs(hash(salt or text)) % len(pool)
-    kicker = pool[idx]
-
-    cleaned = text.rstrip()
-    if not cleaned.endswith((".", "!", "?")):
-        cleaned += "."
-    return f"{cleaned} {kicker}"
 
 
 # ── Prompt building ─────────────────────────────────────────────────────────
@@ -90,9 +55,9 @@ def _build_grounded_prompt(
     context_block = "\n".join(lines) if lines else "- No additional context chunks."
 
     question_rule = (
-        "- End with one open-ended football question (no label/prefix) BEFORE the kicker word.\n"
+        "- End with one open-ended football question (no label/prefix).\n"
         if require_open_question
-        else "- Do not end with a question. End with a one-word kicker.\n"
+        else "- Do not end with a question.\n"
     )
 
     return (
@@ -101,10 +66,9 @@ def _build_grounded_prompt(
         "Grounded facts (use ONLY these — never invent):\n"
         f"{context_block}\n\n"
         "Format:\n"
-        "- 3 to 5 sentences, including the final one-word kicker\n"
+        "- 2 to 5 sentences\n"
         "- Lead with the single most decisive stat or number\n"
         "- Every sentence must earn its place with a specific fact\n"
-        "- End with a one-word kicker sentence (e.g. 'Fragile.', 'Inevitable.')\n"
         f"{question_rule}"
         "\n"
         f"If uncertain, stay close to this fallback:\n{fallback_text}"
@@ -230,13 +194,4 @@ def generate_grounded_narrative(
 
     if not output:
         return fallback_text
-
-    # Determine risk level for kicker safety net
-    risk_level = "default"
-    task_lower = task.lower()
-    if "high risk" in task_lower or "elevated" in task_lower:
-        risk_level = "high_risk"
-    elif "low risk" in task_lower or "safe" in task_lower:
-        risk_level = "low_risk"
-
-    return _ensure_kicker(output, risk_level=risk_level, salt=player_name)
+    return output

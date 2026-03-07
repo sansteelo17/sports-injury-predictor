@@ -7,13 +7,14 @@ Serves predictions from the trained ML models to the React frontend.
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 import sys
 import os
 from datetime import datetime, timedelta
 import asyncio
 import subprocess
 import threading
+import re
 
 import unicodedata
 from pathlib import Path
@@ -121,6 +122,8 @@ fpl_team_recent_defense = {}  # Team ID -> recent defensive snapshot
 fpl_player_codes = {}  # Player name -> FPL code (for photos)
 fpl_player_team = {}  # Player name -> team name (for photo disambiguation)
 fpl_players_by_team = {}  # Team name -> set of FPL player names (for filtering)
+shirt_numbers_by_team: Dict[str, Dict[str, int]] = {}  # Normalized team -> normalized player name -> shirt number
+shirt_number_lookup_attempted: Set[str] = set()  # Teams we already tried loading for shirt numbers
 historical_matches_df = None  # Local historical PL fixtures from csv
 fixture_history_cache = {}  # (team, opponent, years) -> summary
 odds_client = None
@@ -199,6 +202,7 @@ async def load_models():
     global artifacts, inference_df, fpl_stats_cache, fpl_team_ids, fpl_team_name_to_id
     global fpl_team_names_by_id, fpl_team_meta, fpl_team_recent_defense
     global fpl_player_codes, fpl_players_by_team, historical_matches_df, fixture_history_cache, odds_client
+    global shirt_numbers_by_team, shirt_number_lookup_attempted
     # Reset caches so manual/cron refreshes don't accumulate stale keys.
     fpl_stats_cache = {}
     fpl_team_ids = {}
@@ -208,6 +212,8 @@ async def load_models():
     fpl_team_recent_defense = {}
     fpl_player_codes = {}
     fpl_players_by_team = {}
+    shirt_numbers_by_team = {}
+    shirt_number_lookup_attempted = set()
     fixture_history_cache = {}
 
     artifacts = load_artifacts()
@@ -749,6 +755,7 @@ class PlayerSummary(BaseModel):
     name: str
     team: str
     position: str
+    shirt_number: Optional[int] = None
     risk_level: str
     risk_probability: float
     archetype: str
@@ -921,6 +928,7 @@ class PlayerRisk(BaseModel):
     name: str
     team: str
     position: str
+    shirt_number: Optional[int] = None
     age: int
     risk_level: str
     risk_probability: float
@@ -1191,6 +1199,251 @@ def _strip_accents(s: str) -> str:
     )
 
 
+def _normalize_player_key(name: str) -> str:
+    """Normalize player names for cross-provider matching."""
+    base = _strip_accents((name or "").lower())
+    base = re.sub(r"[^a-z0-9 ]+", " ", base)
+    return re.sub(r"\s+", " ", base).strip()
+
+
+def _add_shirt_number_entry(mapping: Dict[str, int], player_name: str, shirt_value: Any) -> None:
+    """Insert canonical + alias keys for one player's shirt number."""
+    shirt = _safe_int(shirt_value, 0)
+    if shirt <= 0:
+        return
+
+    full_name = _normalize_player_key(str(player_name or ""))
+    if not full_name:
+        return
+
+    mapping.setdefault(full_name, shirt)
+    parts = full_name.split()
+    if parts:
+        last = parts[-1]
+        if len(last) >= 4:
+            mapping.setdefault(last, shirt)
+        if len(parts) >= 2:
+            mapping.setdefault(f"{parts[0]} {parts[-1]}", shirt)
+
+
+def _build_team_shirt_number_map(squad_df) -> Dict[str, int]:
+    mapping: Dict[str, int] = {}
+    if squad_df is None or len(getattr(squad_df, "index", [])) == 0:
+        return mapping
+
+    for _, row in squad_df.iterrows():
+        _add_shirt_number_entry(mapping, row.get("name", ""), row.get("shirt_number"))
+    return mapping
+
+
+def _api_football_team_search_terms(team_name: Optional[str]) -> List[str]:
+    """Generate likely API-Football team search terms from our normalized names."""
+    raw = str(team_name or "").strip()
+    if not raw:
+        return []
+
+    canonical_key = TEAM_BADGE_ALIASES.get(raw.lower(), raw.lower())
+    key_to_api_name = {
+        "man city": "Manchester City",
+        "man utd": "Manchester United",
+        "nott'm forest": "Nottingham Forest",
+        "spurs": "Tottenham",
+        "wolves": "Wolverhampton Wanderers",
+        "brighton": "Brighton",
+        "west ham": "West Ham",
+        "newcastle": "Newcastle",
+        "leicester": "Leicester",
+        "ipswich": "Ipswich",
+    }
+    pretty_from_key = key_to_api_name.get(
+        canonical_key,
+        " ".join(p.capitalize() for p in canonical_key.replace("'", "").split()),
+    )
+
+    terms: List[str] = []
+    for candidate in [raw, pretty_from_key, canonical_key]:
+        candidate = str(candidate or "").strip()
+        if candidate and candidate.lower() not in {t.lower() for t in terms}:
+            terms.append(candidate)
+    return terms
+
+
+def _pick_api_football_team_id(response_rows: List[Dict], team_name: str) -> Optional[int]:
+    """Pick best matching API-Football team ID from /teams response rows."""
+    if not response_rows:
+        return None
+
+    target = _normalize_player_key(team_name)
+    best_id: Optional[int] = None
+    best_score = -1
+
+    for row in response_rows:
+        team = row.get("team", {})
+        team_id = _safe_int(team.get("id"), 0)
+        if team_id <= 0:
+            continue
+        name = _normalize_player_key(str(team.get("name", "")))
+        if not name:
+            continue
+
+        overlap = len(set(target.split()) & set(name.split()))
+        contains_bonus = 3 if (target in name or name in target) else 0
+        score = overlap + contains_bonus
+
+        if score > best_score:
+            best_score = score
+            best_id = team_id
+
+    if best_id:
+        return best_id
+
+    first = response_rows[0].get("team", {})
+    return _safe_int(first.get("id"), 0) or None
+
+
+def _fetch_api_football_shirt_numbers(team_name: Optional[str]) -> Dict[str, int]:
+    """
+    Fetch shirt numbers from API-Football using `players/squads`.
+    Requires odds client with API_FOOTBALL_KEY configured.
+    """
+    if not team_name or odds_client is None:
+        return {}
+    if not getattr(odds_client, "api_football_key", ""):
+        return {}
+    if not hasattr(odds_client, "_api_football_request"):
+        return {}
+
+    search_terms = _api_football_team_search_terms(team_name)
+    if not search_terms:
+        return {}
+
+    now_year = datetime.utcnow().year
+    team_id: Optional[int] = None
+    for season in (now_year, now_year - 1):
+        for term in search_terms:
+            payload = odds_client._api_football_request(
+                "teams",
+                {"league": 39, "season": season, "search": term},
+            )
+            rows = (payload or {}).get("response", [])
+            if not rows:
+                continue
+            team_id = _pick_api_football_team_id(rows, team_name)
+            if team_id:
+                break
+        if team_id:
+            break
+
+    if not team_id:
+        return {}
+
+    squad_payload = odds_client._api_football_request("players/squads", {"team": team_id})
+    squads = (squad_payload or {}).get("response", [])
+    if not squads:
+        return {}
+
+    mapping: Dict[str, int] = {}
+    for squad in squads:
+        for player in squad.get("players", []):
+            _add_shirt_number_entry(mapping, player.get("name", ""), player.get("number"))
+    return mapping
+
+
+def _ensure_team_shirt_numbers_loaded(team_name: Optional[str]) -> None:
+    """Lazy-load squad numbers from football-data.org for one team."""
+    if not team_name:
+        return
+
+    key = TEAM_BADGE_ALIASES.get(str(team_name).lower().strip(), str(team_name).lower().strip())
+    if not key:
+        return
+    if key in shirt_numbers_by_team or key in shirt_number_lookup_attempted:
+        return
+
+    shirt_number_lookup_attempted.add(key)
+    api_key = (os.getenv("FOOTBALL_DATA_API_KEY") or "").strip()
+    if api_key:
+        try:
+            client = MatchHistoryApiClient(api_key=api_key)
+            squad_df = client.get_team_squad(team_name)
+            team_map = _build_team_shirt_number_map(squad_df)
+            if team_map:
+                shirt_numbers_by_team[key] = team_map
+                logger.info(f"Loaded {len(team_map)} shirt numbers for {team_name}")
+        except Exception as e:
+            logger.debug(f"Shirt-number lookup failed for {team_name}: {e}")
+
+    if key in shirt_numbers_by_team:
+        return
+
+    try:
+        team_map = _fetch_api_football_shirt_numbers(team_name)
+        if team_map:
+            shirt_numbers_by_team[key] = team_map
+            logger.info(f"Loaded {len(team_map)} shirt numbers for {team_name} via API-Football")
+    except Exception as e:
+        logger.debug(f"API-Football shirt-number lookup failed for {team_name}: {e}")
+
+
+def _lookup_shirt_number(player_name: str, team_hint: Optional[str] = None) -> Optional[int]:
+    """Find shirt number from cached/lazy-loaded squad data."""
+    if not player_name:
+        return None
+
+    candidate_keys: List[str] = []
+    normalized = _normalize_player_key(player_name)
+    if normalized:
+        candidate_keys.append(normalized)
+        parts = normalized.split()
+        if len(parts) >= 2:
+            candidate_keys.append(f"{parts[0]} {parts[-1]}")
+        if parts:
+            candidate_keys.append(parts[-1])
+
+    teams_to_check: List[str] = []
+    if team_hint:
+        _ensure_team_shirt_numbers_loaded(team_hint)
+        norm_team = TEAM_BADGE_ALIASES.get(str(team_hint).lower().strip(), str(team_hint).lower().strip())
+        if norm_team:
+            teams_to_check.append(norm_team)
+
+    # Fallback: search already-loaded teams
+    for team_key in shirt_numbers_by_team.keys():
+        if team_key not in teams_to_check:
+            teams_to_check.append(team_key)
+
+    for team_key in teams_to_check:
+        mapping = shirt_numbers_by_team.get(team_key, {})
+        for key in candidate_keys:
+            shirt = mapping.get(key)
+            if isinstance(shirt, int) and shirt > 0:
+                return shirt
+    return None
+
+
+def _attach_shirt_number(stats: Optional[Dict], player_name: str, team_hint: Optional[str] = None) -> Optional[Dict]:
+    """Attach shirt number to stats if missing, using fallback squad sources."""
+    if not stats:
+        return stats
+    current = _safe_int(stats.get("shirt_number"), 0)
+    if current > 0:
+        return stats
+
+    fallback = _lookup_shirt_number(player_name, team_hint=team_hint or stats.get("team"))
+    if fallback:
+        stats["shirt_number"] = fallback
+    return stats
+
+
+def _resolve_shirt_number(player_name: str, fpl_stats: Optional[Dict], team_hint: Optional[str]) -> Optional[int]:
+    """Return shirt number from FPL stats, then fallback squad sources."""
+    if fpl_stats:
+        from_fpl = _safe_int(fpl_stats.get("shirt_number"), 0)
+        if from_fpl > 0:
+            return from_fpl
+    return _lookup_shirt_number(player_name, team_hint=team_hint)
+
+
 def get_player_image_url(player_name: str, team_name: Optional[str] = None) -> Optional[str]:
     """Get Premier League player photo URL."""
     _photo_url = lambda code: f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{code}.png"
@@ -1317,10 +1570,10 @@ def get_fpl_stats_for_player(name: str, team_hint: str = None) -> Optional[Dict]
 
     # Exact match (most reliable) — try with and without accents
     if name_lower in fpl_stats_cache:
-        return fpl_stats_cache[name_lower]
+        return _attach_shirt_number(fpl_stats_cache[name_lower], name, team_hint=team_hint)
     name_ascii = _strip_accents(name_lower)
     if name_ascii != name_lower and name_ascii in fpl_stats_cache:
-        return fpl_stats_cache[name_ascii]
+        return _attach_shirt_number(fpl_stats_cache[name_ascii], name, team_hint=team_hint)
 
     # Full name containment (e.g. "Bukayo Saka" in "Bukayo Saka" or vice versa)
     # Score candidates by match quality to avoid false positives
@@ -1338,12 +1591,12 @@ def get_fpl_stats_for_player(name: str, team_hint: str = None) -> Optional[Dict]
         team_lower = team_hint.lower()
         team_matches = [(o, s) for o, s in candidates if _teams_match(s.get("team", ""), team_lower)]
         if team_matches:
-            return team_matches[0][1]  # Already sorted by overlap
+            return _attach_shirt_number(team_matches[0][1], name, team_hint=team_hint)  # Already sorted by overlap
 
     if len(candidates) == 1:
-        return candidates[0][1]
+        return _attach_shirt_number(candidates[0][1], name, team_hint=team_hint)
     if candidates:
-        return candidates[0][1]
+        return _attach_shirt_number(candidates[0][1], name, team_hint=team_hint)
 
     # Last resort: match by last name only (must be unique and long enough)
     parts = name_lower.split()
@@ -1355,13 +1608,13 @@ def get_fpl_stats_for_player(name: str, team_hint: str = None) -> Optional[Dict]
                 if key.endswith(last_name) or last_name == key.split()[-1] if " " in key else last_name == key:
                     last_name_matches.append(stats)
             if len(last_name_matches) == 1:
-                return last_name_matches[0]
+                return _attach_shirt_number(last_name_matches[0], name, team_hint=team_hint)
             # If multiple matches, use team hint
             if last_name_matches and team_hint:
                 team_lower = team_hint.lower()
                 team_filtered = [s for s in last_name_matches if _teams_match(s.get("team", ""), team_lower)]
                 if len(team_filtered) == 1:
-                    return team_filtered[0]
+                    return _attach_shirt_number(team_filtered[0], name, team_hint=team_hint)
     return None
 
 
@@ -2449,7 +2702,7 @@ def enhance_yara_response(
             f"Lead with the gap between your projection and the bookmakers on {first_name}. "
             f"Say whether the market is right or wrong and why. "
             f"Reference {first_name}'s scoring rate, injury risk, and the opponent. "
-            f"End with a one-word kicker."
+            f"Keep it concise and specific."
         )
         enriched = generate_grounded_narrative(
             task=llm_task,
@@ -2509,6 +2762,12 @@ def calculate_expected_points(
     if not fpl_stats:
         return None
 
+    status = str(fpl_stats.get("status", "a") or "a").lower()
+    chance = fpl_stats.get("chance_of_playing")
+    chance_int = _safe_int(chance, -1) if chance is not None else None
+    if status in {"i", "u"} or chance_int == 0:
+        return None
+
     ppg = _safe_float(fpl_stats.get("points_per_game", 0))
     form = _safe_float(fpl_stats.get("form", 0))
     minutes = _safe_int(fpl_stats.get("minutes", 0))
@@ -2536,7 +2795,19 @@ def calculate_expected_points(
     injury_discount = injury_prob * risk_weight
 
     expected = round(base * fixture_multiplier * (1 - injury_discount), 1)
-    confidence = "high" if minutes >= 900 and ppg >= 2.0 else ("medium" if minutes >= 450 else "low")
+
+    # Confidence should reflect sample quality + risk stability, not just "played enough".
+    established_sample = minutes >= 1600
+    strong_output_signal = ppg >= 3.8 and form >= 3.5
+    stable_availability = injury_prob < 0.30
+    usable_sample = minutes >= 900 and ppg >= 2.2
+
+    if established_sample and strong_output_signal and stable_availability:
+        confidence = "high"
+    elif usable_sample and injury_prob < 0.50:
+        confidence = "medium"
+    else:
+        confidence = "low"
 
     opponent = next_fixture.get("opponent", "opponent") if next_fixture else "their next opponent"
     venue = "at home" if next_fixture and next_fixture.get("is_home") else "away"
@@ -2635,9 +2906,12 @@ def player_row_to_risk(row) -> PlayerRisk:
             "price": fpl_stats.get("price", 0),
             "form": fpl_stats.get("form", 0),
             "minutes": fpl_stats.get("minutes", 0),
+            "shirt_number": fpl_stats.get("shirt_number"),
             "display_name": fpl_stats.get("name", ""),
             "popular_name": get_popular_player_name(player_name, fpl_stats),
         })
+    if _safe_int(enriched_row.get("shirt_number"), 0) <= 0:
+        enriched_row["shirt_number"] = _lookup_shirt_number(player_name, team_hint=team)
 
     # Compute risk percentile for context (e.g. "higher risk than 92% of players")
     risk_percentile = None
@@ -2750,6 +3024,7 @@ def player_row_to_risk(row) -> PlayerRisk:
         name=player_name,
         team=team,
         position=enriched_row.get("position", "Unknown"),
+        shirt_number=_safe_int(enriched_row.get("shirt_number"), 0) or None,
         age=int(enriched_row.get("age", 25)),
         risk_level=get_risk_level(prob, enriched_row),
         risk_probability=round(prob, 3),
@@ -2917,6 +3192,7 @@ async def list_players(team: Optional[str] = None, risk_level: Optional[str] = N
             name=name,
             team=row.get("team", "Unknown"),
             position=row.get("position", "Unknown"),
+            shirt_number=_resolve_shirt_number(name, fpl, row.get("team", "Unknown")),
             risk_level=get_risk_level(prob, row),
             risk_probability=round(prob, 3),
             archetype=row.get("archetype", "Unknown"),
@@ -3034,6 +3310,7 @@ async def get_team_overview(team_name: str):
             name=name,
             team=row.get("team", "Unknown"),
             position=row.get("position", "Unknown"),
+            shirt_number=_resolve_shirt_number(name, fpl, row.get("team", "Unknown")),
             risk_level=get_risk_level(prob, row),
             risk_probability=round(prob, 3),
             archetype=row.get("archetype", "Unknown"),

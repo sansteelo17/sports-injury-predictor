@@ -6,6 +6,7 @@ that explain WHY a player has their specific risk level.
 """
 
 import math
+import os
 import re
 from typing import Dict, List, Optional
 
@@ -83,6 +84,16 @@ def _count_phrase(count: int, singular: str, plural: Optional[str] = None) -> st
     return f"{count} {label}"
 
 
+def _days_fan_label(days: int) -> str:
+    """Fan-readable duration label for long injury-free runs."""
+    d = _safe_int(days, 0)
+    if d >= 1095:
+        return f"{round(d / 365, 1):g}+ years"
+    if d >= 365:
+        return f"{round(d / 365, 1):g} years"
+    return f"{d} days"
+
+
 def _display_team_name(team_name: Optional[str]) -> str:
     value = (team_name or "").strip()
     if not value:
@@ -152,6 +163,10 @@ _KICKER_POOLS = {
     "default": ["Noted.", "Telling.", "Significant.", "Sharp.", "Clear."],
 }
 
+ENABLE_NARRATIVE_KICKERS = (
+    (os.getenv("NARRATIVE_ENABLE_KICKERS", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
+)
+
 
 def _stat_lead(number, unit: str = "") -> str:
     """Format a stat-first lead: '30 - ' or '0.52 - '."""
@@ -163,7 +178,9 @@ def _stat_lead(number, unit: str = "") -> str:
 
 
 def _pick_kicker(category: str = "default", salt: str = "") -> str:
-    """Deterministic one-word kicker from pool."""
+    """Deterministic one-word kicker from pool (disabled by default)."""
+    if not ENABLE_NARRATIVE_KICKERS:
+        return ""
     pool = _KICKER_POOLS.get(category, _KICKER_POOLS["default"])
     idx = abs(hash(salt or "x")) % len(pool)
     return pool[idx]
@@ -305,8 +322,8 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
         )
     elif prob >= 0.60 and acwr > 1.3:
         sentences.append(
-            f"{_stat_lead(acwr)}That ACWR reading tells the story. "
-            f"{first_name} is at {risk_pct}% risk with the body under more load than it is conditioned for"
+            f"ACWR is {acwr:.2f}, just above the 1.30 risk threshold. "
+            f"{first_name} sits at {risk_pct}% risk with load rising faster than recovery."
         )
     elif prob >= 0.60 and avg_days >= 30:
         sentences.append(
@@ -375,7 +392,7 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
         if severities and len(severities) >= 2:
             max_sev = max(severities)
             others = [s for s in severities if s != max_sev]
-            if others and max_sev >= 2 * (sum(others) / len(others)):
+            if others and max_sev >= 45 and max_sev >= 2 * (sum(others) / len(others)):
                 severity_skewed = True
         # Worst injury
         for r in injury_records:
@@ -393,17 +410,17 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
 
     if prev_injuries == 0:
         sentences.append(
-            "Zero injuries on file. Low baseline, thin data"
+            "Zero injuries on file, which keeps the baseline risk low."
         )
-    elif severity_skewed and worst_record:
+    elif severity_skewed and worst_record and prev_injuries <= 4:
         worst_area = worst_record.get("injury_raw") or worst_record.get("body_area", "injury")
         worst_days = worst_record["severity_days"]
         worst_date = worst_record.get("date", "")
         date_str = f" in {worst_date[:7]}" if worst_date and len(worst_date) >= 7 else ""
         others_avg = round((days_lost - worst_days) / max(prev_injuries - 1, 1))
         sentences.append(
-            f"{_stat_lead(worst_days, 'days')}A {worst_area}{date_str} skews the {avg_days:.0f}-day average. "
-            f"Strip that out and the other {_pl(prev_injuries - 1, 'injury')} averaged {others_avg} days"
+            f"One long {worst_area}{date_str} layoff ({worst_days} days) pulls the average up to {avg_days:.0f} days. "
+            f"Away from that outlier, the other {_pl(prev_injuries - 1, 'injury')} averaged {others_avg} days."
         )
     elif recurring_area and prev_injuries >= 3:
         sentences.append(
@@ -420,7 +437,8 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
         )
     elif prev_injuries <= 2 and days_since >= 365:
         sentences.append(
-            f"Just {_pl(prev_injuries, 'injury')} and a {days_since}-day healthy run. Small sample, positive picture"
+            f"Just {_pl(prev_injuries, 'injury')} on record and {_days_fan_label(days_since)} injury-free. "
+            "Recent availability has been strong."
         )
     elif prev_injuries <= 2:
         if worst_record:
@@ -431,7 +449,7 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
             )
         else:
             sentences.append(
-                f"Only {_pl(prev_injuries, 'injury')} on record. Thin data, cautiously optimistic"
+                f"Only {_pl(prev_injuries, 'injury')} on record, so the risk read is less noisy than a heavy-injury profile."
             )
     elif prev_injuries >= 8 and avg_days >= 30:
         sentences.append(
@@ -449,21 +467,26 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
         )
 
     # RECENCY & WORKLOAD
-    if days_since < 30:
-        sentences.append(
-            f"{days_since} days since the last injury. Still in the highest-risk window for recurrence"
-        )
-    elif days_since < 60:
-        sentences.append(
-            f"{days_since} days post-injury — past the acute zone but not yet clear"
-        )
+    lead_mentions_recency = any(
+        ("days post-injury" in s.lower()) or ("days since the last injury" in s.lower())
+        for s in sentences[:2]
+    )
+    if not lead_mentions_recency:
+        if days_since < 30:
+            sentences.append(
+                f"{days_since} days since the last injury. Still in the highest-risk window for recurrence"
+            )
+        elif days_since < 60:
+            sentences.append(
+                f"{days_since} days post-injury — past the acute zone but not yet clear"
+            )
     if acwr >= 1.5:
         sentences.append(
-            f"ACWR at {acwr:.2f} — a spike that ranks among the strongest soft-tissue predictors"
+            f"Workload ratio at {acwr:.2f} — that spike is a strong short-term injury warning sign"
         )
     elif acwr >= 1.3 and fatigue >= 1.0:
         sentences.append(
-            f"ACWR {acwr:.2f}, fatigue index {fatigue:.1f}. The body is doing more than it is conditioned for"
+            f"Workload ratio {acwr:.2f} with fatigue at {fatigue:.1f}. The body is doing more than it is conditioned for"
         )
 
     # WORKLOAD NARRATIVE — explain the "why" even when workload is normal
@@ -479,11 +502,11 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
         elif is_sparse_profile and acwr > 0:
             if acwr <= 0.8:
                 sentences.append(
-                    f"ACWR {acwr:.2f} — light recent load keeps stress low but limits match conditioning"
+                    f"Workload ratio {acwr:.2f} — lighter recent load keeps stress low but limits match conditioning"
                 )
             else:
                 sentences.append(
-                    f"ACWR {acwr:.2f} — no spike, no fatigue flag. Workload is well managed"
+                    f"Workload ratio {acwr:.2f} — no spike, no fatigue flag. Load is well managed"
                 )
 
     # AGE
@@ -529,7 +552,7 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
                 )
             elif opp_conceded >= 1.2:
                 sentences.append(
-                    f"{opponent} leaking {opp_conceded:.1f} goals/game. Appealing fixture on paper"
+                    f"{opponent} are conceding {opp_conceded:.1f} goals per game lately, so this fixture gives {first_name} a clearer route to returns."
                 )
             elif vs_samples >= 1 and vs_goals + vs_assists >= 1:
                 sentences.append(
@@ -607,28 +630,31 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
     context_chunks = retrieve_player_context(
         player_data, extra_context=extra_context, top_k=12, include_open_question=True,
     )
+    story_fact_line = build_dynamic_rag_line(
+        player_data,
+        extra_context=extra_context,
+        section="story",
+        context_chunks=context_chunks,
+    )
     open_question = ""
     for chunk in context_chunks:
         if chunk.get("kind") == "open_question":
             open_question = _as_sentence(chunk.get("text", ""))
             break
 
-    # Determine kicker category
-    if prob >= 0.55:
-        kicker_cat = "high_risk"
-    elif prob >= 0.35:
-        kicker_cat = "moderate_risk"
-    elif prob < 0.20:
-        kicker_cat = "low_risk"
+    story_body = ". ".join(s.rstrip(".") for s in sentences[:5]) + "."
+    if story_fact_line:
+        normalized_fact = story_fact_line.strip().lower().rstrip(".")
+        normalized_body = story_body.lower()
+        if normalized_fact and normalized_fact not in normalized_body:
+            story = f"{_as_sentence(story_fact_line)} {story_body}"
+        else:
+            story = story_body
     else:
-        kicker_cat = "default"
-
-    story = ". ".join(s.rstrip(".") for s in sentences[:5]) + "."
+        story = story_body
     if open_question:
         story += " " + open_question
-    # Append kicker
-    kicker = _pick_kicker(kicker_cat, salt=first_name)
-    story = _as_sentence(story) + " " + kicker
+    story = _as_sentence(story)
     fallback_story = story or f"{first_name} profiles at moderate injury risk."
 
     return generate_grounded_narrative(
@@ -636,7 +662,7 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
             f"Write a stat-first risk narrative for {first_name}. "
             "Lead with the most decisive number. Short declarative sentences. "
             "Every sentence earns its place with a specific fact. "
-            "End with a one-word kicker."
+            "Keep it sharp and specific."
         ),
         player_name=name,
         context_chunks=context_chunks,
@@ -789,7 +815,7 @@ def get_recommendation_text(player_data: Dict) -> str:
 
 
 def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> Optional[str]:
-    """Generate player-aware FPL manager tip with signal stacking."""
+    """Generate one punchy, stat-led FPL manager tip with real fixture context."""
     first_name = _call_name(player_data)
     if first_name and first_name[0].islower():
         first_name = first_name[0].upper() + first_name[1:]
@@ -801,6 +827,8 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
     role = _position_group(position)
     goals_per_90 = _safe_float(player_data.get("goals_per_90", 0.0), 0.0)
     assists_per_90 = _safe_float(player_data.get("assists_per_90", 0.0), 0.0)
+    output_per_90 = goals_per_90 + assists_per_90
+    risk_pct = round(injury_prob * 100)
 
     extra_context = extra_context or {}
     matchup_context = extra_context.get("matchup_context") or {}
@@ -813,23 +841,89 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
     recent_gi = recent_goals + recent_assists
 
     vs_opponent = matchup_context.get("vs_opponent") or {}
+    vs_samples = _safe_int(vs_opponent.get("samples", 0), 0)
+    vs_goals = _safe_int(vs_opponent.get("goals", 0), 0)
+    vs_assists = _safe_int(vs_opponent.get("assists", 0), 0)
+    vs_returns = _safe_int(vs_opponent.get("returns", 0), 0)
+    vs_clean_sheets = _safe_int(vs_opponent.get("clean_sheets", 0), 0)
+
     opponent_defense = matchup_context.get("opponent_defense") or {}
     opp_conceded = _safe_float(opponent_defense.get("avg_goals_conceded_last5", 0.0), 0.0)
     fixture_history = extra_context.get("fixture_history") or {}
 
     next_fixture = extra_context.get("next_fixture") or {}
-    opponent = _display_team_name((
-        matchup_context.get("opponent")
-        or next_fixture.get("opponent")
-        or "this opponent"
-    ))
+    opponent = _display_team_name(
+        matchup_context.get("opponent") or next_fixture.get("opponent") or "this opponent"
+    )
     is_home = matchup_context.get("is_home")
     if is_home is None:
         is_home = next_fixture.get("is_home")
     venue_label = "at home" if is_home else "away" if is_home is not None else ""
-    risk_pct = round(injury_prob * 100)
 
-    # Build signal stack — the 3 strongest data points
+    # Stat-led opener in Opta-like style
+    if role == "defender" and recent_samples > 0:
+        lead = f"{recent_clean_sheets} — {first_name} has {recent_clean_sheets} clean sheets in the last {recent_samples}."
+    elif recent_samples > 0:
+        lead = f"{recent_gi} — {first_name} has {recent_goals} goals and {recent_assists} assists in the last {recent_samples}."
+    elif vs_samples > 0 and role == "defender":
+        lead = f"{vs_clean_sheets} — {first_name} has {vs_clean_sheets} clean sheets in {vs_samples} meetings with {opponent}."
+    elif vs_samples > 0:
+        lead = f"{vs_goals + vs_assists} — {first_name} has {vs_goals} goals and {vs_assists} assists in {vs_samples} meetings with {opponent}."
+    else:
+        lead = f"{risk_pct}% — Current injury-risk read for {first_name}."
+
+    action = "Start if owned"
+    reason_bits: List[str] = []
+
+    if minutes < 180:
+        action = "Bench"
+        reason_bits.append(f"minutes are too thin ({minutes})")
+    elif is_currently_injured or days_since < 21:
+        action = "Bench"
+        reason_bits.append(f"only {days_since} days since the last setback")
+    elif injury_prob >= 0.45:
+        action = "Start only with bench cover"
+        reason_bits.append("availability risk is still elevated")
+    elif role == "defender":
+        if recent_clean_sheets >= 2 and injury_prob < 0.35:
+            action = "Start"
+            reason_bits.append("clean-sheet floor is live")
+        elif recent_clean_sheets == 0 and recent_samples >= 4:
+            action = "Bench-first"
+            reason_bits.append("recent clean-sheet trend is cold")
+    else:
+        if output_per_90 >= 0.55 and recent_returns >= 2 and injury_prob < 0.35:
+            action = "Start"
+            reason_bits.append("output trend and availability both support it")
+        elif recent_returns == 0 and recent_samples >= 4:
+            action = "Bench"
+            reason_bits.append("no recent returns")
+
+    # Fixture and matchup context
+    if role == "defender":
+        if opp_conceded > 0:
+            reason_bits.append(f"{opponent} average {opp_conceded:.2f} goals per game recently")
+        if vs_samples >= 2:
+            reason_bits.append(f"{vs_clean_sheets} clean sheets in {vs_samples} H2H meetings")
+    else:
+        if opp_conceded >= 1.2:
+            reason_bits.append(f"{opponent} have been conceding {opp_conceded:.2f} per game")
+        if vs_samples >= 2 and (vs_goals + vs_assists) > 0:
+            reason_bits.append(f"{vs_goals + vs_assists} returns in {vs_samples} H2H meetings")
+        elif vs_samples >= 2 and vs_returns == 0:
+            reason_bits.append("no H2H returns yet in this fixture")
+
+    # Keep tip aligned with value tier to avoid contradictions
+    value_assessment = get_fpl_value_assessment(player_data, extra_context=extra_context)
+    if value_assessment:
+        tier = (value_assessment.get("tier") or "").strip().lower()
+        if tier == "avoid":
+            action = "Bench"
+            reason_bits = ["upside has been too thin for the price and risk profile"]
+        elif tier == "rotation" and action == "Start":
+            action = "Start only with bench cover"
+
+    # Inject one strong signal-stack clause for variation without bloat
     signals = _build_fpl_signal_stack(
         recent_form=recent_form,
         vs_opponent=vs_opponent,
@@ -840,89 +934,60 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
         first_name=first_name,
         opponent=opponent,
     )
-    signal_clause = ", ".join(signals[:3]) if signals else ""
+    if signals:
+        reason_bits.append(signals[0])
 
-    _v = hash(first_name or "x") % 3
+    context_chunks = retrieve_player_context(
+        player_data,
+        extra_context=extra_context,
+        query="fpl manager tip recent form head-to-head fixture opponent defense injury availability minutes",
+        top_k=10,
+        include_open_question=False,
+    )
+    fpl_context_line = build_dynamic_rag_line(
+        player_data,
+        extra_context=extra_context,
+        section="fpl",
+        context_chunks=context_chunks,
+    )
+    if fpl_context_line:
+        reason_bits.append(fpl_context_line.rstrip("."))
 
-    # EDGE CASES: insufficient data
-    if minutes < 180:
-        action = "Bench"
-        reason = f"only {minutes} minutes logged — starts not nailed"
-        kicker_cat = "avoid"
-    elif days_since < 21 and (is_currently_injured or minutes < 270):
-        action = "Monitor"
-        reason = f"{days_since} days since the last setback — availability volatile"
-        kicker_cat = "moderate_risk"
-    elif injury_prob >= 0.45:
-        action = "Start with cover"
-        reason = f"{risk_pct}% injury risk — have a sub ready"
-        if signal_clause:
-            reason += f". Upside signals: {signal_clause}"
-        kicker_cat = "moderate_risk"
-    # DEFENDERS
-    elif role == "defender":
-        if recent_clean_sheets >= 2 and injury_prob < 0.35 and recent_samples > 0:
-            action = "Start"
-            reason = (
-                f"{recent_clean_sheets} clean sheets in {recent_samples} at {risk_pct}% risk"
-            )
-            if signal_clause:
-                reason += f". {signal_clause}"
-            kicker_cat = "form_hot"
-        else:
-            action = "Fixture-dependent"
-            if recent_samples > 0:
-                reason = f"{recent_clean_sheets}/{recent_samples} clean sheets — pick your spots"
-            else:
-                reason = "defensive floor is matchup-dependent"
-            if signal_clause:
-                reason += f". Context: {signal_clause}"
-            kicker_cat = "default"
-    # ATTACKERS / MIDFIELDERS
-    else:
-        output_signal = goals_per_90 + assists_per_90
-        if output_signal >= 0.55 and recent_returns >= 2 and injury_prob < 0.35:
-            action = ["Start with confidence", "Must-start", "Captain shout"][_v]
-            if signal_clause:
-                reason = signal_clause
-            elif recent_samples > 0:
-                reason = f"{recent_gi} involvements in {recent_samples} at {risk_pct}% risk"
-            else:
-                reason = "output and availability both green"
-            kicker_cat = "form_hot"
-        elif output_signal < 0.2 and recent_returns == 0:
-            action = "Fade"
-            if recent_samples > 0:
-                reason = f"zero returns in {recent_samples}, {output_signal:.2f} G+A/90 baseline"
-            else:
-                reason = "output too quiet to justify a start"
-            kicker_cat = "form_cold"
-        else:
-            action = ["Start if owned", "Hold and play", "Back him"][_v]
-            if signal_clause:
-                reason = signal_clause
-            elif recent_samples > 0:
-                reason = f"{recent_gi} involvements in {recent_samples} — platform is there"
-            else:
-                reason = "minutes stable, return trend mixed"
-            kicker_cat = "default"
+    # De-duplicate and keep concise
+    seen = set()
+    concise_reasons: List[str] = []
+    for bit in reason_bits:
+        clean = re.sub(r"\s+", " ", (bit or "").strip())
+        key = clean.lower()
+        if clean and key not in seen:
+            seen.add(key)
+            concise_reasons.append(clean)
+        if len(concise_reasons) >= 2:
+            break
 
-    # Align with FPL value tier to avoid contradictions
-    value_assessment = get_fpl_value_assessment(player_data, extra_context=extra_context)
-    if value_assessment:
-        tier = (value_assessment.get("tier") or "").strip().lower()
-        if tier == "avoid":
-            action = "Fade"
-            reason = "availability-plus-output signal is weak"
-            kicker_cat = "avoid"
-        elif tier == "rotation":
-            action = "Bench-first"
-            reason = "projection is squad depth, not starter"
-            kicker_cat = "default"
+    fixture_slice = f"{venue_label} vs {opponent}".strip() if venue_label else f"vs {opponent}"
+    reason_text = "; ".join(concise_reasons) if concise_reasons else "mixed signal profile this week"
+    fallback_text = _as_sentence(
+        re.sub(
+            r"\s{2,}",
+            " ",
+            f"{lead} {action} for {first_name} {fixture_slice}: {reason_text}.",
+        ).strip(),
+    )
 
-    kicker = _pick_kicker(kicker_cat, salt=first_name + opponent)
-    insight = f"{action} for {first_name} {venue_label} vs {opponent}: {reason}. {kicker}"
-    return _as_sentence(re.sub(r"\s{2,}", " ", insight).strip())
+    # Optional LLM polish, grounded by section-planned RAG facts.
+    polished = generate_grounded_narrative(
+        task=(
+            "Write one punchy FPL manager tip sentence. "
+            "Lead with a decisive stat, then clear action for managers."
+        ),
+        player_name=player_data.get("name", "This player"),
+        context_chunks=context_chunks,
+        fallback_text=fallback_text,
+        require_open_question=False,
+    )
+
+    return _as_sentence(re.sub(r"\s{2,}", " ", (polished or fallback_text)).strip())
 
 
 def _prob_to_odds(prob: float) -> dict:
@@ -968,17 +1033,29 @@ def calculate_scoring_odds(player_data: Dict, extra_context: Optional[Dict] = No
     odds = _prob_to_odds(score_prob)
 
     player_call_name = _call_name(player_data)
-    fallback_analysis = (
-        f"Yara estimates {player_call_name}'s chance to score at {round(score_prob * 100)}% after injury adjustment. "
-        f"Baseline sits at {goals_per_90:.2f} goals/90 and {assists_per_90:.2f} assists/90 "
-        f"with availability {availability:.2f}."
-    )
     scoring_context = retrieve_player_context(
         player_data,
         extra_context=extra_context,
         query="scoring odds injury adjusted probability goals assists availability fixture market",
         top_k=10,
         include_open_question=False,
+    )
+    scoring_context_line = build_dynamic_rag_line(
+        player_data,
+        extra_context=extra_context,
+        section="scoring",
+        context_chunks=scoring_context,
+    )
+    fallback_analysis = (
+        f"Yara estimates {player_call_name}'s chance to score at {round(score_prob * 100)}% after injury adjustment. "
+        + (
+            f"{scoring_context_line}"
+            if scoring_context_line
+            else (
+                f"Baseline sits at {goals_per_90:.2f} goals/90 and {assists_per_90:.2f} assists/90 "
+                f"with availability {availability:.2f}."
+            )
+        )
     )
     scoring_analysis = generate_grounded_narrative(
         task="Write a concise odds-to-score analysis for this player.",
@@ -1595,11 +1672,11 @@ def generate_lab_notes(player_data: Dict, extra_context: Optional[Dict] = None) 
         })
 
     # 9. Add one contextual RAG driver so notes feel player/fixture-specific.
-    context_driver = (
-        _first_chunk_text(lab_context, "fixture_latest")
-        or _first_chunk_text(lab_context, "fixture_history")
-        or _first_chunk_text(lab_context, "recent_form")
-        or _first_chunk_text(lab_context, "opponent_defense")
+    context_driver = build_dynamic_rag_line(
+        player_data,
+        extra_context=extra_context,
+        section="lab",
+        context_chunks=lab_context,
     )
     if context_driver:
         drivers.append({

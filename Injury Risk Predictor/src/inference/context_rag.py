@@ -51,6 +51,7 @@ DISPLAY_TEAM_NAME_OVERRIDES = {
 
 _LAST_OPEN_QUESTION: Dict[str, str] = {}
 _LAST_SECTION_RAG_LINE: Dict[str, str] = {}
+_SECTION_FACT_PLAN_CACHE: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -587,13 +588,13 @@ def build_player_context_chunks(
         if days_since >= 365:
             _add_chunk(
                 chunks, "sample_sensitivity",
-                f"Just {prev_injuries} injuries logged with a {days_since}-day healthy run since — the small sample actually paints a positive picture.",
+                f"Just {prev_injuries} injuries logged with a {days_since}-day healthy run since — recent availability has been strong.",
                 ["sample", "history", "uncertainty"], 2.9,
             )
         else:
             _add_chunk(
                 chunks, "sample_sensitivity",
-                f"Only {prev_injuries} injuries on record, so one bad spell can skew the averages significantly.",
+                f"Only {prev_injuries} injuries are on record, so one long layoff can still distort the averages.",
                 ["sample", "history", "uncertainty"], 2.9,
             )
 
@@ -728,8 +729,8 @@ def build_player_context_chunks(
                 chunks,
                 "fixture_history",
                 (
-                    f"Only {fixture_samples} recent meeting for {fh_team} vs {fh_opp}, "
-                    "so there is not enough recent history to call a clear trend yet."
+                    f"Only one recent {fh_team} vs {fh_opp} meeting is on file, "
+                    "so trend confidence is still low."
                 ),
                 ["fixture", "history", "sample", "uncertainty"],
                 2.5,
@@ -859,7 +860,10 @@ def build_player_context_chunks(
                 elif vs_gi == 0 and vs_samp >= 3:
                     vs_text = f"{call_name} has never returned against {matchup_opponent_display} in {vs_samp} career meetings."
                 else:
-                    vs_text = f"{call_name} has {vs_g} goals and {vs_a} assists in {vs_samp} meetings against {matchup_opponent_display}."
+                    vs_text = (
+                        f"{call_name} has {_count_phrase(vs_g, 'goal')} and {_count_phrase(vs_a, 'assist')} "
+                        f"in {vs_samp} meetings against {matchup_opponent_display}."
+                    )
                 _add_chunk(chunks, "vs_opponent", vs_text,
                     ["opponent", "history", "head_to_head", "form"], 2.9)
         elif vs_samp == 1:
@@ -1001,10 +1005,186 @@ def retrieve_player_context(
     return selected
 
 
+def _chunk_fingerprint(chunk: Dict[str, Any]) -> str:
+    text = re.sub(r"\s+", " ", str(chunk.get("text", "")).strip().lower())
+    kind = str(chunk.get("kind", "")).strip().lower()
+    return f"{kind}|{text}"
+
+
+def _chunk_is_blocked(section_key: str, chunk: Dict[str, Any]) -> bool:
+    text = str(chunk.get("text", "") or "").lower()
+    blocked_phrases = SECTION_BLOCKED_PHRASES.get(section_key, [])
+    return any(phrase in text for phrase in blocked_phrases)
+
+
+def _chunk_salience_bonus(chunk: Dict[str, Any]) -> float:
+    """Extra weight for high-signal football facts."""
+    kind = str(chunk.get("kind", "")).lower()
+    text = str(chunk.get("text", "")).lower()
+    bonus = 0.0
+
+    if kind in {
+        "risk_headline", "recent_form", "defensive_form", "vs_opponent",
+        "opponent_defense", "fixture_latest", "workload", "recency",
+        "severity_skew", "worst_injury",
+    }:
+        bonus += 0.55
+
+    if re.search(r"\b\d+(\.\d+)?\s*%|\b\d+(\.\d+)?\s*(goals?|assists?|days?|injuries?|points?|clean sheets?|meetings?)", text):
+        bonus += 0.30
+
+    if any(token in text for token in ["latest meeting", "injury-free", "conced", "returns", "blanked"]):
+        bonus += 0.20
+
+    if "only one" in text and "meeting" in text:
+        bonus -= 0.15
+
+    return round(bonus, 4)
+
+
+def _rank_chunks_for_section(
+    chunks: List[Dict[str, Any]],
+    section_key: str,
+) -> List[Dict[str, Any]]:
+    query = SECTION_RAG_QUERIES.get(section_key, DEFAULT_STORY_QUERY)
+    q_tokens = _tokenize(query)
+    priorities = SECTION_RAG_PRIORITIES.get(section_key, [])
+    ranked: List[Dict[str, Any]] = []
+
+    for chunk in chunks:
+        kind = str(chunk.get("kind", "")).strip().lower()
+        if kind == "open_question":
+            continue
+
+        text_tokens = _tokenize(str(chunk.get("text", "")))
+        overlap = len((text_tokens | chunk.get("tags", set())) & q_tokens)
+        lexical = overlap * 0.7
+        specificity = min(len(text_tokens), 20) * 0.02
+
+        if kind in priorities:
+            priority_rank = priorities.index(kind)
+            priority_bonus = max(0.0, 0.45 - (priority_rank * 0.03))
+        else:
+            priority_bonus = 0.0
+
+        salience_bonus = _chunk_salience_bonus(chunk)
+        score = float(chunk.get("weight", 0.0)) + lexical + specificity + priority_bonus + salience_bonus
+        ranked.append({**chunk, "score": round(score, 4)})
+
+    ranked.sort(key=lambda item: item["score"], reverse=True)
+    return ranked
+
+
+def _section_plan_cache_key(
+    player_data: Dict[str, Any],
+    extra_context: Optional[Dict[str, Any]],
+) -> str:
+    extra_context = extra_context or {}
+    matchup = extra_context.get("matchup_context") or {}
+    recent_form = matchup.get("recent_form") or {}
+    fixture_history = extra_context.get("fixture_history") or {}
+    next_fixture = extra_context.get("next_fixture") or {}
+    opponent = (
+        matchup.get("opponent")
+        or fixture_history.get("opponent")
+        or next_fixture.get("opponent")
+        or ""
+    )
+
+    key_parts = [
+        str((player_data.get("name") or "")).strip().lower(),
+        str((player_data.get("team") or "")).strip().lower(),
+        str(opponent).strip().lower(),
+        f"{_safe_float(player_data.get('ensemble_prob'), 0.0):.3f}",
+        str(_safe_int(player_data.get("previous_injuries", player_data.get("player_injury_count", 0)), 0)),
+        str(_safe_int(player_data.get("days_since_last_injury", 365), 365)),
+        str(_safe_int(recent_form.get("samples", 0), 0)),
+        str(_safe_int(recent_form.get("goals", 0), 0)),
+        str(_safe_int(recent_form.get("assists", 0), 0)),
+        str(_safe_int(fixture_history.get("samples", 0), 0)),
+    ]
+    return "|".join(key_parts)
+
+
+def _build_section_fact_plan(
+    player_data: Dict[str, Any],
+    extra_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Build a cross-section fact plan so Story/FPL/Scoring do not reuse the same signal.
+    """
+    chunks = build_player_context_chunks(player_data, extra_context=extra_context)
+    if not chunks:
+        return {}
+
+    plan: Dict[str, Dict[str, Any]] = {}
+    used_fingerprints: Set[str] = set()
+    used_kinds: Set[str] = set()
+
+    for section in SECTION_PLAN_ORDER:
+        ranked = _rank_chunks_for_section(chunks, section)
+        if not ranked:
+            continue
+
+        chosen: Optional[Dict[str, Any]] = None
+
+        # Pass 1: avoid reused text and kind.
+        for candidate in ranked:
+            kind = str(candidate.get("kind", "")).lower()
+            fp = _chunk_fingerprint(candidate)
+            if _chunk_is_blocked(section, candidate):
+                continue
+            if fp in used_fingerprints:
+                continue
+            if kind in used_kinds:
+                continue
+            chosen = candidate
+            break
+
+        # Pass 2: allow reused kind, still avoid exact text.
+        if chosen is None:
+            for candidate in ranked:
+                fp = _chunk_fingerprint(candidate)
+                if _chunk_is_blocked(section, candidate):
+                    continue
+                if fp in used_fingerprints:
+                    continue
+                chosen = candidate
+                break
+
+        # Pass 3: best available unblocked.
+        if chosen is None:
+            chosen = next((c for c in ranked if not _chunk_is_blocked(section, c)), None)
+
+        if not chosen:
+            continue
+
+        plan[section] = chosen
+        used_fingerprints.add(_chunk_fingerprint(chosen))
+        used_kinds.add(str(chosen.get("kind", "")).lower())
+
+    return plan
+
+
+def _get_section_fact_plan(
+    player_data: Dict[str, Any],
+    extra_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    key = _section_plan_cache_key(player_data, extra_context)
+    cached = _SECTION_FACT_PLAN_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    plan = _build_section_fact_plan(player_data, extra_context=extra_context)
+    _SECTION_FACT_PLAN_CACHE[key] = plan
+    return plan
+
+
 SECTION_RAG_QUERIES = {
     "story": DEFAULT_STORY_QUERY,
     "scoring": "scoring odds injury adjusted probability goals assists availability fixture market form",
     "fpl": "fpl value minutes availability rotation injury risk goals assists fixture form",
+    "lab": "model drivers explainability workload recency injury history fixture context",
 }
 
 SECTION_RAG_PRIORITIES = {
@@ -1045,6 +1225,26 @@ SECTION_RAG_PRIORITIES = {
         "workload",
         "history",
     ],
+    "lab": [
+        "risk_headline",
+        "history",
+        "severity_skew",
+        "recency",
+        "workload",
+        "match_density",
+        "fixture_latest",
+        "fixture_history",
+    ],
+}
+
+SECTION_PLAN_ORDER = ["story", "fpl", "scoring", "lab"]
+
+SECTION_BLOCKED_PHRASES = {
+    "scoring": [
+        "attacking output sits at",
+        "goals/90",
+        "assists/90",
+    ],
 }
 
 SECTION_RAG_PREFIXES = {
@@ -1054,9 +1254,9 @@ SECTION_RAG_PREFIXES = {
         "{fact}",
     ],
     "scoring": [
-        "Form pulse: {fact}",
-        "Anytime scorer read: {fact}",
-        "Betting angle: {fact}",
+        "{fact}",
+        "{fact}",
+        "{fact}",
     ],
     "fpl": [
         "{fact}",
@@ -1077,6 +1277,12 @@ def build_dynamic_rag_line(
     if section_key not in SECTION_RAG_QUERIES:
         section_key = "story"
 
+    planned_fact = ""
+    plan = _get_section_fact_plan(player_data, extra_context=extra_context)
+    selected_chunk = plan.get(section_key) if plan else None
+    if selected_chunk:
+        planned_fact = (selected_chunk.get("text") or "").strip()
+
     if context_chunks is None:
         context_chunks = retrieve_player_context(
             player_data,
@@ -1086,25 +1292,25 @@ def build_dynamic_rag_line(
             include_open_question=(section_key == "story"),
         )
 
-    chunk_by_kind: Dict[str, str] = {}
-    for chunk in context_chunks:
-        kind = chunk.get("kind")
-        text = (chunk.get("text") or "").strip()
-        if kind and text and kind not in chunk_by_kind:
-            chunk_by_kind[kind] = text
-
     fact = ""
-    disallow_phrases = {
-        "scoring": ["attacking output sits at", "goals/90", "assists/90"],
-    }
-    blocked = [p.lower() for p in disallow_phrases.get(section_key, [])]
-    for kind in SECTION_RAG_PRIORITIES.get(section_key, []):
-        text = chunk_by_kind.get(kind, "").strip()
-        if blocked and any(token in text.lower() for token in blocked):
-            continue
-        if text:
-            fact = text
-            break
+    if planned_fact:
+        fact = planned_fact
+    else:
+        chunk_by_kind: Dict[str, str] = {}
+        for chunk in context_chunks:
+            kind = chunk.get("kind")
+            text = (chunk.get("text") or "").strip()
+            if kind and text and kind not in chunk_by_kind:
+                chunk_by_kind[kind] = text
+
+        blocked = [p.lower() for p in SECTION_BLOCKED_PHRASES.get(section_key, [])]
+        for kind in SECTION_RAG_PRIORITIES.get(section_key, []):
+            text = chunk_by_kind.get(kind, "").strip()
+            if blocked and any(token in text.lower() for token in blocked):
+                continue
+            if text:
+                fact = text
+                break
 
     call_name = _call_name(player_data)
     if not fact:

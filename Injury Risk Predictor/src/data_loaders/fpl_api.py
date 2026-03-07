@@ -265,6 +265,11 @@ class FPLClient:
             "full_name": f"{player.get('first_name')} {player.get('second_name')}",
             "team": teams.get(player.get("team"), "Unknown"),
             "team_id": player.get("team"),
+            "shirt_number": (
+                player.get("squad_number")
+                or player.get("shirt_number")
+                or player.get("number")
+            ),
             "position": self._position_lookup.get(player.get("element_type"), "Unknown"),
             "goals": goals,
             "assists": assists,

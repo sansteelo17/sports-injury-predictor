@@ -28,6 +28,8 @@ interface PlayerCardProps {
 }
 
 const FPL_LOGO_SOURCES = [
+  "/fpl-logo-official.png",
+  "/fpl-logo-official.svg",
   "https://upload.wikimedia.org/wikipedia/en/f/f2/Fantasy_Premier_League_logo.svg",
   "https://upload.wikimedia.org/wikipedia/en/thumb/f/f2/Fantasy_Premier_League_logo.svg/512px-Fantasy_Premier_League_logo.svg.png",
   "https://fantasy.premierleague.com/dist/img/fpl-logo.svg",
@@ -152,9 +154,12 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                 >
                   {player.name}
                   {player.is_currently_injured && (
-                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/30 uppercase tracking-wide flex-shrink-0">
+                    <span
+                      className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-red-500/20 text-red-400 border border-red-500/30 flex-shrink-0"
+                      title="Injured"
+                      aria-label="Injured"
+                    >
                       <Ambulance size={12} />
-                      Injured
                     </span>
                   )}
                 </h2>
@@ -171,6 +176,12 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                   <span className="text-sm">{player.team}</span>
                   <span className="hidden sm:inline">·</span>
                   <span className="text-sm">{player.position}</span>
+                  {player.shirt_number != null && (
+                    <>
+                      <span className="hidden sm:inline">·</span>
+                      <span className="text-sm">#{player.shirt_number}</span>
+                    </>
+                  )}
                   <span className="hidden sm:inline">·</span>
                   <span className="text-sm">Age {player.age}</span>
                 </div>
@@ -475,32 +486,33 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
               }`}>
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
-                    <img
-                      src={FPL_LOGO_SOURCES[0]}
-                      alt="Fantasy Premier League"
-                      className="h-5 w-auto object-contain"
-                      referrerPolicy="no-referrer"
-                      onError={(e) => {
-                        const img = e.currentTarget;
-                        const currentIndex = Number(img.dataset.logoSourceIndex || "0");
-                        const nextIndex = currentIndex + 1;
-                        if (nextIndex < FPL_LOGO_SOURCES.length) {
-                          img.dataset.logoSourceIndex = String(nextIndex);
-                          img.src = FPL_LOGO_SOURCES[nextIndex];
-                        }
-                      }}
-                    />
+                    <div
+                      className={`h-6 px-1 rounded-full flex items-center justify-center ${
+                        darkMode
+                          ? "bg-white/95 ring-1 ring-white/20 shadow-[0_0_10px_rgba(255,255,255,0.08)]"
+                          : "bg-white/90 ring-1 ring-emerald-200"
+                      }`}
+                    >
+                      <img
+                        src={FPL_LOGO_SOURCES[0]}
+                        alt="Fantasy Premier League"
+                        className="h-4 w-auto object-contain"
+                        referrerPolicy="no-referrer"
+                        onError={(e) => {
+                          const img = e.currentTarget;
+                          const currentIndex = Number(img.dataset.logoSourceIndex || "0");
+                          const nextIndex = currentIndex + 1;
+                          if (nextIndex < FPL_LOGO_SOURCES.length) {
+                            img.dataset.logoSourceIndex = String(nextIndex);
+                            img.src = FPL_LOGO_SOURCES[nextIndex];
+                          }
+                        }}
+                      />
+                    </div>
                     <span className={`text-xs uppercase tracking-wider font-semibold ${darkMode ? "text-[#86efac]/70" : "text-emerald-600"}`}>
-                      Expected Points
+                      Projected Points
                     </span>
                   </div>
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full ${
-                    player.fpl_points_projection.confidence === "high"
-                      ? darkMode ? "bg-[#86efac]/20 text-[#86efac]" : "bg-emerald-200 text-emerald-800"
-                      : darkMode ? "bg-amber-500/20 text-amber-400" : "bg-amber-200 text-amber-800"
-                  }`}>
-                    {player.fpl_points_projection.confidence} confidence
-                  </span>
                 </div>
 
                 <div className="flex items-baseline gap-2">
@@ -527,7 +539,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                     </div>
                   </div>
                   <div className="text-center">
-                    <div className={`text-xs ${darkMode ? "text-gray-500" : "text-gray-400"}`}>Fixture</div>
+                    <div className={`text-xs ${darkMode ? "text-gray-500" : "text-gray-400"}`}>Fixture Adj</div>
                     <div className={`text-sm font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>
                       {player.fpl_points_projection.fixture_multiplier.toFixed(2)}x
                     </div>
