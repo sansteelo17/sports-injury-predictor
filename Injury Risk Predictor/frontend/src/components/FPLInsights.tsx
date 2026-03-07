@@ -59,7 +59,7 @@ export function FPLInsights({ insights, selectedTeam, darkMode = true }: FPLInsi
             <p className={`text-xs font-semibold ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>
               Double Gameweek {teamDGW.gameweek}
             </p>
-            <p className={`text-xs ${darkMode ? 'text-amber-200/80' : 'text-amber-600'}`}>
+            <p className={`text-xs break-words ${darkMode ? 'text-amber-200/80' : 'text-amber-600'}`}>
               {selectedTeam} play twice this week. FPL managers may target their healthy players, but watch for fatigue risk.
             </p>
           </div>
@@ -76,7 +76,7 @@ export function FPLInsights({ insights, selectedTeam, darkMode = true }: FPLInsi
             <p className={`text-xs font-semibold ${darkMode ? 'text-blue-300' : 'text-blue-700'}`}>
               Top 6 Clash
             </p>
-            <p className={`text-xs ${darkMode ? 'text-blue-200/80' : 'text-blue-600'}`}>
+            <p className={`text-xs break-words ${darkMode ? 'text-blue-200/80' : 'text-blue-600'}`}>
               {teamFeaturedMatch} — high-stakes fixture this week.
             </p>
           </div>
@@ -86,7 +86,7 @@ export function FPLInsights({ insights, selectedTeam, darkMode = true }: FPLInsi
       {/* Upcoming Fixtures Summary */}
       {currentGW && (
         <div className={`px-4 py-3 ${darkMode ? '' : ''}`}>
-          <p className={`text-xs mb-2 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+          <p className={`text-xs mb-2 break-words ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
             {currentGW.fixture_count} fixtures this gameweek
             {currentGW.deadline && (
               <span> · Deadline: {new Date(currentGW.deadline).toLocaleDateString('en-GB', {

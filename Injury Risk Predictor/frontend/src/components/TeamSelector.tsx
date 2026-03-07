@@ -69,7 +69,7 @@ export function TeamSelector({ teams, selectedTeam, onSelectTeam, darkMode = tru
         {selectedTeam ? (
           <>
             <TeamBadge team={selectedTeam} badges={teamBadges} size={22} />
-            <span className="flex-1">{selectedTeam}</span>
+            <span className="flex-1 truncate">{selectedTeam}</span>
           </>
         ) : (
           <span className={`flex-1 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>

@@ -149,7 +149,13 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
       </div>
 
       {/* Stats */}
-      <div className={`grid grid-cols-2 sm:grid-cols-4 ${darkMode ? 'divide-x divide-[#1f1f1f]' : 'divide-x divide-gray-100'}`}>
+      <div
+        className={`grid grid-cols-2 sm:grid-cols-4 ${
+          darkMode
+            ? 'divide-y sm:divide-y-0 sm:divide-x divide-[#1f1f1f]'
+            : 'divide-y sm:divide-y-0 sm:divide-x divide-gray-100'
+        }`}
+      >
         <StatBox
           icon={<Users className={darkMode ? 'text-gray-500' : 'text-gray-400'} size={18} />}
           value={team.total_players}
@@ -233,43 +239,47 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
             <div className={`mt-3 rounded-lg p-3 ${
               darkMode ? 'bg-[#0a0a0a] border border-[#1f1f1f]' : 'bg-white border border-cyan-100'
             }`}>
-              <div className="flex items-center justify-between mb-2">
-                <div className={`text-[11px] uppercase tracking-wider ${darkMode ? 'text-cyan-300' : 'text-cyan-700'}`}>
-                  Moneyline (1X2)
-                </div>
-                <div className={`grid grid-cols-3 gap-3 text-[10px] uppercase tracking-wider ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                  <span className="text-center">1</span>
-                  <span className="text-center">X</span>
-                  <span className="text-center">2</span>
-                </div>
+              <div className={`text-[11px] uppercase tracking-wider mb-2 ${darkMode ? 'text-cyan-300' : 'text-cyan-700'}`}>
+                Moneyline (1X2)
               </div>
 
-              <div className="space-y-2">
-                {moneylineRows.map((line) => (
-                  <div key={line.bookmaker} className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <img
-                        src={bookmakerLogos[line.bookmaker] ?? '/bookies/default.svg'}
-                        alt={line.bookmaker}
-                        className="w-6 h-6 rounded-md object-contain flex-shrink-0"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).src = '/bookies/default.svg';
-                        }}
-                      />
-                      <div className="min-w-0">
-                        <div className={`text-xs font-medium truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>{line.bookmaker}</div>
-                        {line.source && (
-                          <div className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>{line.source}</div>
-                        )}
-                      </div>
-                    </div>
-                    <div className={`grid grid-cols-3 gap-3 text-xs font-semibold ${darkMode ? 'text-cyan-200' : 'text-cyan-700'}`}>
-                      <span className="text-center w-10">{line.home}</span>
-                      <span className="text-center w-10">{line.draw}</span>
-                      <span className="text-center w-10">{line.away}</span>
-                    </div>
+              <div className="overflow-x-auto">
+                <div className="min-w-[300px] space-y-2">
+                  <div
+                    className={`grid grid-cols-[minmax(0,1fr)_repeat(3,minmax(2.3rem,1fr))] gap-2 text-[10px] uppercase tracking-wider ${
+                      darkMode ? 'text-gray-500' : 'text-gray-500'
+                    }`}
+                  >
+                    <span>Bookmaker</span>
+                    <span className="text-center">1</span>
+                    <span className="text-center">X</span>
+                    <span className="text-center">2</span>
                   </div>
-                ))}
+
+                  {moneylineRows.map((line) => (
+                    <div key={line.bookmaker} className="grid grid-cols-[minmax(0,1fr)_repeat(3,minmax(2.3rem,1fr))] gap-2 items-center">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <img
+                          src={bookmakerLogos[line.bookmaker] ?? '/bookies/default.svg'}
+                          alt={line.bookmaker}
+                          className="w-6 h-6 rounded-md object-contain flex-shrink-0"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = '/bookies/default.svg';
+                          }}
+                        />
+                        <div className="min-w-0">
+                          <div className={`text-xs font-medium truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>{line.bookmaker}</div>
+                          {line.source && (
+                            <div className={`text-[10px] truncate ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>{line.source}</div>
+                          )}
+                        </div>
+                      </div>
+                      <span className={`text-xs font-semibold text-center ${darkMode ? 'text-cyan-200' : 'text-cyan-700'}`}>{line.home}</span>
+                      <span className={`text-xs font-semibold text-center ${darkMode ? 'text-cyan-200' : 'text-cyan-700'}`}>{line.draw}</span>
+                      <span className={`text-xs font-semibold text-center ${darkMode ? 'text-cyan-200' : 'text-cyan-700'}`}>{line.away}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           )}
@@ -295,7 +305,7 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
             ) : (
               <TrendingDown className={`${sStyle.icon} flex-shrink-0 mt-0.5`} size={14} />
             )}
-            <p className={`text-xs ${sStyle.text}`}>
+            <p className={`text-xs break-words ${sStyle.text}`}>
               {showDynamicInsight ? (
                 dynamicMarketInsight
               ) : showNegativeInsight ? (

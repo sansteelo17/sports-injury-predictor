@@ -83,7 +83,7 @@ export function ShareCard({ player, onClose }: ShareCardProps) {
         </div>
 
         {/* Format Toggle */}
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {(Object.keys(FORMAT_SIZES) as Format[]).map((f) => (
             <button
               key={f}
@@ -100,7 +100,7 @@ export function ShareCard({ player, onClose }: ShareCardProps) {
         </div>
 
         {/* Preview Container */}
-        <div className="flex justify-center overflow-hidden rounded-xl bg-[#111] p-3">
+        <div className="flex justify-center overflow-x-auto rounded-xl bg-[#111] p-3">
           <div
             style={{
               width: size.w * previewScale,

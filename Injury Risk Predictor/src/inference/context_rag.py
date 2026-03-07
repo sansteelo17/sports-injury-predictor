@@ -77,6 +77,35 @@ def _count_phrase(count: int, singular: str, plural: Optional[str] = None) -> st
     return f"{count} {label}"
 
 
+def _format_output_window(goals: int, assists: int, samples: int) -> str:
+    g = _safe_int(goals, 0)
+    a = _safe_int(assists, 0)
+    n = _safe_int(samples, 0)
+    if n <= 0:
+        return ""
+    if g > 0 and a > 0:
+        return f"{_count_phrase(g, 'goal')} and {_count_phrase(a, 'assist')} in the last {n}"
+    if g > 0:
+        return f"{_count_phrase(g, 'goal')} in the last {n}"
+    if a > 0:
+        return f"{_count_phrase(a, 'assist')} in the last {n}"
+    return f"No goals or assists in the last {n}"
+
+
+def _natural_conceded_phrase(opponent: str, avg_conceded: float) -> str:
+    opp = _display_team_name(opponent or "Opponent")
+    avg = _safe_float(avg_conceded, 0.0)
+    if avg <= 0:
+        return ""
+    if avg < 0.8:
+        return f"{opp} have been tight at the back lately"
+    if avg < 1.35:
+        return f"{opp} have been conceding about a goal a game lately"
+    if avg < 1.8:
+        return f"{opp} have been conceding around one and a half goals a game lately"
+    return f"{opp} have been conceding close to two goals a game lately"
+
+
 def _days_to_years_label(days: int) -> str:
     if days < 365:
         return f"{days} days"
@@ -294,12 +323,12 @@ def _build_dynamic_open_question(
             ])
     elif role == "attacker":
         recent_attack_phrase = (
-            f"{recent_goals} goals and {recent_assists} assists in the last {recent_samples}"
+            _format_output_window(recent_goals, recent_assists, recent_samples)
             if recent_samples > 0
             else "limited recent attacking sample"
         )
         opponent_defense_phrase = (
-            f"{opp} are conceding {opponent_defense_avg_conceded:.2f} per game lately"
+            _natural_conceded_phrase(opp, opponent_defense_avg_conceded)
             if opp and opponent_defense_samples > 0 and opponent_defense_avg_conceded > 0
             else ""
         )
@@ -349,14 +378,14 @@ def _build_dynamic_open_question(
             candidates.extend([
                 f"Can {call_name} run this game from midfield and turn control into returns against {opp}?",
                 (
-                    f"{_count_phrase(recent_goals, 'goal')} and {_count_phrase(recent_assists, 'assist')} in the last {recent_samples}: "
+                    f"{_format_output_window(recent_goals, recent_assists, recent_samples)}: "
                     f"does {call_name} turn midfield volume into returns against {opp}?"
                 ),
                 f"At {recent_avg_points:.1f} average FPL points recently, does {call_name} convert midfield volume into output against {opp}?",
             ])
             if opponent_defense_samples > 0 and opponent_defense_avg_conceded > 0:
                 candidates.append(
-                    f"With {opp} conceding {opponent_defense_avg_conceded:.2f} per game lately, does {call_name} find the final pass or shot that decides this fixture?"
+                    f"With {_natural_conceded_phrase(opp, opponent_defense_avg_conceded)}, does {call_name} find the final pass or shot that decides this fixture?"
                 )
         if opp and vs_samples >= 2:
             candidates.extend([
@@ -382,7 +411,7 @@ def _build_dynamic_open_question(
 
         if opp and recent_samples > 0:
             candidates.extend([
-                f"After {recent_goals} goals and {recent_assists} assists in the last {recent_samples}, does {call_name} break loose against {opp}?",
+                f"After {_format_output_window(recent_goals, recent_assists, recent_samples)}, does {call_name} break loose against {opp}?",
                 f"Can {call_name} flip this {recent_avg_points:.1f}-point trend into real output versus {opp}?",
                 f"Is this {opp} fixture where {call_name}'s process finally converts into points?",
             ])
@@ -498,12 +527,72 @@ def build_player_context_chunks(
     # Core risk and injury-history context
     risk_pct = round(prob * 100)
     if prob >= 0.45:
-        risk_text = f"{call_name} sits at {risk_pct}% injury risk — firmly in the elevated bracket."
+        risk_text = f"{call_name} sits at {risk_pct}% injury risk. Firmly in the elevated bracket."
     elif prob >= 0.30:
-        risk_text = f"{call_name} profiles at {risk_pct}% risk — moderate but worth watching."
+        risk_text = f"{call_name} profiles at {risk_pct}% risk. Moderate but worth watching."
     else:
         risk_text = f"{call_name} is at {risk_pct}% risk, one of the safer profiles in the pool."
     _add_chunk(chunks, "risk_headline", risk_text, ["risk", "probability", "headline"], 3.0)
+
+    # Player-importance context (FPL relevance/exposure)
+    importance = extra_context.get("player_importance") or {}
+    if importance:
+        imp_score = _safe_float(importance.get("score", 0.0), 0.0)
+        imp_tier = str(importance.get("tier", "") or "").strip()
+        ownership_pct = _safe_float(importance.get("ownership_pct", 0.0), 0.0)
+        price = _safe_float(importance.get("price", 0.0), 0.0)
+        role_importance = str(importance.get("role_importance", "") or "").strip()
+        captaincy_proxy = _safe_float(importance.get("captaincy_proxy_pct", 0.0), 0.0)
+        summary = (importance.get("summary") or "").strip()
+
+        if summary:
+            _add_chunk(
+                chunks,
+                "importance_summary",
+                summary,
+                ["importance", "fpl", "exposure", "ownership", "captaincy", "value"],
+                2.9,
+            )
+        else:
+            _add_chunk(
+                chunks,
+                "importance_summary",
+                (
+                    f"{call_name} carries {imp_tier.lower() if imp_tier else 'meaningful'} decision weight "
+                    f"(importance {imp_score:.1f}/100, {ownership_pct:.1f}% ownership, £{price:.1f}m)."
+                ),
+                ["importance", "fpl", "exposure", "ownership"],
+                2.9,
+            )
+
+        if captaincy_proxy >= 25:
+            _add_chunk(
+                chunks,
+                "importance_exposure",
+                (
+                    f"High manager exposure: {call_name} sits around {ownership_pct:.1f}% ownership "
+                    f"with a captaincy-pressure proxy near {captaincy_proxy:.0f}%."
+                ),
+                ["importance", "captaincy", "ownership", "fpl"],
+                2.6,
+            )
+        elif ownership_pct <= 7:
+            _add_chunk(
+                chunks,
+                "importance_exposure",
+                f"{call_name} is a low-ownership differential ({ownership_pct:.1f}% selected).",
+                ["importance", "differential", "ownership", "fpl"],
+                2.4,
+            )
+
+        if role_importance:
+            _add_chunk(
+                chunks,
+                "importance_role",
+                f"Role profile: {role_importance}.",
+                ["importance", "role", "fpl"],
+                2.2,
+            )
 
     if prev_injuries == 0:
         _add_chunk(
@@ -514,7 +603,7 @@ def build_player_context_chunks(
     elif prev_injuries >= 8 and avg_days >= 30:
         _add_chunk(
             chunks, "history",
-            f"{prev_injuries} career injuries averaging {avg_days:.0f} days out each time — the frequency and severity are both concerning.",
+            f"{prev_injuries} career injuries averaging {avg_days:.0f} days out each time. The frequency and severity are both concerning.",
             ["history", "injury", "severity"], 2.8,
         )
     elif prev_injuries >= 5:
@@ -526,7 +615,7 @@ def build_player_context_chunks(
     elif avg_days >= 40:
         _add_chunk(
             chunks, "history",
-            f"Only {prev_injuries} injuries on record, but they've been significant — averaging {avg_days:.0f} days out each time.",
+            f"Only {prev_injuries} injuries on record, but they've been significant. Averaging {avg_days:.0f} days out each time.",
             ["history", "injury", "severity"], 2.8,
         )
     else:
@@ -542,7 +631,7 @@ def build_player_context_chunks(
         severities = [r["severity_days"] for r in injury_records if r.get("severity_days", 0) > 0]
         # Worst injury detail
         worst = max(injury_records, key=lambda r: r.get("severity_days", 0)) if injury_records else None
-        if worst and worst.get("severity_days", 0) > 0:
+        if worst and worst.get("severity_days", 0) >= 70:
             worst_area = worst.get("injury_raw") or worst.get("body_area", "injury")
             worst_date = worst.get("date", "")
             date_str = f" in {worst_date[:7]}" if worst_date and len(worst_date) >= 7 else ""
@@ -555,12 +644,16 @@ def build_player_context_chunks(
         if len(severities) >= 2:
             max_sev = max(severities)
             others = [s for s in severities if s != max_sev]
-            if others and max_sev >= 2 * (sum(others) / len(others)):
-                others_avg = round(sum(others) / len(others))
-                _add_chunk(chunks, "severity_skew",
-                           f"The {avg_days:.0f}-day average severity is skewed: "
-                           f"one injury lasted {max_sev} days while the others averaged {others_avg}.",
-                           ["injury", "severity", "skew", "context"], 2.9)
+            if others:
+                others_avg = sum(others) / len(others)
+                overall_avg = sum(severities) / len(severities)
+                avg_lift = overall_avg - others_avg
+                if max_sev >= 70 and max_sev >= 2.3 * others_avg and avg_lift >= 18:
+                    others_avg = round(sum(others) / len(others))
+                    _add_chunk(chunks, "severity_skew",
+                               f"The {avg_days:.0f}-day average severity is skewed: "
+                               f"one injury lasted {max_sev} days while the others averaged {others_avg}.",
+                               ["injury", "severity", "skew", "context"], 2.9)
 
         # Recurring body area
         areas = [r["body_area"] for r in injury_records if r.get("body_area") and r["body_area"] != "unknown"]
@@ -570,7 +663,7 @@ def build_player_context_chunks(
             top_area, top_count = area_counts.most_common(1)[0]
             if top_count >= 2:
                 _add_chunk(chunks, "recurring_area",
-                           f"{call_name} has had {top_count} {top_area} injuries — a recurring weak point.",
+                           f"{call_name} has had {top_count} {top_area} injuries. A recurring weak point.",
                            ["injury", "body_area", "recurring", "pattern"], 2.7)
 
         # Most recent injury
@@ -588,7 +681,7 @@ def build_player_context_chunks(
         if days_since >= 365:
             _add_chunk(
                 chunks, "sample_sensitivity",
-                f"Just {prev_injuries} injuries logged with a {days_since}-day healthy run since — recent availability has been strong.",
+                f"Just {prev_injuries} injuries logged with a {days_since}-day healthy run since. Recent availability has been strong.",
                 ["sample", "history", "uncertainty"], 2.9,
             )
         else:
@@ -607,20 +700,20 @@ def build_player_context_chunks(
     elif days_since < 60:
         _add_chunk(
             chunks, "recency",
-            f"{call_name} is {days_since} days post-injury — past the acute danger zone but not yet fully in the clear.",
+            f"{call_name} is {days_since} days post-injury. Past the acute danger zone but not yet fully in the clear.",
             ["recency", "injury", "risk"], 2.8,
         )
     elif days_since >= 365:
         _add_chunk(
             chunks, "recency",
-            f"{_days_to_years_label(days_since)} injury-free is a strong availability signal — the body has shown it can handle sustained demands.",
+            f"{_days_to_years_label(days_since)} injury-free is a strong availability signal. The body has shown it can handle sustained demands.",
             ["recency", "availability", "protective"], 2.8,
         )
 
     if avg_days >= 45 or worst_injury >= 60:
         _add_chunk(
             chunks, "severity_pattern",
-            f"When {call_name} does get injured, it tends to be serious — the worst spell lasted {worst_injury:.0f} days.",
+            f"When {call_name} does get injured, it tends to be serious. The worst spell lasted {worst_injury:.0f} days.",
             ["severity", "history", "risk"], 2.6,
         )
     elif prev_injuries > 0 and avg_days <= 20:
@@ -637,13 +730,13 @@ def build_player_context_chunks(
     )
 
     # Workload context
-    if acwr >= 1.5:
+    if acwr >= 1.8:
         _add_chunk(
             chunks, "workload",
-            "The workload ratio has spiked recently — one of the strongest predictors of soft-tissue injuries in the research.",
+            f"The workload ratio has spiked to {acwr:.2f}. A significant load increase worth monitoring closely.",
             ["workload", "acwr", "risk"], 2.5,
         )
-    elif acwr >= 1.35:
+    elif acwr >= 1.5:
         _add_chunk(
             chunks, "workload",
             f"Workload ratio is creeping up (ACWR {acwr:.2f}), suggesting the body is being asked to do more than it's conditioned for.",
@@ -652,7 +745,7 @@ def build_player_context_chunks(
     elif acwr > 0:
         _add_chunk(
             chunks, "workload",
-            f"Workload is well managed (ACWR {acwr:.2f}) — no red flags from the load data.",
+            f"Workload is well managed (ACWR {acwr:.2f}). No red flags from the load data.",
             ["workload", "acwr", "protective"], 2.0,
         )
 
@@ -673,9 +766,15 @@ def build_player_context_chunks(
             ["output", "goals", "performance"], 2.1,
         )
     elif goals > 0 or assists > 0:
+        if goals > 0 and assists > 0:
+            output_line = f"{_count_phrase(goals, 'goal')} and {_count_phrase(assists, 'assist')} this season"
+        elif goals > 0:
+            output_line = f"{_count_phrase(goals, 'goal')} this season"
+        else:
+            output_line = f"{_count_phrase(assists, 'assist')} this season"
         _add_chunk(
             chunks, "output",
-            f"{call_name} has {goals} goals and {assists} assists this season.",
+            f"{call_name} has {output_line}.",
             ["output", "goals", "assists", "performance"], 2.1,
         )
     elif goals_per_90 > 0 or assists_per_90 > 0:
@@ -803,18 +902,17 @@ def build_player_context_chunks(
         rf_gi = rf_goals + rf_assists
         if rf_gi == 0:
             form_text = (
-                f"{call_name} has blanked in all {rf_samples} recent outings — "
+                f"{call_name} has blanked in all {rf_samples} recent outings, "
                 f"averaging {rf_avg_points:.1f} FPL points."
             )
         elif rf_gi >= 4:
             form_text = (
-                f"{call_name} is in scorching form with {_count_phrase(rf_goals, 'goal')} "
-                f"and {_count_phrase(rf_assists, 'assist')} in the last {rf_samples}."
+                f"{call_name} is in scorching form with {_format_output_window(rf_goals, rf_assists, rf_samples)}."
             )
         else:
             form_text = (
-                f"{_count_phrase(rf_goals, 'goal')} and {_count_phrase(rf_assists, 'assist')} "
-                f"in the last {rf_samples} for {call_name}, averaging {rf_avg_points:.1f} FPL points."
+                f"{_format_output_window(rf_goals, rf_assists, rf_samples)} for {call_name}, "
+                f"averaging {rf_avg_points:.1f} FPL points."
             )
         _add_chunk(
             chunks,
@@ -856,7 +954,7 @@ def build_player_context_chunks(
                     ["opponent", "history", "head_to_head", "defense", "clean_sheet"], 2.9)
             else:
                 if vs_gi >= 3:
-                    vs_text = f"{call_name} loves playing against {matchup_opponent_display} — {vs_g} goals and {vs_a} assists in {vs_samp} meetings."
+                    vs_text = f"{call_name} loves playing against {matchup_opponent_display}. {vs_g} goals and {vs_a} assists in {vs_samp} meetings."
                 elif vs_gi == 0 and vs_samp >= 3:
                     vs_text = f"{call_name} has never returned against {matchup_opponent_display} in {vs_samp} career meetings."
                 else:
@@ -872,18 +970,18 @@ def build_player_context_chunks(
                 vs_cs_1 = _safe_int(vs_opponent.get("clean_sheets", 0))
                 if vs_cs_1 > 0:
                     vs_text = (f"{call_name} kept a clean sheet in the only tracked meeting "
-                               f"against {matchup_opponent_display} — small sample, but a positive sign.")
+                               f"against {matchup_opponent_display}. Small sample, but a positive sign.")
                 else:
                     vs_text = (f"Only one meeting against {matchup_opponent_display} on record "
-                               f"and no clean sheet — this fixture is still an unknown.")
+                               f"and no clean sheet. This fixture is still an unknown.")
             else:
                 if vs_gi_1 > 0:
                     vs_text = (f"{call_name} returned {_count_phrase(vs_g, 'goal')} and "
                                f"{_count_phrase(vs_a, 'assist')} in the only tracked meeting "
-                               f"against {matchup_opponent_display} — limited data, but a positive signal.")
+                               f"against {matchup_opponent_display}. Limited data, but a positive signal.")
                 else:
                     vs_text = (f"One meeting against {matchup_opponent_display} on record with "
-                               f"no goal involvement — not enough to establish a pattern either way.")
+                               f"no goal involvement. Not enough to establish a pattern either way.")
             _add_chunk(chunks, "vs_opponent", vs_text,
                        ["opponent", "history", "head_to_head", "sample"], 2.6)
 
@@ -892,12 +990,11 @@ def build_player_context_chunks(
         opp_avg = _safe_float(opponent_defense.get("avg_goals_conceded_last5", 0.0))
         opp_samp = _safe_int(opponent_defense.get("samples", 0))
         opp_display = matchup_opponent_display or "Opponent"
-        if opp_avg >= 1.4:
-            opp_text = f"{opp_display} have been leaking {opp_avg:.1f} goals a game in their last {opp_samp} — a defence under pressure."
-        elif opp_avg < 0.8:
-            opp_text = f"{opp_display} have been tight at the back, conceding just {opp_avg:.1f} per game recently."
+        conceded_phrase = _natural_conceded_phrase(opp_display, opp_avg)
+        if conceded_phrase:
+            opp_text = f"{conceded_phrase}. ({opp_samp}-match sample)"
         else:
-            opp_text = f"{opp_display} have conceded {opp_avg:.1f} goals per game in their last {opp_samp}."
+            opp_text = f"{opp_display} defensive trend sample: {opp_samp} matches."
         _add_chunk(chunks, "opponent_defense", opp_text,
             ["opponent", "defense", "conceded", "fixture"], 2.7)
 
@@ -906,7 +1003,7 @@ def build_player_context_chunks(
     matches_30 = _safe_int(player_data.get("matches_last_30", 0))
     if matches_7 >= 2 or matches_30 >= 6:
         density_text = (f"{call_name} has played {matches_7} matches in the last 7 days "
-                        f"and {matches_30} in the last 30 — fixture congestion is a factor.")
+                        f"and {matches_30} in the last 30. Fixture congestion is a factor.")
         _add_chunk(chunks, "match_density", density_text,
                    ["workload", "fixture", "congestion", "density"], 2.5)
     elif matches_30 > 0 and prev_injuries <= 2:
@@ -1026,7 +1123,7 @@ def _chunk_salience_bonus(chunk: Dict[str, Any]) -> float:
     if kind in {
         "risk_headline", "recent_form", "defensive_form", "vs_opponent",
         "opponent_defense", "fixture_latest", "workload", "recency",
-        "severity_skew", "worst_injury",
+        "severity_skew", "worst_injury", "importance_summary", "importance_exposure",
     }:
         bonus += 0.55
 
@@ -1182,13 +1279,14 @@ def _get_section_fact_plan(
 
 SECTION_RAG_QUERIES = {
     "story": DEFAULT_STORY_QUERY,
-    "scoring": "scoring odds injury adjusted probability goals assists availability fixture market form",
-    "fpl": "fpl value minutes availability rotation injury risk goals assists fixture form",
+    "scoring": "scoring odds injury adjusted probability goals assists availability fixture market form player importance ownership",
+    "fpl": "fpl value minutes availability rotation injury risk goals assists fixture form player importance ownership captaincy",
     "lab": "model drivers explainability workload recency injury history fixture context",
 }
 
 SECTION_RAG_PRIORITIES = {
     "story": [
+        "importance_summary",
         "recent_form",
         "defensive_form",
         "fixture_history",
@@ -1202,6 +1300,7 @@ SECTION_RAG_PRIORITIES = {
         "history",
     ],
     "scoring": [
+        "importance_summary",
         "recent_form",
         "opponent_defense",
         "vs_opponent",
@@ -1214,6 +1313,8 @@ SECTION_RAG_PRIORITIES = {
         "output",
     ],
     "fpl": [
+        "importance_summary",
+        "importance_exposure",
         "recent_form",
         "defensive_form",
         "vs_opponent",
@@ -1227,6 +1328,7 @@ SECTION_RAG_PRIORITIES = {
     ],
     "lab": [
         "risk_headline",
+        "importance_summary",
         "history",
         "severity_skew",
         "recency",

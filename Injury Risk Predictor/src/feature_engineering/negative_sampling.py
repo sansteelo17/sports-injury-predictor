@@ -251,12 +251,12 @@ def _hard_negative_sampling(team_matches: pd.DataFrame,
         negatives["risk_score"] += (negatives["acute_load"] > acute_75).astype(float) * 0.3
 
     if "acwr" in negatives.columns:
-        # ACWR > 1.5 is high risk
-        negatives["risk_score"] += (negatives["acwr"] > 1.5).astype(float) * 0.3
+        # ACWR > 1.8 is high risk
+        negatives["risk_score"] += (negatives["acwr"] > 1.8).astype(float) * 0.3
 
     if "matches_last_7" in negatives.columns:
-        # 2+ matches in 7 days is congestion
-        negatives["risk_score"] += (negatives["matches_last_7"] >= 2).astype(float) * 0.2
+        # 3+ matches in 7 days is genuine congestion
+        negatives["risk_score"] += (negatives["matches_last_7"] >= 3).astype(float) * 0.2
 
     # Fixture congestion periods
     month = negatives["match_date"].dt.month

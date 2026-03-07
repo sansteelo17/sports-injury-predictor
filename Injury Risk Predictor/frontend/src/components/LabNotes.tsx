@@ -112,7 +112,7 @@ export function LabNotes({ player, darkMode = true }: LabNotesProps) {
               Model Predictions
             </h3>
           </div>
-          <div className="grid grid-cols-3 gap-3 text-center">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-center">
             {[
               { label: 'LightGBM', value: player.model_predictions.lgb },
               { label: 'XGBoost', value: player.model_predictions.xgb },

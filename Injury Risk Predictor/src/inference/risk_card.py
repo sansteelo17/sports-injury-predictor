@@ -164,7 +164,7 @@ def _extract_key_risk_factors(player_row, top_k=5):
     # Define risk features with thresholds and display names
     risk_features = [
         # (column, display_name, threshold_for_elevated, higher_is_worse)
-        ("acwr", "Acute:Chronic Workload Ratio", 1.3, True),
+        ("acwr", "Acute:Chronic Workload Ratio", 1.5, True),
         ("acute_load", "Recent Match Load (7 days)", 3, True),
         ("fatigue_index", "Fatigue Index", 1.0, True),
         ("spike_flag", "Workload Spike Detected", 0.5, True),

@@ -394,9 +394,9 @@ def validate_player_input(player_data: Dict) -> Dict:
     # Warn if ACWR is in danger zone
     acwr = player_data.get('acwr')
     if acwr is not None and not pd.isna(acwr):
-        if float(acwr) > 1.5:
+        if float(acwr) > 1.8:
             warnings.append(
-                f"ACWR ratio {acwr:.2f} exceeds 1.5 (danger zone for injury risk)"
+                f"ACWR ratio {acwr:.2f} exceeds 1.8 (danger zone for injury risk)"
             )
 
     return {

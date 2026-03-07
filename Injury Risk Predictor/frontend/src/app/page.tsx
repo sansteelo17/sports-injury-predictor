@@ -119,8 +119,8 @@ export default function Home() {
       <header
         className={`holo-header mobile-square-header ${darkMode ? "bg-[#141414] border-b border-[#1f1f1f]" : "bg-white border-b border-gray-200"} py-3 sm:py-4 px-3 sm:px-4`}
       >
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2 sm:gap-3">
+        <div className="max-w-6xl mx-auto flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
             <div className="relative">
               <Activity
                 size={28}
@@ -131,8 +131,8 @@ export default function Home() {
                 className={`absolute -top-1 -right-1 ${darkMode ? "text-[#86efac]" : "text-emerald-600"}`}
               />
             </div>
-            <div>
-              <h1 className="text-lg sm:text-xl font-bold tracking-tight">
+            <div className="min-w-0">
+              <h1 className="text-lg sm:text-xl font-bold tracking-tight truncate">
                 Yara
                 <span
                   className={darkMode ? "text-[#86efac]" : "text-emerald-600"}
@@ -150,7 +150,7 @@ export default function Home() {
 
           <button
             onClick={() => setDarkMode(!darkMode)}
-            className={`p-2 rounded-lg transition-colors ${
+            className={`shrink-0 p-2 rounded-lg transition-colors ${
               darkMode
                 ? "bg-[#1f1f1f] hover:bg-[#86efac]/20"
                 : "bg-gray-100 hover:bg-gray-200"
@@ -177,7 +177,7 @@ export default function Home() {
               size={16}
             />
             <div
-              className={`text-xs sm:text-sm ${darkMode ? "text-gray-300" : "text-gray-700"}`}
+              className={`text-xs sm:text-sm break-words ${darkMode ? "text-gray-300" : "text-gray-700"}`}
             >
               <strong
                 className={darkMode ? "text-[#86efac]" : "text-emerald-600"}
@@ -234,7 +234,7 @@ export default function Home() {
           <div className="grid lg:grid-cols-3 gap-4 sm:gap-6">
             {/* Left Column - Team Overview & Player List */}
             <div
-              className={`lg:col-span-1 space-y-4 sm:space-y-6 ${playerRisk ? "order-2 lg:order-1" : ""}`}
+              className={`lg:col-span-1 min-w-0 space-y-4 sm:space-y-6 ${playerRisk ? "order-2 lg:order-1" : ""}`}
             >
               <TeamOverview team={teamOverview} darkMode={darkMode} />
 
@@ -279,7 +279,7 @@ export default function Home() {
 
             {/* Right Column - Player Card / Lab Notes */}
             <div
-              className={`lg:col-span-2 ${playerRisk ? "order-1 lg:order-2" : ""}`}
+              className={`lg:col-span-2 min-w-0 ${playerRisk ? "order-1 lg:order-2" : ""}`}
             >
               {playerRisk ? (
                 <div className="space-y-4">
@@ -289,7 +289,7 @@ export default function Home() {
                   >
                     <button
                       onClick={() => setView("overview")}
-                      className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      className={`flex-1 flex items-center justify-center gap-2 px-2.5 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors ${
                         view === "overview"
                           ? darkMode
                             ? "bg-[#1f1f1f] text-white"
@@ -304,7 +304,7 @@ export default function Home() {
                     </button>
                     <button
                       onClick={() => setView("lab")}
-                      className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors ${
+                      className={`flex-1 flex items-center justify-center gap-2 px-2.5 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors ${
                         view === "lab"
                           ? darkMode
                             ? "bg-[#1f1f1f] text-white"
@@ -332,9 +332,7 @@ export default function Home() {
                   )}
                 </div>
               ) : (
-                <div
-                  className={`holo-panel ${cardClass} border rounded-2xl p-8 sm:p-12 text-center`}
-                >
+                <div className={`holo-panel ${cardClass} border rounded-2xl p-6 sm:p-12 text-center`}>
                   <Shield
                     size={48}
                     className={`mx-auto mb-4 ${darkMode ? "text-[#1f1f1f]" : "text-gray-300"}`}
@@ -383,7 +381,7 @@ export default function Home() {
       >
         <div className="max-w-6xl mx-auto px-3 sm:px-4 text-center">
           <p
-            className={`text-xs sm:text-sm ${darkMode ? "text-gray-600" : "text-gray-500"}`}
+            className={`text-xs sm:text-sm max-w-3xl mx-auto ${darkMode ? "text-gray-600" : "text-gray-500"}`}
           >
             Predictions estimate injury probability over the next 2 weeks.
             Powered by ensemble ML models. For educational purposes only.

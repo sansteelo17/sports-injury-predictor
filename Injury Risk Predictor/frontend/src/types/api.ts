@@ -158,6 +158,19 @@ export interface RiskComparison {
   position_total: number;
 }
 
+export interface PlayerImportance {
+  score: number;
+  tier: string;
+  ownership_pct: number | null;
+  price: number | null;
+  price_tier: string | null;
+  captaincy_proxy_pct: number | null;
+  role_importance: string | null;
+  form_signal: string | null;
+  h2h_signal: string | null;
+  summary: string;
+}
+
 export interface PlayerRisk {
   name: string;
   team: string;
@@ -196,6 +209,7 @@ export interface PlayerRisk {
   spike_flag: boolean | null;
   fpl_points_projection: FPLPointsProjection | null;
   risk_comparison: RiskComparison | null;
+  player_importance: PlayerImportance | null;
 }
 
 export interface TeamNextFixture {
