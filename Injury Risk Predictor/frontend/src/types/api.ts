@@ -2,12 +2,26 @@ export interface PlayerSummary {
   name: string;
   team: string;
   position: string;
+  shirt_number: number | null;
   risk_level: 'High' | 'Medium' | 'Low';
   risk_probability: number;
   archetype: string;
   minutes_played: number;
   is_starter: boolean;
   player_image_url: string | null;
+  days_since_last_injury: number;
+  is_currently_injured: boolean;
+  injury_news: string | null;
+  chance_of_playing: number | null;
+}
+
+export interface InjuryRecord {
+  date: string | null;
+  body_area: string;
+  injury_type: string;
+  injury_raw: string;
+  severity_days: number;
+  games_missed: number;
 }
 
 export interface RiskFactors {
@@ -70,6 +84,14 @@ export interface NextFixture {
   clean_sheet_odds: string | null;
   win_probability: number | null;
   fixture_insight: string | null;
+  difficulty: number | null;
+}
+
+export interface UpcomingFixture {
+  opponent: string;
+  is_home: boolean;
+  difficulty: number;
+  match_time: string | null;
 }
 
 export interface YaraResponse {
@@ -117,10 +139,30 @@ export interface LabNotes {
   technical: TechnicalDetails;
 }
 
+export interface FPLPointsProjection {
+  expected_points: number;
+  base_points: number;
+  injury_discount_pct: number;
+  fixture_multiplier: number;
+  confidence: 'high' | 'medium' | 'low';
+  breakdown: string;
+}
+
+export interface RiskComparison {
+  squad_avg_risk: number;
+  position_avg_risk: number;
+  squad_rank: number;
+  squad_total: number;
+  position_group: string;
+  position_rank: number;
+  position_total: number;
+}
+
 export interface PlayerRisk {
   name: string;
   team: string;
   position: string;
+  shirt_number: number | null;
   age: number;
   risk_level: 'High' | 'Medium' | 'Low';
   risk_probability: number;
@@ -143,6 +185,17 @@ export interface PlayerRisk {
   risk_percentile: number | null;
   player_image_url: string | null;
   team_badge_url: string | null;
+  is_currently_injured: boolean;
+  injury_news: string | null;
+  chance_of_playing: number | null;
+  upcoming_fixtures: UpcomingFixture[] | null;
+  injury_records: InjuryRecord[];
+  acwr: number | null;
+  acute_load: number | null;
+  chronic_load: number | null;
+  spike_flag: boolean | null;
+  fpl_points_projection: FPLPointsProjection | null;
+  risk_comparison: RiskComparison | null;
 }
 
 export interface TeamNextFixture {
@@ -206,6 +259,16 @@ export interface FPLInsights {
   standings: LeagueStanding[];
   upcoming_gameweeks: GameweekSummary[];
   has_double_gameweek: boolean;
+}
+
+export interface WhatIfProjection {
+  player_name: string;
+  current_risk: number;
+  projected_risk: number;
+  scenario: string;
+  delta: number;
+  acwr_current: number;
+  acwr_projected: number;
 }
 
 // Real League Standings

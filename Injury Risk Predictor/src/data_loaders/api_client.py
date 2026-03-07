@@ -166,7 +166,7 @@ class FootballDataClient:
             team_name: Team name (e.g., "Arsenal", "Manchester United")
 
         Returns:
-            DataFrame with player info: name, position, dateOfBirth, nationality
+            DataFrame with player info: name, position, dateOfBirth, nationality, shirt_number
         """
         # First get team ID
         teams_data = self._get(f"competitions/{PREMIER_LEAGUE_ID}/teams")
@@ -190,6 +190,7 @@ class FootballDataClient:
             rows.append({
                 "name": p["name"],
                 "position": p.get("position", "Unknown"),
+                "shirt_number": p.get("shirtNumber"),
                 "date_of_birth": p.get("dateOfBirth"),
                 "nationality": p.get("nationality"),
             })
@@ -228,6 +229,7 @@ class FootballDataClient:
                         "name": p["name"],
                         "team": team["shortName"],
                         "position": p.get("position", "Unknown"),
+                        "shirt_number": p.get("shirtNumber"),
                         "age": age,
                         "nationality": p.get("nationality"),
                     })

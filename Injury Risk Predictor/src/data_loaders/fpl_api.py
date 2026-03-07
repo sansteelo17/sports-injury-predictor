@@ -265,6 +265,11 @@ class FPLClient:
             "full_name": f"{player.get('first_name')} {player.get('second_name')}",
             "team": teams.get(player.get("team"), "Unknown"),
             "team_id": player.get("team"),
+            "shirt_number": (
+                player.get("squad_number")
+                or player.get("shirt_number")
+                or player.get("number")
+            ),
             "position": self._position_lookup.get(player.get("element_type"), "Unknown"),
             "goals": goals,
             "assists": assists,
@@ -278,6 +283,9 @@ class FPLClient:
             "points_per_game": float(player.get("points_per_game", 0)),
             "selected_by": float(player.get("selected_by_percent", 0)),
             "photo_code": player.get("code"),  # For player image URL
+            "status": player.get("status"),  # a=available, i=injured, s=suspended, d=doubtful, u=unavailable
+            "chance_of_playing": player.get("chance_of_playing_next_round"),  # 0/25/50/75/100 or None
+            "news": player.get("news", ""),  # e.g. "Hamstring - Expected back 15 Mar"
         }
 
 

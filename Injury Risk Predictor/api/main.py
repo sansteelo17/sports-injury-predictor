@@ -7,13 +7,14 @@ Serves predictions from the trained ML models to the React frontend.
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 import sys
 import os
 from datetime import datetime, timedelta
 import asyncio
 import subprocess
 import threading
+import re
 
 import unicodedata
 from pathlib import Path
@@ -61,6 +62,7 @@ from src.inference.story_generator import (
     generate_yara_response,
     generate_lab_notes,
 )
+from src.inference.llm_client import generate_grounded_narrative
 from src.data_loaders.fpl_api import FPLClient, get_fpl_insights
 from src.data_loaders.football_data_api import FootballDataClient, get_standings_summary
 from src.data_loaders.api_client import FootballDataClient as MatchHistoryApiClient
@@ -120,6 +122,8 @@ fpl_team_recent_defense = {}  # Team ID -> recent defensive snapshot
 fpl_player_codes = {}  # Player name -> FPL code (for photos)
 fpl_player_team = {}  # Player name -> team name (for photo disambiguation)
 fpl_players_by_team = {}  # Team name -> set of FPL player names (for filtering)
+shirt_numbers_by_team: Dict[str, Dict[str, int]] = {}  # Normalized team -> normalized player name -> shirt number
+shirt_number_lookup_attempted: Set[str] = set()  # Teams we already tried loading for shirt numbers
 historical_matches_df = None  # Local historical PL fixtures from csv
 fixture_history_cache = {}  # (team, opponent, years) -> summary
 odds_client = None
@@ -198,6 +202,7 @@ async def load_models():
     global artifacts, inference_df, fpl_stats_cache, fpl_team_ids, fpl_team_name_to_id
     global fpl_team_names_by_id, fpl_team_meta, fpl_team_recent_defense
     global fpl_player_codes, fpl_players_by_team, historical_matches_df, fixture_history_cache, odds_client
+    global shirt_numbers_by_team, shirt_number_lookup_attempted
     # Reset caches so manual/cron refreshes don't accumulate stale keys.
     fpl_stats_cache = {}
     fpl_team_ids = {}
@@ -207,6 +212,8 @@ async def load_models():
     fpl_team_recent_defense = {}
     fpl_player_codes = {}
     fpl_players_by_team = {}
+    shirt_numbers_by_team = {}
+    shirt_number_lookup_attempted = set()
     fixture_history_cache = {}
 
     artifacts = load_artifacts()
@@ -748,12 +755,17 @@ class PlayerSummary(BaseModel):
     name: str
     team: str
     position: str
+    shirt_number: Optional[int] = None
     risk_level: str
     risk_probability: float
     archetype: str
     minutes_played: int = 0
     is_starter: bool = False
     player_image_url: Optional[str] = None
+    days_since_last_injury: int = 365
+    is_currently_injured: bool = False
+    injury_news: Optional[str] = None
+    chance_of_playing: Optional[int] = None
 
 
 class RiskFactors(BaseModel):
@@ -802,6 +814,27 @@ class FPLValue(BaseModel):
     assists_per_90: float
     price: float
     risk_factor: float
+
+
+class FPLPointsProjection(BaseModel):
+    """Expected FPL points for next gameweek, discounted by injury risk."""
+    expected_points: float
+    base_points: float
+    injury_discount_pct: float
+    fixture_multiplier: float
+    confidence: str
+    breakdown: str
+
+
+class RiskComparison(BaseModel):
+    """Player risk compared to squad and position averages."""
+    squad_avg_risk: float
+    position_avg_risk: float
+    squad_rank: int
+    squad_total: int
+    position_group: str
+    position_rank: int
+    position_total: int
 
 
 class CleanSheetOdds(BaseModel):
@@ -874,10 +907,28 @@ class LabNotes(BaseModel):
     technical: TechnicalDetails
 
 
+class UpcomingFixture(BaseModel):
+    """A single upcoming fixture with FDR difficulty."""
+    opponent: str
+    is_home: bool
+    difficulty: int = 3
+    match_time: Optional[str] = None
+
+
+class InjuryRecord(BaseModel):
+    date: Optional[str] = None
+    body_area: str = "unknown"
+    injury_type: str = "unknown"
+    injury_raw: str = ""
+    severity_days: int = 0
+    games_missed: int = 0
+
+
 class PlayerRisk(BaseModel):
     name: str
     team: str
     position: str
+    shirt_number: Optional[int] = None
     age: int
     risk_level: str
     risk_probability: float
@@ -900,6 +951,28 @@ class PlayerRisk(BaseModel):
     risk_percentile: Optional[float] = None
     player_image_url: Optional[str] = None
     team_badge_url: Optional[str] = None
+    is_currently_injured: bool = False
+    injury_news: Optional[str] = None
+    chance_of_playing: Optional[int] = None
+    upcoming_fixtures: Optional[List[UpcomingFixture]] = None
+    injury_records: List[InjuryRecord] = []
+    acwr: Optional[float] = None
+    acute_load: Optional[float] = None
+    chronic_load: Optional[float] = None
+    spike_flag: Optional[bool] = None
+    fpl_points_projection: Optional[FPLPointsProjection] = None
+    risk_comparison: Optional[RiskComparison] = None
+
+
+class WhatIfProjection(BaseModel):
+    """Result of a what-if scenario projection."""
+    player_name: str
+    current_risk: float
+    projected_risk: float
+    scenario: str
+    delta: float
+    acwr_current: float
+    acwr_projected: float
 
 
 class TeamOverview(BaseModel):
@@ -1126,6 +1199,251 @@ def _strip_accents(s: str) -> str:
     )
 
 
+def _normalize_player_key(name: str) -> str:
+    """Normalize player names for cross-provider matching."""
+    base = _strip_accents((name or "").lower())
+    base = re.sub(r"[^a-z0-9 ]+", " ", base)
+    return re.sub(r"\s+", " ", base).strip()
+
+
+def _add_shirt_number_entry(mapping: Dict[str, int], player_name: str, shirt_value: Any) -> None:
+    """Insert canonical + alias keys for one player's shirt number."""
+    shirt = _safe_int(shirt_value, 0)
+    if shirt <= 0:
+        return
+
+    full_name = _normalize_player_key(str(player_name or ""))
+    if not full_name:
+        return
+
+    mapping.setdefault(full_name, shirt)
+    parts = full_name.split()
+    if parts:
+        last = parts[-1]
+        if len(last) >= 4:
+            mapping.setdefault(last, shirt)
+        if len(parts) >= 2:
+            mapping.setdefault(f"{parts[0]} {parts[-1]}", shirt)
+
+
+def _build_team_shirt_number_map(squad_df) -> Dict[str, int]:
+    mapping: Dict[str, int] = {}
+    if squad_df is None or len(getattr(squad_df, "index", [])) == 0:
+        return mapping
+
+    for _, row in squad_df.iterrows():
+        _add_shirt_number_entry(mapping, row.get("name", ""), row.get("shirt_number"))
+    return mapping
+
+
+def _api_football_team_search_terms(team_name: Optional[str]) -> List[str]:
+    """Generate likely API-Football team search terms from our normalized names."""
+    raw = str(team_name or "").strip()
+    if not raw:
+        return []
+
+    canonical_key = TEAM_BADGE_ALIASES.get(raw.lower(), raw.lower())
+    key_to_api_name = {
+        "man city": "Manchester City",
+        "man utd": "Manchester United",
+        "nott'm forest": "Nottingham Forest",
+        "spurs": "Tottenham",
+        "wolves": "Wolverhampton Wanderers",
+        "brighton": "Brighton",
+        "west ham": "West Ham",
+        "newcastle": "Newcastle",
+        "leicester": "Leicester",
+        "ipswich": "Ipswich",
+    }
+    pretty_from_key = key_to_api_name.get(
+        canonical_key,
+        " ".join(p.capitalize() for p in canonical_key.replace("'", "").split()),
+    )
+
+    terms: List[str] = []
+    for candidate in [raw, pretty_from_key, canonical_key]:
+        candidate = str(candidate or "").strip()
+        if candidate and candidate.lower() not in {t.lower() for t in terms}:
+            terms.append(candidate)
+    return terms
+
+
+def _pick_api_football_team_id(response_rows: List[Dict], team_name: str) -> Optional[int]:
+    """Pick best matching API-Football team ID from /teams response rows."""
+    if not response_rows:
+        return None
+
+    target = _normalize_player_key(team_name)
+    best_id: Optional[int] = None
+    best_score = -1
+
+    for row in response_rows:
+        team = row.get("team", {})
+        team_id = _safe_int(team.get("id"), 0)
+        if team_id <= 0:
+            continue
+        name = _normalize_player_key(str(team.get("name", "")))
+        if not name:
+            continue
+
+        overlap = len(set(target.split()) & set(name.split()))
+        contains_bonus = 3 if (target in name or name in target) else 0
+        score = overlap + contains_bonus
+
+        if score > best_score:
+            best_score = score
+            best_id = team_id
+
+    if best_id:
+        return best_id
+
+    first = response_rows[0].get("team", {})
+    return _safe_int(first.get("id"), 0) or None
+
+
+def _fetch_api_football_shirt_numbers(team_name: Optional[str]) -> Dict[str, int]:
+    """
+    Fetch shirt numbers from API-Football using `players/squads`.
+    Requires odds client with API_FOOTBALL_KEY configured.
+    """
+    if not team_name or odds_client is None:
+        return {}
+    if not getattr(odds_client, "api_football_key", ""):
+        return {}
+    if not hasattr(odds_client, "_api_football_request"):
+        return {}
+
+    search_terms = _api_football_team_search_terms(team_name)
+    if not search_terms:
+        return {}
+
+    now_year = datetime.utcnow().year
+    team_id: Optional[int] = None
+    for season in (now_year, now_year - 1):
+        for term in search_terms:
+            payload = odds_client._api_football_request(
+                "teams",
+                {"league": 39, "season": season, "search": term},
+            )
+            rows = (payload or {}).get("response", [])
+            if not rows:
+                continue
+            team_id = _pick_api_football_team_id(rows, team_name)
+            if team_id:
+                break
+        if team_id:
+            break
+
+    if not team_id:
+        return {}
+
+    squad_payload = odds_client._api_football_request("players/squads", {"team": team_id})
+    squads = (squad_payload or {}).get("response", [])
+    if not squads:
+        return {}
+
+    mapping: Dict[str, int] = {}
+    for squad in squads:
+        for player in squad.get("players", []):
+            _add_shirt_number_entry(mapping, player.get("name", ""), player.get("number"))
+    return mapping
+
+
+def _ensure_team_shirt_numbers_loaded(team_name: Optional[str]) -> None:
+    """Lazy-load squad numbers from football-data.org for one team."""
+    if not team_name:
+        return
+
+    key = TEAM_BADGE_ALIASES.get(str(team_name).lower().strip(), str(team_name).lower().strip())
+    if not key:
+        return
+    if key in shirt_numbers_by_team or key in shirt_number_lookup_attempted:
+        return
+
+    shirt_number_lookup_attempted.add(key)
+    api_key = (os.getenv("FOOTBALL_DATA_API_KEY") or "").strip()
+    if api_key:
+        try:
+            client = MatchHistoryApiClient(api_key=api_key)
+            squad_df = client.get_team_squad(team_name)
+            team_map = _build_team_shirt_number_map(squad_df)
+            if team_map:
+                shirt_numbers_by_team[key] = team_map
+                logger.info(f"Loaded {len(team_map)} shirt numbers for {team_name}")
+        except Exception as e:
+            logger.debug(f"Shirt-number lookup failed for {team_name}: {e}")
+
+    if key in shirt_numbers_by_team:
+        return
+
+    try:
+        team_map = _fetch_api_football_shirt_numbers(team_name)
+        if team_map:
+            shirt_numbers_by_team[key] = team_map
+            logger.info(f"Loaded {len(team_map)} shirt numbers for {team_name} via API-Football")
+    except Exception as e:
+        logger.debug(f"API-Football shirt-number lookup failed for {team_name}: {e}")
+
+
+def _lookup_shirt_number(player_name: str, team_hint: Optional[str] = None) -> Optional[int]:
+    """Find shirt number from cached/lazy-loaded squad data."""
+    if not player_name:
+        return None
+
+    candidate_keys: List[str] = []
+    normalized = _normalize_player_key(player_name)
+    if normalized:
+        candidate_keys.append(normalized)
+        parts = normalized.split()
+        if len(parts) >= 2:
+            candidate_keys.append(f"{parts[0]} {parts[-1]}")
+        if parts:
+            candidate_keys.append(parts[-1])
+
+    teams_to_check: List[str] = []
+    if team_hint:
+        _ensure_team_shirt_numbers_loaded(team_hint)
+        norm_team = TEAM_BADGE_ALIASES.get(str(team_hint).lower().strip(), str(team_hint).lower().strip())
+        if norm_team:
+            teams_to_check.append(norm_team)
+
+    # Fallback: search already-loaded teams
+    for team_key in shirt_numbers_by_team.keys():
+        if team_key not in teams_to_check:
+            teams_to_check.append(team_key)
+
+    for team_key in teams_to_check:
+        mapping = shirt_numbers_by_team.get(team_key, {})
+        for key in candidate_keys:
+            shirt = mapping.get(key)
+            if isinstance(shirt, int) and shirt > 0:
+                return shirt
+    return None
+
+
+def _attach_shirt_number(stats: Optional[Dict], player_name: str, team_hint: Optional[str] = None) -> Optional[Dict]:
+    """Attach shirt number to stats if missing, using fallback squad sources."""
+    if not stats:
+        return stats
+    current = _safe_int(stats.get("shirt_number"), 0)
+    if current > 0:
+        return stats
+
+    fallback = _lookup_shirt_number(player_name, team_hint=team_hint or stats.get("team"))
+    if fallback:
+        stats["shirt_number"] = fallback
+    return stats
+
+
+def _resolve_shirt_number(player_name: str, fpl_stats: Optional[Dict], team_hint: Optional[str]) -> Optional[int]:
+    """Return shirt number from FPL stats, then fallback squad sources."""
+    if fpl_stats:
+        from_fpl = _safe_int(fpl_stats.get("shirt_number"), 0)
+        if from_fpl > 0:
+            return from_fpl
+    return _lookup_shirt_number(player_name, team_hint=team_hint)
+
+
 def get_player_image_url(player_name: str, team_name: Optional[str] = None) -> Optional[str]:
     """Get Premier League player photo URL."""
     _photo_url = lambda code: f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{code}.png"
@@ -1252,10 +1570,10 @@ def get_fpl_stats_for_player(name: str, team_hint: str = None) -> Optional[Dict]
 
     # Exact match (most reliable) — try with and without accents
     if name_lower in fpl_stats_cache:
-        return fpl_stats_cache[name_lower]
+        return _attach_shirt_number(fpl_stats_cache[name_lower], name, team_hint=team_hint)
     name_ascii = _strip_accents(name_lower)
     if name_ascii != name_lower and name_ascii in fpl_stats_cache:
-        return fpl_stats_cache[name_ascii]
+        return _attach_shirt_number(fpl_stats_cache[name_ascii], name, team_hint=team_hint)
 
     # Full name containment (e.g. "Bukayo Saka" in "Bukayo Saka" or vice versa)
     # Score candidates by match quality to avoid false positives
@@ -1273,12 +1591,12 @@ def get_fpl_stats_for_player(name: str, team_hint: str = None) -> Optional[Dict]
         team_lower = team_hint.lower()
         team_matches = [(o, s) for o, s in candidates if _teams_match(s.get("team", ""), team_lower)]
         if team_matches:
-            return team_matches[0][1]  # Already sorted by overlap
+            return _attach_shirt_number(team_matches[0][1], name, team_hint=team_hint)  # Already sorted by overlap
 
     if len(candidates) == 1:
-        return candidates[0][1]
+        return _attach_shirt_number(candidates[0][1], name, team_hint=team_hint)
     if candidates:
-        return candidates[0][1]
+        return _attach_shirt_number(candidates[0][1], name, team_hint=team_hint)
 
     # Last resort: match by last name only (must be unique and long enough)
     parts = name_lower.split()
@@ -1290,13 +1608,13 @@ def get_fpl_stats_for_player(name: str, team_hint: str = None) -> Optional[Dict]
                 if key.endswith(last_name) or last_name == key.split()[-1] if " " in key else last_name == key:
                     last_name_matches.append(stats)
             if len(last_name_matches) == 1:
-                return last_name_matches[0]
+                return _attach_shirt_number(last_name_matches[0], name, team_hint=team_hint)
             # If multiple matches, use team hint
             if last_name_matches and team_hint:
                 team_lower = team_hint.lower()
                 team_filtered = [s for s in last_name_matches if _teams_match(s.get("team", ""), team_lower)]
                 if len(team_filtered) == 1:
-                    return team_filtered[0]
+                    return _attach_shirt_number(team_filtered[0], name, team_hint=team_hint)
     return None
 
 
@@ -2085,6 +2403,7 @@ def get_next_fixture_for_team(team_name: str, injury_prob: float) -> Optional[Di
                         "clean_sheet_odds": None,
                         "win_probability": None,
                         "fixture_insight": None,
+                        "difficulty": f.get("team_h_difficulty"),
                     }
                 elif f.get("team_a") == team_id:
                     fixture_result = {
@@ -2094,6 +2413,7 @@ def get_next_fixture_for_team(team_name: str, injury_prob: float) -> Optional[Di
                         "clean_sheet_odds": None,
                         "win_probability": None,
                         "fixture_insight": None,
+                        "difficulty": f.get("team_a_difficulty"),
                     }
                 if fixture_result:
                     # Merge external odds data if available
@@ -2110,6 +2430,72 @@ def get_next_fixture_for_team(team_name: str, injury_prob: float) -> Optional[Di
         logger.warning(f"Failed to get FPL fixture for {team_name}: {e}")
 
     return None
+
+
+def get_upcoming_fixtures(team_name: str, count: int = 5) -> List[Dict]:
+    """Get the next N fixtures for a team with FDR difficulty ratings."""
+    try:
+        client = FPLClient()
+        teams_list = client.get_teams()
+        team_map = {t["id"]: t["short_name"] for t in teams_list}
+
+        team_lower = team_name.lower()
+        team_id = None
+        for t in teams_list:
+            if (team_lower in t["name"].lower() or t["name"].lower() in team_lower
+                    or team_lower in t.get("short_name", "").lower()):
+                team_id = t["id"]
+                break
+        if not team_id:
+            search = TEAM_BADGE_ALIASES.get(team_lower, team_lower)
+            for t in teams_list:
+                if search in t["name"].lower() or t["name"].lower() in search:
+                    team_id = t["id"]
+                    break
+        if not team_id:
+            return []
+
+        # Get all remaining fixtures for the season
+        data = client.get_bootstrap()
+        current_gw = None
+        for event in data.get("events", []):
+            if event.get("is_current"):
+                current_gw = event["id"]
+                break
+        if not current_gw:
+            return []
+
+        upcoming = []
+        for gw_id in range(current_gw, current_gw + 10):
+            if len(upcoming) >= count:
+                break
+            try:
+                fixtures = client.get_fixtures(gw_id)
+            except Exception:
+                break
+            for f in fixtures:
+                if f.get("finished") or f.get("finished_provisional"):
+                    continue
+                if f.get("team_h") == team_id:
+                    upcoming.append({
+                        "opponent": team_map.get(f["team_a"], "???"),
+                        "is_home": True,
+                        "difficulty": f.get("team_h_difficulty", 3),
+                        "match_time": f.get("kickoff_time"),
+                    })
+                elif f.get("team_a") == team_id:
+                    upcoming.append({
+                        "opponent": team_map.get(f["team_h"], "???"),
+                        "is_home": False,
+                        "difficulty": f.get("team_a_difficulty", 3),
+                        "match_time": f.get("kickoff_time"),
+                    })
+                if len(upcoming) >= count:
+                    break
+        return upcoming
+    except Exception as e:
+        logger.warning(f"Failed to get upcoming fixtures for {team_name}: {e}")
+        return []
 
 
 def _is_defensive_position(position: str) -> bool:
@@ -2217,6 +2603,7 @@ def enhance_yara_response(
     market_consensus: Optional[Dict],
     scoring_odds_data: Optional[Dict] = None,
     clean_sheet_data: Optional[Dict] = None,
+    injury_records: Optional[List[Dict]] = None,
 ) -> Optional[Dict]:
     """Blend model narrative with fixture context and bookmaker consensus."""
     if not base_response and not market_consensus:
@@ -2256,34 +2643,87 @@ def enhance_yara_response(
         else (base_response.get("market_probability") if base_response else None)
     )
 
-    venue_context = ""
-    if opponent:
-        venue = "host" if is_home else "travel to"
-        venue_context = f" {team} {venue} {opponent} next."
+    is_defensive = _is_defensive_position(player_row.get("position", ""))
+    market_type_label = "to keep a clean sheet" if is_defensive else "to score"
+    yara_pct = round(float(yara_probability) * 100)
+    risk_pct = round(injury_prob * 100)
 
-    availability_context = "load risk is elevated" if injury_prob >= 0.4 else "availability profile is steady"
+    # Stat-first template fallback — OptaJoe voice
     if market_consensus and market_probability is not None:
-        response_text = (
-            f"I'm projecting {round(float(yara_probability) * 100)}%. "
-            f"Bookies average {round(float(market_probability) * 100)}%. "
-            f"{first_name} is at {goals_per_90:.2f} goals/90 and {assists_per_90:.2f} assists/90, "
-            f"and the injury-adjusted view says {availability_context}.{venue_context}"
-        )
+        market_pct = round(float(market_probability) * 100)
+        edge = yara_pct - market_pct
+        if edge > 0:
+            template_text = (
+                f"{abs(edge)}% — That's the gap between my model and the bookies on {first_name}. "
+                f"I have {yara_pct}% {market_type_label}, they have {market_pct}%. "
+                f"{goals_per_90:.2f} goals/90 at {risk_pct}% injury risk."
+            )
+        elif edge < 0:
+            template_text = (
+                f"{market_pct}% — Bookies are generous on {first_name}. "
+                f"I'm at {yara_pct}% {market_type_label}. "
+                f"The scoring rate ({goals_per_90:.2f}/90) doesn't justify the market price."
+            )
+        else:
+            template_text = (
+                f"~{yara_pct}% — Market and model agree on {first_name} {market_type_label}. "
+                f"{goals_per_90:.2f} goals/90 and {assists_per_90:.2f} assists/90 at {risk_pct}% risk."
+            )
     else:
-        response_text = (
-            f"I'm projecting {round(float(yara_probability) * 100)}%. "
-            f"{first_name} is at {goals_per_90:.2f} goals/90 and {assists_per_90:.2f} assists/90; "
-            f"{availability_context}.{venue_context}"
+        template_text = (
+            f"{yara_pct}% — My projection for {first_name} {market_type_label}. "
+            f"{goals_per_90:.2f} goals/90, {assists_per_90:.2f} assists/90, {risk_pct}% injury risk."
         )
+    if opponent:
+        venue = "home" if is_home else "away"
+        template_text += f" Next: {venue} vs {opponent}."
+
+    # Use RAG context for richer LLM enrichment
+    response_text = template_text
+    try:
+        from src.inference.context_rag import retrieve_player_context
+        context_chunks = retrieve_player_context(
+            player_row,
+            extra_context={"next_fixture": {"opponent": opponent, "is_home": is_home}} if opponent else None,
+            query="scoring odds injury availability fixture market opponent goals assists",
+            top_k=10,
+            include_open_question=False,
+        )
+        # Add market data as a chunk if available
+        if market_consensus and market_probability is not None:
+            context_chunks.append({
+                "kind": "market",
+                "text": f"Bookmaker average: {round(float(market_probability) * 100)}% {market_type_label}. Yara model: {yara_pct}%.",
+                "tags": set(),
+                "weight": 1.5,
+            })
+
+        llm_task = (
+            f"Lead with the gap between your projection and the bookmakers on {first_name}. "
+            f"Say whether the market is right or wrong and why. "
+            f"Reference {first_name}'s scoring rate, injury risk, and the opponent. "
+            f"Keep it concise and specific."
+        )
+        enriched = generate_grounded_narrative(
+            task=llm_task,
+            player_name=name,
+            context_chunks=context_chunks,
+            fallback_text=template_text,
+            require_open_question=False,
+        )
+        if enriched and enriched != template_text:
+            response_text = enriched
+    except Exception:
+        pass  # Fall back to template text
 
     fpl_tip = base_response.get("fpl_tip") if base_response else None
     if not fpl_tip:
         if injury_prob >= 0.45:
-            fpl_tip = "Start only with bench cover. Captain only if chasing upside."
+            fpl_tip = f"Start with cover only. {risk_pct}% risk caps the ceiling."
         elif yara_probability >= 0.4:
-            fpl_tip = "Start if you own. Captain only if fixture upside matches your rank goals."
+            fpl_tip = f"Start if owned. {yara_pct}% projection supports confidence."
         else:
-            fpl_tip = "Playable, but not a captain priority this week."
+            fpl_tip = "Playable, not a captain priority this week."
 
     return {
         "response_text": response_text,
@@ -2310,6 +2750,124 @@ def get_personalized_insights(row: dict) -> List[str]:
         elif factor["impact"] == "protective":
             insights.append(f"{factor['factor']}: {factor['description']}")
     return insights[:4]
+
+
+def calculate_expected_points(
+    enriched_row: Dict,
+    fpl_stats: Optional[Dict],
+    next_fixture: Optional[Dict],
+    injury_prob: float,
+) -> Optional[Dict]:
+    """Calculate FPL expected points for next gameweek, discounted by injury risk."""
+    if not fpl_stats:
+        return None
+
+    status = str(fpl_stats.get("status", "a") or "a").lower()
+    chance = fpl_stats.get("chance_of_playing")
+    chance_int = _safe_int(chance, -1) if chance is not None else None
+    if status in {"i", "u"} or chance_int == 0:
+        return None
+
+    ppg = _safe_float(fpl_stats.get("points_per_game", 0))
+    form = _safe_float(fpl_stats.get("form", 0))
+    minutes = _safe_int(fpl_stats.get("minutes", 0))
+
+    if minutes < 270 or ppg == 0:
+        return None
+
+    position = str(enriched_row.get("position", "")).lower()
+    if any(t in position for t in ("forward", "striker", "winger", "attack")):
+        pos_baseline = 4.0
+    elif any(t in position for t in ("def", "back")):
+        pos_baseline = 3.8
+    elif any(t in position for t in ("gk", "goalkeeper")):
+        pos_baseline = 3.2
+    else:
+        pos_baseline = 3.5
+
+    base = ppg * 0.50 + form * 0.35 + pos_baseline * 0.15
+
+    fdr = int(next_fixture.get("difficulty", 3)) if next_fixture else 3
+    fdr_map = {1: 1.15, 2: 1.05, 3: 1.0, 4: 0.90, 5: 0.80}
+    fixture_multiplier = fdr_map.get(fdr, 1.0)
+
+    risk_weight = 0.6 if injury_prob >= 0.4 else (0.4 if injury_prob >= 0.2 else 0.25)
+    injury_discount = injury_prob * risk_weight
+
+    expected = round(base * fixture_multiplier * (1 - injury_discount), 1)
+
+    # Confidence should reflect sample quality + risk stability, not just "played enough".
+    established_sample = minutes >= 1600
+    strong_output_signal = ppg >= 3.8 and form >= 3.5
+    stable_availability = injury_prob < 0.30
+    usable_sample = minutes >= 900 and ppg >= 2.2
+
+    if established_sample and strong_output_signal and stable_availability:
+        confidence = "high"
+    elif usable_sample and injury_prob < 0.50:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    opponent = next_fixture.get("opponent", "opponent") if next_fixture else "their next opponent"
+    venue = "at home" if next_fixture and next_fixture.get("is_home") else "away"
+    breakdown = (
+        f"Base {base:.1f}pts (PPG {ppg:.1f}, form {form:.1f}). "
+        f"Fixture vs {opponent} ({venue}, FDR {fdr}) gives {fixture_multiplier:.2f}x. "
+        f"Injury risk {round(injury_prob * 100)}% applies {round(injury_discount * 100)}% discount."
+    )
+
+    return {
+        "expected_points": max(0.5, expected),
+        "base_points": round(base, 1),
+        "injury_discount_pct": round(injury_discount, 3),
+        "fixture_multiplier": fixture_multiplier,
+        "confidence": confidence,
+        "breakdown": breakdown,
+    }
+
+
+def calculate_risk_comparison(player_name: str, team: str, position: str, prob: float) -> Optional[Dict]:
+    """Compare player's risk to squad and position averages."""
+    if inference_df is None:
+        return None
+
+    team_players = inference_df[inference_df["team"] == team]
+    if team_players.empty:
+        return None
+
+    squad_avg = round(float(team_players["ensemble_prob"].mean()), 3)
+    squad_rank = int((team_players["ensemble_prob"] >= prob).sum())
+    squad_total = len(team_players)
+
+    pos_lower = position.lower()
+    if any(t in pos_lower for t in ("forward", "striker", "winger", "attack")):
+        pos_group = "Forward"
+        pos_filter = inference_df["position"].str.lower().str.contains("forward|striker|winger|attack", regex=True, na=False)
+    elif any(t in pos_lower for t in ("midfield",)):
+        pos_group = "Midfielder"
+        pos_filter = inference_df["position"].str.lower().str.contains("midfield", na=False)
+    elif any(t in pos_lower for t in ("def", "back")):
+        pos_group = "Defender"
+        pos_filter = inference_df["position"].str.lower().str.contains("def|back", regex=True, na=False)
+    else:
+        pos_group = "Goalkeeper"
+        pos_filter = inference_df["position"].str.lower().str.contains("gk|goalkeeper", regex=True, na=False)
+
+    pos_players = inference_df[pos_filter]
+    pos_avg = round(float(pos_players["ensemble_prob"].mean()), 3) if not pos_players.empty else squad_avg
+    pos_rank = int((pos_players["ensemble_prob"] >= prob).sum()) if not pos_players.empty else 1
+    pos_total = len(pos_players) if not pos_players.empty else 1
+
+    return {
+        "squad_avg_risk": squad_avg,
+        "position_avg_risk": pos_avg,
+        "squad_rank": max(1, squad_rank),
+        "squad_total": squad_total,
+        "position_group": pos_group,
+        "position_rank": max(1, pos_rank),
+        "position_total": pos_total,
+    }
 
 
 def player_row_to_risk(row) -> PlayerRisk:
@@ -2348,9 +2906,12 @@ def player_row_to_risk(row) -> PlayerRisk:
             "price": fpl_stats.get("price", 0),
             "form": fpl_stats.get("form", 0),
             "minutes": fpl_stats.get("minutes", 0),
+            "shirt_number": fpl_stats.get("shirt_number"),
             "display_name": fpl_stats.get("name", ""),
             "popular_name": get_popular_player_name(player_name, fpl_stats),
         })
+    if _safe_int(enriched_row.get("shirt_number"), 0) <= 0:
+        enriched_row["shirt_number"] = _lookup_shirt_number(player_name, team_hint=team)
 
     # Compute risk percentile for context (e.g. "higher risk than 92% of players")
     risk_percentile = None
@@ -2435,6 +2996,7 @@ def player_row_to_risk(row) -> PlayerRisk:
         market_consensus=bookmaker_consensus_data,
         scoring_odds_data=scoring_odds_data,
         clean_sheet_data=clean_sheet_data,
+        injury_records=injury_records,
     )
 
     # Yara's Lab Notes: explainability
@@ -2442,10 +3004,27 @@ def player_row_to_risk(row) -> PlayerRisk:
 
     fpl_insight_text = get_fpl_insight(enriched_row, extra_context=narrative_context)
 
+    # FPL Points Projection
+    fpl_points_data = calculate_expected_points(
+        enriched_row=enriched_row,
+        fpl_stats=fpl_stats,
+        next_fixture=next_fixture_data,
+        injury_prob=prob,
+    )
+
+    # Risk Comparison vs squad/position
+    risk_comparison_data = calculate_risk_comparison(
+        player_name=player_name,
+        team=team,
+        position=enriched_row.get("position", "Unknown"),
+        prob=prob,
+    )
+
     return PlayerRisk(
         name=player_name,
         team=team,
         position=enriched_row.get("position", "Unknown"),
+        shirt_number=_safe_int(enriched_row.get("shirt_number"), 0) or None,
         age=int(enriched_row.get("age", 25)),
         risk_level=get_risk_level(prob, enriched_row),
         risk_probability=round(prob, 3),
@@ -2484,6 +3063,17 @@ def player_row_to_risk(row) -> PlayerRisk:
         risk_percentile=risk_percentile,
         player_image_url=get_player_image_url(player_name, team),
         team_badge_url=get_team_badge_url(team),
+        is_currently_injured=fpl_stats.get("status", "a") in ("i", "u") if fpl_stats else False,
+        injury_news=fpl_stats.get("news") or None if fpl_stats else None,
+        chance_of_playing=fpl_stats.get("chance_of_playing") if fpl_stats else None,
+        upcoming_fixtures=[UpcomingFixture(**uf) for uf in get_upcoming_fixtures(team, count=5)] or None,
+        injury_records=[InjuryRecord(**ir) for ir in injury_records],
+        acwr=round(float(enriched_row.get("acwr", 0)), 2) if enriched_row.get("acwr") is not None else None,
+        acute_load=round(float(enriched_row.get("acute_load", 0)), 1) if enriched_row.get("acute_load") is not None else None,
+        chronic_load=round(float(enriched_row.get("chronic_load", 0)), 1) if enriched_row.get("chronic_load") is not None else None,
+        spike_flag=bool(enriched_row.get("spike_flag", 0)),
+        fpl_points_projection=FPLPointsProjection(**fpl_points_data) if fpl_points_data else None,
+        risk_comparison=RiskComparison(**risk_comparison_data) if risk_comparison_data else None,
     )
 
 
@@ -2597,16 +3187,22 @@ async def list_players(team: Optional[str] = None, risk_level: Optional[str] = N
         name = row.get("name", "Unknown")
         fpl = get_fpl_stats_for_player(name)
         minutes = fpl.get("minutes", 0) if fpl else 0
+        fpl_status = fpl.get("status", "a") if fpl else "a"
         players.append(PlayerSummary(
             name=name,
             team=row.get("team", "Unknown"),
             position=row.get("position", "Unknown"),
+            shirt_number=_resolve_shirt_number(name, fpl, row.get("team", "Unknown")),
             risk_level=get_risk_level(prob, row),
             risk_probability=round(prob, 3),
             archetype=row.get("archetype", "Unknown"),
             minutes_played=minutes,
             is_starter=minutes >= 900,
             player_image_url=get_player_image_url(name, row.get("team")),
+            days_since_last_injury=_safe_int(row.get("days_since_last_injury", 365), 365),
+            is_currently_injured=fpl_status in ("i", "u"),
+            injury_news=fpl.get("news") or None if fpl else None,
+            chance_of_playing=fpl.get("chance_of_playing") if fpl else None,
         ))
 
     return players
@@ -2709,16 +3305,22 @@ async def get_team_overview(team_name: str):
         name = row.get("name", "Unknown")
         fpl = get_fpl_stats_for_player(name)
         minutes = fpl.get("minutes", 0) if fpl else 0
+        fpl_status = fpl.get("status", "a") if fpl else "a"
         players.append(PlayerSummary(
             name=name,
             team=row.get("team", "Unknown"),
             position=row.get("position", "Unknown"),
+            shirt_number=_resolve_shirt_number(name, fpl, row.get("team", "Unknown")),
             risk_level=get_risk_level(prob, row),
             risk_probability=round(prob, 3),
             archetype=row.get("archetype", "Unknown"),
             minutes_played=minutes,
             is_starter=minutes >= 900,
             player_image_url=get_player_image_url(name, row.get("team")),
+            days_since_last_injury=_safe_int(row.get("days_since_last_injury", 365), 365),
+            is_currently_injured=fpl_status in ("i", "u"),
+            injury_news=fpl.get("news") or None if fpl else None,
+            chance_of_playing=fpl.get("chance_of_playing") if fpl else None,
         ))
 
     actual_team = team_df.iloc[0]["team"]
@@ -2812,6 +3414,100 @@ async def get_double_gameweeks():
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"FPL API error: {str(e)}")
+
+
+@app.get("/api/players/{player_name}/what-if", response_model=WhatIfProjection)
+async def what_if_projection(player_name: str, rest_next: bool = False, play_all: bool = False):
+    """Project how resting or playing all matches affects a player's injury risk."""
+    if inference_df is None or artifacts is None:
+        raise HTTPException(status_code=503, detail="Models not loaded")
+
+    ensemble = artifacts.get("ensemble")
+    if ensemble is None:
+        raise HTTPException(status_code=503, detail="Ensemble model not loaded")
+
+    matches = inference_df[inference_df["name"].str.lower() == player_name.lower()]
+    if matches.empty:
+        matches = inference_df[inference_df["name"].str.lower().str.contains(player_name.lower())]
+    if matches.empty:
+        raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found")
+
+    try:
+        import pandas as pd
+
+        row = matches.iloc[0]
+        current_prob = float(row.get("ensemble_prob", 0.5))
+        acwr_current = float(row.get("acwr", 1.0))
+
+        # Clone the row and modify workload features
+        modified = row.copy()
+        feature_cols = ensemble.feature_names_
+
+        if rest_next:
+            acute = float(modified.get("acute_load", 1))
+            modified["acute_load"] = max(0.5, acute - 1)
+            modified["rest_days_before_injury"] = float(modified.get("rest_days_before_injury", 3)) + 5
+            modified["avg_rest_last_5"] = float(modified.get("avg_rest_last_5", 4)) + 2
+            modified["matches_last_7"] = max(0, float(modified.get("matches_last_7", 1)) - 1)
+            modified["matches_last_14"] = max(1, float(modified.get("matches_last_14", 2)) - 1)
+            if "strain" in modified.index:
+                modified["strain"] = max(0.1, float(modified.get("strain", 0)) * 0.5)
+            if "monotony" in modified.index:
+                modified["monotony"] = max(0.2, float(modified.get("monotony", 0)) * 0.6)
+            if "spike_flag" in modified.index:
+                modified["spike_flag"] = 0
+            scenario = "Rest next match"
+        elif play_all:
+            acute = float(modified.get("acute_load", 1))
+            modified["acute_load"] = acute + 2
+            modified["rest_days_before_injury"] = max(2, float(modified.get("rest_days_before_injury", 3)) - 2)
+            modified["avg_rest_last_5"] = max(2, float(modified.get("avg_rest_last_5", 4)) - 1.5)
+            modified["matches_last_7"] = float(modified.get("matches_last_7", 1)) + 2
+            modified["matches_last_14"] = float(modified.get("matches_last_14", 2)) + 3
+            if "strain" in modified.index:
+                modified["strain"] = float(modified.get("strain", 0)) * 2.0
+            if "monotony" in modified.index:
+                modified["monotony"] = min(5, float(modified.get("monotony", 0)) * 1.8)
+            scenario = "Play all upcoming matches"
+        else:
+            raise HTTPException(status_code=400, detail="Specify rest_next=true or play_all=true")
+
+        # Recalculate ACWR
+        chronic = float(modified.get("chronic_load", 1))
+        if chronic > 0:
+            modified["acwr"] = float(modified["acute_load"]) / chronic
+        acwr_projected = float(modified.get("acwr", acwr_current))
+
+        # Recalculate derived features if present
+        if "fatigue_index" in modified.index:
+            modified["fatigue_index"] = float(modified["acute_load"]) - chronic
+        if "spike_flag" in modified.index:
+            modified["spike_flag"] = 1 if acwr_projected > 1.5 else 0
+
+        # Patch sklearn compat: older pickled LogisticRegression may have removed attrs
+        meta = getattr(ensemble, "meta_model_", None)
+        if meta and not hasattr(meta, "multi_class"):
+            meta.multi_class = "auto"
+
+        # Predict with modified features
+        modified_df = pd.DataFrame([modified])
+        X = modified_df[feature_cols].copy()
+        projected_prob = float(ensemble.predict_proba(X)[0, 1])
+
+        return WhatIfProjection(
+            player_name=str(row.get("name", player_name)),
+            current_risk=round(current_prob, 3),
+            projected_risk=round(projected_prob, 3),
+            scenario=scenario,
+            delta=round(projected_prob - current_prob, 3),
+            acwr_current=round(acwr_current, 2),
+            acwr_projected=round(acwr_projected, 2),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"What-if projection failed for {player_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Projection failed: {str(e)}")
 
 
 if __name__ == "__main__":

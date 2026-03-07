@@ -10,6 +10,7 @@ If provider/env is not configured or request fails, callers should use fallback 
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -18,6 +19,63 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+# ── Yara voice bible ────────────────────────────────────────────────────────
+
+YARA_SYSTEM_PROMPT = (
+    "You are Yara — a football analytics voice with the editorial confidence "
+    "of OptaJoe and the data depth of a sports quant.\n\n"
+    "VOICE RULES:\n"
+    "- Lead with the single most surprising or decisive stat. Make it the first thing the reader sees.\n"
+    "- Short, declarative sentences. No hedging. No 'it remains to be seen'. No 'could potentially'.\n"
+    "- Never start two consecutive sentences the same way.\n"
+    "- Every sentence must contain a specific number, name, or fact. No filler.\n"
+    "- Use football shorthand: 'clean sheet' not 'shutout', 'return' not 'goal involvement'.\n"
+    "- Reference the opponent by name when available.\n"
+    "- No markdown. No bullet points. No lists. No emojis.\n"
+    "- Never invent stats, injuries, fixtures, or odds. Use ONLY the provided facts.\n"
+    "- 2 to 5 sentences maximum.\n"
+)
+
+
+# ── Prompt building ─────────────────────────────────────────────────────────
+
+def _build_grounded_prompt(
+    task: str,
+    player_name: str,
+    context_chunks: List[Dict[str, Any]],
+    fallback_text: str,
+    require_open_question: bool = True,
+) -> str:
+    lines: List[str] = []
+    for chunk in context_chunks[:10]:
+        text = (chunk.get("text") or "").strip()
+        if text:
+            lines.append(f"- {text}")
+    context_block = "\n".join(lines) if lines else "- No additional context chunks."
+
+    question_rule = (
+        "- End with one open-ended football question (no label/prefix).\n"
+        if require_open_question
+        else "- Do not end with a question.\n"
+    )
+
+    return (
+        f"Task: {task}\n"
+        f"Player: {player_name}\n\n"
+        "Grounded facts (use ONLY these — never invent):\n"
+        f"{context_block}\n\n"
+        "Format:\n"
+        "- 2 to 5 sentences\n"
+        "- Lead with the single most decisive stat or number\n"
+        "- Every sentence must earn its place with a specific fact\n"
+        f"{question_rule}"
+        "\n"
+        f"If uncertain, stay close to this fallback:\n{fallback_text}"
+    )
+
+
+# ── LLM calls ───────────────────────────────────────────────────────────────
 
 def _provider() -> str:
     return (os.getenv("NARRATIVE_LLM_PROVIDER", "none") or "none").strip().lower()
@@ -31,44 +89,10 @@ def _clean_output(text: str) -> str:
     cleaned = (text or "").strip()
     if cleaned.startswith('"') and cleaned.endswith('"') and len(cleaned) > 2:
         cleaned = cleaned[1:-1].strip()
+    # Strip any markdown formatting the LLM might have added
+    cleaned = re.sub(r"\*\*(.+?)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"__(.+?)__", r"\1", cleaned)
     return cleaned
-
-
-def _build_grounded_prompt(
-    task: str,
-    player_name: str,
-    context_chunks: List[Dict[str, Any]],
-    fallback_text: str,
-    require_open_question: bool = True,
-) -> str:
-    lines: List[str] = []
-    for chunk in context_chunks[:8]:
-        text = (chunk.get("text") or "").strip()
-        if text:
-            lines.append(f"- {text}")
-    context_block = "\n".join(lines) if lines else "- No additional context chunks."
-
-    question_rule = (
-        "- include one open-ended football question at the end (no label/prefix)\n"
-        if require_open_question
-        else "- do not end with a question\n"
-    )
-
-    return (
-        f"Task: {task}\n"
-        f"Player: {player_name}\n\n"
-        "Grounded facts (use only these + football common sense):\n"
-        f"{context_block}\n\n"
-        "Writing requirements:\n"
-        "- 2 to 4 sentences\n"
-        "- conversational football language with confidence and heat\n"
-        "- no markdown, no lists\n"
-        "- do not invent injuries, fixtures, or odds\n"
-        "- avoid repetitive sentence openings\n"
-        f"{question_rule}"
-        "- keep it decisive and useful for an FPL/odds audience\n\n"
-        f"If uncertain, stay close to this fallback:\n{fallback_text}"
-    )
 
 
 def _call_ollama(system_prompt: str, user_prompt: str) -> Optional[str]:
@@ -85,7 +109,7 @@ def _call_ollama(system_prompt: str, user_prompt: str) -> Optional[str]:
                 "system": system_prompt,
                 "prompt": user_prompt,
                 "stream": False,
-                "options": {"temperature": temperature},
+                "options": {"temperature": temperature, "num_predict": 400},
             },
             timeout=timeout,
         )
@@ -120,7 +144,7 @@ def _call_openai_compatible(system_prompt: str, user_prompt: str) -> Optional[st
             json={
                 "model": model,
                 "temperature": temperature,
-                "max_tokens": 220,
+                "max_tokens": 400,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -139,6 +163,8 @@ def _call_openai_compatible(system_prompt: str, user_prompt: str) -> Optional[st
         return None
 
 
+# ── Public API ───────────────────────────────────────────────────────────────
+
 def generate_grounded_narrative(
     task: str,
     player_name: str,
@@ -150,10 +176,7 @@ def generate_grounded_narrative(
     if not llm_enabled():
         return fallback_text
 
-    system_prompt = (
-        "You are Yara, a football analytics assistant. Be vivid but factual. "
-        "Never invent stats. Use only provided facts."
-    )
+    system_prompt = YARA_SYSTEM_PROMPT
     user_prompt = _build_grounded_prompt(
         task=task,
         player_name=player_name,

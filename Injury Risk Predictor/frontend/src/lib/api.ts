@@ -1,4 +1,4 @@
-import { PlayerSummary, PlayerRisk, TeamOverview, FPLInsights, LeagueStanding, StandingsSummary } from '@/types/api';
+import { PlayerSummary, PlayerRisk, TeamOverview, FPLInsights, LeagueStanding, StandingsSummary, WhatIfProjection } from '@/types/api';
 
 const rawApiUrl = process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/+$/, '');
 const API_BASE = rawApiUrl
@@ -58,4 +58,9 @@ export async function getStandingsSummary(team?: string): Promise<StandingsSumma
 
 export async function getTeamBadges(): Promise<Record<string, string>> {
   return fetchAPI<Record<string, string>>('/teams/badges');
+}
+
+export async function getWhatIf(playerName: string, scenario: 'rest_next' | 'play_all'): Promise<WhatIfProjection> {
+  const param = scenario === 'rest_next' ? 'rest_next=true' : 'play_all=true';
+  return fetchAPI<WhatIfProjection>(`/players/${encodeURIComponent(playerName)}/what-if?${param}`);
 }
