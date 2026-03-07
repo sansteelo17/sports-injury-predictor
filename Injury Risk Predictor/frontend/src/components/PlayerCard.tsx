@@ -4,9 +4,9 @@ import { useState } from "react";
 import { PlayerRisk } from "@/types/api";
 import { RiskBadge } from "./RiskBadge";
 import { RiskMeter } from "./RiskMeter";
-import { ShareCard } from "./ShareCard";
 import {
   Activity,
+  Anchor,
   Ambulance,
   Calendar,
   Clock,
@@ -19,7 +19,9 @@ import {
   Target,
   Star,
   BarChart3,
-  Share2,
+  User,
+  Users,
+  Zap,
 } from "lucide-react";
 
 interface PlayerCardProps {
@@ -112,13 +114,12 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
   const storyLines = player.story ? formatStoryLines(player.story) : [];
 
   const tabs = [
-    { id: "overview" as const, label: "Risk", icon: <Shield size={14} /> },
+    { id: "overview" as const, label: "Risk", icon: <BarChart3 size={14} /> },
     { id: "fpl" as const, label: "FPL", icon: <Star size={14} /> },
     { id: "market" as const, label: "Odds", icon: <Coins size={14} /> },
   ];
   type TabId = (typeof tabs)[number]["id"];
   const [activeTab, setActiveTab] = useState<TabId>("overview");
-  const [showShareCard, setShowShareCard] = useState(false);
 
   return (
     <div
@@ -187,17 +188,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
-                <button
-                  onClick={() => setShowShareCard(true)}
-                  className={`p-1.5 rounded-lg transition-colors ${
-                    darkMode
-                      ? "hover:bg-white/10 text-gray-400 hover:text-white"
-                      : "hover:bg-gray-100 text-gray-400 hover:text-gray-700"
-                  }`}
-                  title="Share card"
-                >
-                  <Share2 size={16} />
-                </button>
+                {/* Share button commented out for now */}
                 <RiskBadge
                   level={player.risk_level}
                   probability={player.risk_probability}
@@ -231,26 +222,30 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
       >
         <StatCard
           icon={<Activity size={18} />}
-          label="Previous Injuries"
+          label="Injuries"
           value={player.factors.previous_injuries.toString()}
+          description="On record"
           darkMode={darkMode}
         />
         <StatCard
           icon={<Clock size={18} />}
           label="Days Lost"
           value={player.factors.total_days_lost.toString()}
+          description="Career total"
           darkMode={darkMode}
         />
         <StatCard
           icon={<Calendar size={18} />}
           label="Days Since Last"
           value={player.factors.days_since_last_injury.toString()}
+          description="Latest setback"
           darkMode={darkMode}
         />
         <StatCard
           icon={<TrendingUp size={18} />}
-          label="Avg Days/Injury"
+          label="Avg Layoff"
           value={player.factors.avg_days_per_injury.toFixed(1)}
+          description="Days per injury"
           darkMode={darkMode}
         />
       </div>
@@ -294,7 +289,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
             className={`px-4 sm:px-6 py-4 ${darkMode ? "border-b border-[#1f1f1f]" : "border-b border-gray-100"}`}
           >
             <div className="flex items-start gap-3">
-              <Shield
+              <User
                 className={
                   darkMode ? "text-gray-500 mt-0.5" : "text-gray-400 mt-0.5"
                 }
@@ -335,26 +330,57 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
             const posLabel = rc.position_rank <= 5
               ? `Top ${rc.position_rank}`
               : `Top ${posPctile}%`;
-            const riskScore = Math.round(player.risk_probability * 100);
+            const riskScore5 = (player.risk_probability * 5).toFixed(1);
+            const positionLabel = (player.position || rc.position_group || "").toLowerCase();
+            const isForwardProfile = [
+              "forward",
+              "striker",
+              "winger",
+              "attacker",
+              "centre-forward",
+            ].some((k) => positionLabel.includes(k));
+            const isDefensiveProfile = [
+              "def",
+              "back",
+              "goalkeeper",
+              "keeper",
+              "gk",
+            ].some((k) => positionLabel.includes(k));
+            const isMidfieldProfile = [
+              "midfield",
+              "midfielder",
+              "playmaker",
+            ].some((k) => positionLabel.includes(k));
 
             return (
-              <div className={`grid grid-cols-3 gap-3 p-4 sm:p-6 ${darkMode ? "bg-[#0a0a0a]" : "bg-gray-50"}`}>
+              <div className={`grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 sm:p-6 ${darkMode ? "bg-[#0a0a0a]" : "bg-gray-50"}`}>
                 <StatCard
-                  icon={<Shield size={18} />}
-                  label={`in ${player.team}`}
+                  icon={<Users size={18} />}
+                  label="Team Rank"
                   value={squadLabel}
+                  description={`${rc.squad_rank}/${rc.squad_total} in ${player.team}`}
                   darkMode={darkMode}
                 />
                 <StatCard
-                  icon={<Target size={18} />}
-                  label={`PL ${rc.position_group}s`}
+                  icon={
+                    isDefensiveProfile
+                      ? <Shield size={18} />
+                      : isMidfieldProfile
+                        ? <Anchor size={18} />
+                      : isForwardProfile
+                        ? <BootIcon size={18} />
+                        : <Target size={18} />
+                  }
+                  label="Position Rank"
                   value={posLabel}
+                  description={`${rc.position_rank}/${rc.position_total} PL ${rc.position_group}s`}
                   darkMode={darkMode}
                 />
                 <StatCard
-                  icon={<Activity size={18} />}
+                  icon={<Zap size={18} />}
                   label="Risk Score"
-                  value={riskScore.toString()}
+                  value={`${riskScore5}/5`}
+                  description="2-week injury model"
                   darkMode={darkMode}
                 />
               </div>
@@ -721,7 +747,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                       Injury Adjusted
                     </span>
                   </div>
-                  <div className="grid grid-cols-3 gap-2 mb-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
                     {[
                       {
                         name: "American",
@@ -812,7 +838,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                       Injury Adjusted
                     </span>
                   </div>
-                  <div className="grid grid-cols-3 gap-3 mb-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
                     <OddsBox
                       label="CS Prob"
                       value={`${Math.round(player.clean_sheet_odds.clean_sheet_probability * 100)}%`}
@@ -926,7 +952,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                     Implied odds for this player getting injured in the next 2
                     weeks:
                   </p>
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <OddsBox
                       label="American"
                       value={player.implied_odds.american}
@@ -961,15 +987,30 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
         </>
       )}
 
-      {/* Share Card Modal */}
-      {showShareCard && (
-        <ShareCard
-          player={player}
-          darkMode={darkMode}
-          onClose={() => setShowShareCard(false)}
-        />
-      )}
+      {/* Share card modal commented out for now */}
     </div>
+  );
+}
+
+function BootIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 15.5c3.2-.2 5.4-2 6.6-5.2L11.4 8h2.8l.7 3.5c.3 1.7 1.7 3 3.4 3.2l1.7.3V18H4.2c-1.2 0-2.2-1-2.2-2.2v-.3l2-.2Z" />
+      <path d="M7 18v2" />
+      <path d="M10.2 18v2" />
+      <path d="M13.4 18v2" />
+      <path d="M16.6 18v2" />
+    </svg>
   );
 }
 
@@ -977,165 +1018,366 @@ function StatCard({
   icon,
   label,
   value,
+  description,
   darkMode = true,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
+  description?: string;
   darkMode?: boolean;
 }) {
   return (
     <div
-      className={`rounded-lg p-2 sm:p-3 text-center ${
-        darkMode ? "bg-[#141414] border border-[#1f1f1f]" : "bg-white shadow-sm"
+      className={`relative overflow-hidden rounded-xl p-3 sm:p-3.5 text-left ${
+        darkMode
+          ? "bg-[#101010] border border-[#222] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]"
+          : "bg-white border border-gray-200 shadow-sm"
       }`}
     >
       <div
-        className={`flex justify-center mb-1 ${darkMode ? "text-gray-500" : "text-gray-400"}`}
-      >
-        {icon}
+        className={`absolute inset-x-0 top-0 h-px ${
+          darkMode
+            ? "bg-gradient-to-r from-transparent via-[#86efac]/35 to-transparent"
+            : "bg-gradient-to-r from-transparent via-emerald-300 to-transparent"
+        }`}
+      />
+      <div className="flex items-center gap-2">
+        <div
+          className={`h-7 w-7 rounded-md flex items-center justify-center ${
+            darkMode ? "bg-[#171717] text-gray-400" : "bg-gray-100 text-gray-500"
+          }`}
+        >
+          {icon}
+        </div>
+        <div
+          className={`text-[10px] uppercase tracking-[0.1em] font-semibold ${
+            darkMode ? "text-gray-500" : "text-gray-500"
+          }`}
+        >
+          {label}
+        </div>
       </div>
       <div
-        className={`text-lg sm:text-xl font-bold ${darkMode ? "text-white" : "text-gray-900"}`}
+        className={`mt-2 text-[23px] sm:text-[26px] leading-none font-black ${
+          darkMode ? "text-white" : "text-gray-900"
+        }`}
       >
         {value}
       </div>
-      <div
-        className={`text-xs ${darkMode ? "text-gray-500" : "text-gray-500"}`}
-      >
-        {label}
-      </div>
+      {description && (
+        <div
+          className={`text-[11px] mt-1.5 leading-snug ${
+            darkMode ? "text-gray-500" : "text-gray-500"
+          }`}
+        >
+          {description}
+        </div>
+      )}
     </div>
   );
 }
 
 /**
- * Body silhouette with glowing injury hotspots.
- * Maps real injury records to body regions with pulsing radial glows.
+ * Anatomical silhouette + injury hotspots.
+ * Anchors each injury to side-aware body points so marks align with true body areas.
  */
 function InjuryHeatmap({ player, darkMode }: { player: PlayerRisk; darkMode: boolean }) {
   const records = player.injury_records || [];
   const svgIdBase = `injury-map-${player.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
 
-  // Aggregate by body zone — coordinates mapped to viewBox 0 0 724 1448
-  type Zone = { cx: number; cy: number; r: number };
-  const bodyZones: Record<string, Zone> = {
-    head: { cx: 362, cy: 185, r: 55 },
-    neck: { cx: 362, cy: 235, r: 35 },
-    shoulder: { cx: 362, cy: 305, r: 90 },
-    arm: { cx: 195, cy: 430, r: 50 },
-    elbow: { cx: 170, cy: 510, r: 40 },
-    wrist: { cx: 135, cy: 660, r: 30 },
-    hand: { cx: 125, cy: 730, r: 30 },
-    back: { cx: 362, cy: 400, r: 75 },
-    torso: { cx: 362, cy: 400, r: 75 },
-    hip: { cx: 362, cy: 530, r: 65 },
-    groin: { cx: 362, cy: 580, r: 55 },
-    thigh: { cx: 300, cy: 700, r: 65 },
-    quadriceps: { cx: 425, cy: 700, r: 65 },
-    hamstring: { cx: 300, cy: 760, r: 65 },
-    knee: { cx: 310, cy: 870, r: 50 },
-    calf: { cx: 310, cy: 990, r: 50 },
-    shin: { cx: 415, cy: 990, r: 50 },
-    ankle: { cx: 305, cy: 1130, r: 40 },
-    achilles: { cx: 420, cy: 1130, r: 40 },
-    foot: { cx: 362, cy: 1280, r: 45 },
-    muscle: { cx: 440, cy: 500, r: 70 },
-    soft_tissue: { cx: 285, cy: 500, r: 70 },
-    illness: { cx: 362, cy: 350, r: 65 },
+  // Anatomical body regions as polygon point data (react-body-highlighter, MIT license)
+  // viewBox="0 0 100 200"
+  const bodyRegions: Record<string, string[]> = {
+    head: [
+      "42.45 2.86 40 11.84 42.04 19.59 46.12 23.27 49.80 25.31 54.69 22.45 57.55 19.18 59.18 10.20 57.14 2.45 49.80 0",
+    ],
+    neck: [
+      "55.51 23.67 50.61 33.47 50.61 39.18 61.63 40 70.61 44.90 69.39 36.73 63.27 35.10 58.37 30.61",
+      "28.98 44.90 30.20 37.14 36.33 35.10 41.22 30.20 44.49 24.49 48.98 33.88 48.57 39.18 37.96 39.59",
+    ],
+    chest: [
+      "51.84 41.63 51.02 55.10 57.96 57.96 67.76 55.51 70.61 47.35 62.04 41.63",
+      "29.80 46.53 31.43 55.51 40.82 57.96 48.16 55.10 47.76 42.04 37.55 42.04",
+    ],
+    frontDeltoids: [
+      "78.37 53.06 79.59 47.76 79.18 41.22 75.92 37.96 71.02 36.33 72.24 42.86 71.43 47.35",
+      "28.16 47.35 21.22 53.06 20 47.76 20.41 40.82 24.49 37.14 28.57 37.14 26.94 43.27",
+    ],
+    biceps: [
+      "16.73 68.16 17.96 71.43 22.86 66.12 28.98 53.88 27.76 49.39 20.41 55.92",
+      "71.43 49.39 70.20 54.69 76.33 66.12 81.63 71.84 82.86 68.98 78.78 55.51",
+    ],
+    triceps: [
+      "69.39 55.51 69.39 61.63 75.92 72.65 77.55 70.20 75.51 67.35",
+      "22.45 69.39 29.80 55.51 29.80 60.82 22.86 73.06",
+    ],
+    abs: [
+      "56.33 59.18 57.96 64.08 58.37 77.96 58.37 92.65 56.33 98.37 55.10 104.08 51.43 107.76 51.02 84.49 50.61 67.35 51.02 57.14",
+      "43.67 58.78 48.57 57.14 48.98 67.35 48.57 84.49 48.16 107.35 44.49 103.67 40.82 91.43 40.82 78.37 41.22 64.49",
+    ],
+    obliques: [
+      "68.57 63.27 67.35 57.14 58.78 59.59 60 64.08 60.41 83.27 65.71 78.78 66.53 69.80",
+      "33.88 78.37 33.06 71.84 31.02 63.27 32.24 57.14 40.82 59.18 39.18 63.27 39.18 83.67",
+    ],
+    abductors: [
+      "52.65 110.20 54.29 124.90 60 110.20 62.04 100 64.90 94.29 60 92.65 56.73 104.49",
+      "47.76 110.61 44.90 125.31 42.04 115.92 40.41 113.06 39.59 107.35 37.96 102.45 34.69 93.88 39.59 92.24 41.63 99.18 43.67 105.31",
+    ],
+    quadriceps: [
+      "34.69 98.78 37.14 108.16 37.14 127.76 34.29 137.14 31.02 132.65 29.39 120 28.16 111.43 29.39 100.82 32.24 94.69",
+      "63.27 105.71 64.49 100 66.94 94.69 70.20 101.22 71.02 111.84 68.16 133.06 65.31 137.55 62.45 128.57 62.04 111.43",
+      "38.78 129.39 38.37 112.24 41.22 118.37 44.49 129.39 42.86 135.10 40 146.12 36.33 146.53 35.51 140",
+      "59.59 145.71 55.51 128.98 60.82 113.88 61.22 130.20 64.08 139.59 62.86 146.53",
+      "32.65 138.37 26.53 145.71 25.71 136.73 25.71 127.35 26.94 114.29 29.39 133.47",
+      "71.84 113.06 73.88 124.08 73.88 140.41 72.65 145.71 66.53 138.37 70.20 133.47",
+    ],
+    knees: [
+      "33.88 140 34.69 143.27 35.51 147.35 36.33 151.02 35.10 156.73 29.80 156.73 27.35 152.65 27.35 147.35 30.20 144.08",
+      "65.71 140 72.24 147.76 72.24 152.24 69.80 157.14 64.90 156.73 62.86 151.02",
+    ],
+    calves: [
+      "71.43 160.41 73.47 153.47 76.73 161.22 79.59 167.76 78.37 187.76 79.59 195.51 74.69 195.51",
+      "24.90 194.69 27.76 164.90 28.16 160.41 26.12 154.29 24.90 157.55 22.45 161.63 20.82 167.76 22.04 188.16 20.82 195.51",
+      "72.65 195.10 69.80 159.18 65.31 158.37 64.08 162.45 64.08 165.31 65.71 177.14",
+      "35.51 158.37 35.92 162.45 35.92 166.94 35.10 172.24 35.10 176.73 32.24 182.04 30.61 187.35 26.94 194.69 27.35 187.76 28.16 180.41 28.57 175.51 28.98 169.80 29.80 164.08 30.20 158.78",
+    ],
+    forearm: [
+      "6.12 88.57 10.20 75.10 14.69 70.20 16.33 74.29 19.18 73.47 4.49 97.55 0 100",
+      "84.49 69.80 83.27 73.47 80 73.06 95.10 98.37 100 100.41 93.47 89.39 89.80 76.33",
+      "77.55 72.24 77.55 77.55 80.41 84.08 85.31 89.80 92.24 101.22 94.69 99.59",
+      "6.94 101.22 13.47 90.61 18.78 84.08 21.63 77.14 21.22 71.84 4.90 98.78",
+    ],
   };
 
-  const resolveZone = (area: string): Zone => {
-    const a = area.toLowerCase().replace(/[^a-z_]/g, "");
-    for (const [key, zone] of Object.entries(bodyZones)) {
-      if (a.includes(key) || key.includes(a)) return zone;
+  type Side = "left" | "right" | "center" | "unknown";
+  const inferSide = (areaRaw: string): Side => {
+    const area = (areaRaw || "").toLowerCase();
+    if (/(^|\b)(left|lt)\b/.test(area)) return "left";
+    if (/(^|\b)(right|rt)\b/.test(area)) return "right";
+    return "unknown";
+  };
+
+  const partMatchers: Array<{ keys: string[]; part: string }> = [
+    { keys: ["head", "concussion", "skull"], part: "head" },
+    { keys: ["neck"], part: "neck" },
+    { keys: ["shoulder", "clavicle", "deltoid"], part: "shoulder" },
+    { keys: ["chest", "rib"], part: "chest" },
+    { keys: ["back", "spine"], part: "back" },
+    { keys: ["hip", "pelvis"], part: "hip" },
+    { keys: ["groin", "adductor"], part: "groin" },
+    { keys: ["hamstring"], part: "hamstring" },
+    { keys: ["thigh", "quadriceps", "quad"], part: "thigh" },
+    { keys: ["knee", "patella", "acl", "mcl", "ligament"], part: "knee" },
+    { keys: ["calf"], part: "calf" },
+    { keys: ["shin"], part: "shin" },
+    { keys: ["ankle", "achilles"], part: "ankle" },
+    { keys: ["foot", "toe"], part: "foot" },
+    { keys: ["elbow"], part: "elbow" },
+    { keys: ["wrist", "forearm"], part: "wrist" },
+    { keys: ["hand", "finger"], part: "hand" },
+    { keys: ["arm", "biceps", "triceps"], part: "arm" },
+    { keys: ["illness", "virus", "flu"], part: "illness" },
+    { keys: ["soft", "tissue"], part: "soft_tissue" },
+    { keys: ["muscle", "strain", "knock"], part: "muscle" },
+  ];
+
+  const resolvePart = (areaRaw: string): string => {
+    const area = (areaRaw || "").toLowerCase();
+    if (!area || area === "unknown" || area === "n/a" || area === "-") {
+      return "unknown";
     }
-    return bodyZones.muscle; // fallback
+    for (const matcher of partMatchers) {
+      if (matcher.keys.some((k) => area.includes(k))) return matcher.part;
+    }
+    return "torso";
   };
 
-  const severityTier = (days: number): "mild" | "moderate" | "severe" => {
-    if (days >= 60) return "severe";
-    if (days >= 21) return "moderate";
-    return "mild";
+  type AnchorDef = {
+    cy: number;
+    r: number;
+    centerX?: number;
+    leftX?: number;
+    rightX?: number;
+  };
+  const anchorDefs: Record<string, AnchorDef> = {
+    head: { centerX: 50, cy: 12, r: 4.2 },
+    neck: { centerX: 50, cy: 34, r: 3.1 },
+    shoulder: { leftX: 64, rightX: 36, cy: 44, r: 4.0 },
+    chest: { leftX: 60, rightX: 40, cy: 52, r: 4.6 },
+    back: { leftX: 60, rightX: 40, cy: 60, r: 4.6 },
+    torso: { centerX: 50, cy: 80, r: 5.0 },
+    hip: { leftX: 56, rightX: 44, cy: 107, r: 4.4 },
+    groin: { centerX: 50, cy: 113, r: 4.0 },
+    arm: { leftX: 74, rightX: 26, cy: 65, r: 4.0 },
+    elbow: { leftX: 79, rightX: 21, cy: 76, r: 3.3 },
+    wrist: { leftX: 85, rightX: 15, cy: 90, r: 3.0 },
+    hand: { leftX: 91, rightX: 9, cy: 100, r: 2.8 },
+    thigh: { leftX: 59, rightX: 41, cy: 126, r: 4.3 },
+    hamstring: { leftX: 58, rightX: 42, cy: 133, r: 4.3 },
+    knee: { leftX: 67, rightX: 33, cy: 150, r: 3.8 },
+    calf: { leftX: 69, rightX: 31, cy: 171, r: 3.8 },
+    shin: { leftX: 67, rightX: 33, cy: 177, r: 3.6 },
+    ankle: { leftX: 69, rightX: 31, cy: 188, r: 3.1 },
+    foot: { leftX: 72, rightX: 28, cy: 194, r: 3.1 },
+    muscle: { centerX: 50, cy: 84, r: 4.8 },
+    soft_tissue: { centerX: 50, cy: 86, r: 4.8 },
+    illness: { centerX: 50, cy: 52, r: 5.0 },
+  };
+
+  const hashString = (value: string): number => {
+    let h = 0;
+    for (let i = 0; i < value.length; i++) {
+      h = (h * 31 + value.charCodeAt(i)) >>> 0;
+    }
+    return h;
+  };
+
+  const resolveAnchorSide = (
+    part: string,
+    side: Side,
+    seed: string,
+  ): Exclude<Side, "unknown"> => {
+    const def = anchorDefs[part] || anchorDefs.torso;
+    const hasPair = def.leftX != null && def.rightX != null;
+    if (side === "left" || side === "right" || side === "center") {
+      return side;
+    }
+    if (hasPair) {
+      return hashString(seed) % 2 === 0 ? "left" : "right";
+    }
+    return "center";
+  };
+
+  const getAnchor = (part: string, side: Exclude<Side, "unknown">) => {
+    const def = anchorDefs[part] || anchorDefs.torso;
+    let cx = def.centerX ?? 50;
+    if (side !== "center" && def.leftX != null && def.rightX != null) {
+      cx = side === "left" ? def.leftX : def.rightX;
+    } else if (def.leftX != null && def.rightX != null && def.centerX == null) {
+      cx = (def.leftX + def.rightX) / 2;
+    }
+    const cy = def.cy;
+    const r = def.r;
+    return { cx, cy, r, key: `${part}-${side}-${cx}-${cy}` };
   };
 
   const severityPalette = {
     mild: {
-      fill: "rgba(52,211,153,0.68)",
-      glow: "rgba(52,211,153,0.3)",
-      ring: darkMode ? "rgba(167,243,208,0.85)" : "rgba(5,150,105,0.7)",
+      fill: "rgba(52,211,153,0.82)",
+      glow: "rgba(52,211,153,0.36)",
+      ring: darkMode ? "rgba(167,243,208,0.92)" : "rgba(5,150,105,0.82)",
     },
     moderate: {
-      fill: "rgba(245,158,11,0.72)",
-      glow: "rgba(245,158,11,0.32)",
-      ring: darkMode ? "rgba(253,230,138,0.9)" : "rgba(180,83,9,0.72)",
+      fill: "rgba(245,158,11,0.84)",
+      glow: "rgba(245,158,11,0.36)",
+      ring: darkMode ? "rgba(253,230,138,0.95)" : "rgba(180,83,9,0.84)",
     },
     severe: {
-      fill: "rgba(239,68,68,0.75)",
-      glow: "rgba(239,68,68,0.38)",
-      ring: darkMode ? "rgba(252,165,165,0.9)" : "rgba(185,28,28,0.75)",
+      fill: "rgba(239,68,68,0.86)",
+      glow: "rgba(239,68,68,0.44)",
+      ring: darkMode ? "rgba(252,165,165,0.95)" : "rgba(185,28,28,0.85)",
     },
   } as const;
 
-  // Aggregate injuries per zone
-  const zoneData: Record<
+  // Aggregate injury data per hotspot anchor
+  const anchorData: Record<
     string,
     {
       count: number;
       totalDays: number;
       maxSeverityDays: number;
-      zone: Zone;
+      severeHits: number;
+      moderateHits: number;
       types: string[];
-      mildCount: number;
-      moderateCount: number;
-      severeCount: number;
+      anchor: { cx: number; cy: number; r: number; key: string };
+      part: string;
+      side: Exclude<Side, "unknown">;
     }
   > = {};
-  for (const r of records) {
-    const z = resolveZone(r.body_area);
-    const key = `${z.cx}-${z.cy}`;
-    if (!zoneData[key]) {
-      zoneData[key] = {
+
+  for (const injury of records) {
+    const part = resolvePart(injury.body_area);
+    if (part === "unknown") continue;
+    const inferredSide = inferSide(injury.body_area);
+    const anchorSide = resolveAnchorSide(
+      part,
+      inferredSide,
+      `${injury.body_area || ""}|${injury.injury_type || ""}|${injury.date || ""}|${injury.injury_raw || ""}`,
+    );
+    const anchor = getAnchor(part, anchorSide);
+    if (!anchorData[anchor.key]) {
+      anchorData[anchor.key] = {
         count: 0,
         totalDays: 0,
         maxSeverityDays: 0,
-        zone: z,
+        severeHits: 0,
+        moderateHits: 0,
         types: [],
-        mildCount: 0,
-        moderateCount: 0,
-        severeCount: 0,
+        anchor,
+        part,
+        side: anchorSide,
       };
     }
-    const days = Number.isFinite(r.severity_days) ? Math.max(0, r.severity_days) : 0;
-    const tier = severityTier(days);
-    zoneData[key].count++;
-    zoneData[key].totalDays += days;
-    zoneData[key].maxSeverityDays = Math.max(zoneData[key].maxSeverityDays, days);
-    if (tier === "severe") zoneData[key].severeCount += 1;
-    else if (tier === "moderate") zoneData[key].moderateCount += 1;
-    else zoneData[key].mildCount += 1;
-    const label = r.body_area.charAt(0).toUpperCase() + r.body_area.slice(1);
-    if (!zoneData[key].types.includes(label)) zoneData[key].types.push(label);
+    const days = Number.isFinite(injury.severity_days)
+      ? Math.max(0, injury.severity_days)
+      : 0;
+    anchorData[anchor.key].count += 1;
+    anchorData[anchor.key].totalDays += days;
+    anchorData[anchor.key].maxSeverityDays = Math.max(
+      anchorData[anchor.key].maxSeverityDays,
+      days,
+    );
+    if (days >= 60) anchorData[anchor.key].severeHits += 1;
+    if (days >= 21) anchorData[anchor.key].moderateHits += 1;
+    const label = injury.body_area
+      ? injury.body_area.charAt(0).toUpperCase() + injury.body_area.slice(1)
+      : "Unknown";
+    if (!anchorData[anchor.key].types.includes(label)) {
+      anchorData[anchor.key].types.push(label);
+    }
   }
 
-  const hotspots = Object.values(zoneData)
-    .map((zone) => ({
-      ...zone,
-      tier: severityTier(zone.maxSeverityDays),
-      activity: Math.min(1, (zone.totalDays + zone.count * 8) / 170),
+  const classifyAnchor = (z: {
+    count: number;
+    totalDays: number;
+    maxSeverityDays: number;
+    severeHits: number;
+    moderateHits: number;
+  }): "mild" | "moderate" | "severe" => {
+    const avg = z.totalDays / Math.max(1, z.count);
+    if (z.severeHits >= 2 || avg >= 75 || z.maxSeverityDays >= 120) return "severe";
+    if (z.severeHits >= 1 || z.moderateHits >= 1 || avg >= 24) return "moderate";
+    return "mild";
+  };
+
+  const hotspots = Object.values(anchorData)
+    .map((z) => ({
+      ...z,
+      tier: classifyAnchor(z),
+      activity: Math.min(1, (z.totalDays + z.count * 12) / 240),
     }))
     .sort((a, b) => {
-      if (b.maxSeverityDays !== a.maxSeverityDays) return b.maxSeverityDays - a.maxSeverityDays;
+      if (b.maxSeverityDays !== a.maxSeverityDays) {
+        return b.maxSeverityDays - a.maxSeverityDays;
+      }
       return b.totalDays - a.totalDays;
     });
 
   if (hotspots.length === 0) return null;
 
   return (
-    <div className={`px-4 sm:px-6 py-4 ${darkMode ? "border-t border-[#1f1f1f]" : "border-t border-gray-100"}`}>
+    <div
+      className={`px-4 sm:px-6 py-4 ${darkMode ? "border-t border-[#1f1f1f]" : "border-t border-gray-100"}`}
+    >
       <div className="flex items-center gap-2 mb-3">
-        <Activity className={darkMode ? "text-purple-400" : "text-purple-600"} size={18} />
-        <span className={`font-semibold text-sm ${darkMode ? "text-white" : "text-gray-900"}`}>
+        <Activity
+          className={darkMode ? "text-purple-400" : "text-purple-600"}
+          size={18}
+        />
+        <span
+          className={`font-semibold text-sm ${darkMode ? "text-white" : "text-gray-900"}`}
+        >
           Injury Map
         </span>
         <span className={`text-[10px] ${darkMode ? "text-gray-600" : "text-gray-400"}`}>
@@ -1143,220 +1385,104 @@ function InjuryHeatmap({ player, darkMode }: { player: PlayerRisk; darkMode: boo
         </span>
       </div>
 
-      <div className="flex gap-3 items-start">
-        {/* Body silhouette with upgraded skeleton + hotspot pulses */}
-        <div className="flex-shrink-0">
-          <svg viewBox="0 0 724 1448" width="160" height="312">
+      <div className="flex flex-col sm:flex-row gap-3 sm:items-start">
+        <div className="w-full sm:w-[178px] flex-shrink-0 flex flex-col items-center sm:items-start">
+          <svg viewBox="0 0 100 200" className="w-[162px] sm:w-[170px] h-auto max-w-full">
             <defs>
-              <radialGradient id={`${svgIdBase}-backdrop`} cx="50%" cy="38%" r="58%">
-                <stop offset="0%" stopColor={darkMode ? "rgba(134,239,172,0.10)" : "rgba(16,185,129,0.10)"} />
-                <stop offset="65%" stopColor={darkMode ? "rgba(134,239,172,0.03)" : "rgba(16,185,129,0.04)"} />
+              <radialGradient id={`${svgIdBase}-halo`} cx="50%" cy="34%" r="62%">
+                <stop
+                  offset="0%"
+                  stopColor={
+                    darkMode ? "rgba(134,239,172,0.12)" : "rgba(16,185,129,0.12)"
+                  }
+                />
+                <stop
+                  offset="72%"
+                  stopColor={
+                    darkMode ? "rgba(134,239,172,0.02)" : "rgba(16,185,129,0.03)"
+                  }
+                />
                 <stop offset="100%" stopColor="transparent" />
               </radialGradient>
-              <linearGradient id={`${svgIdBase}-bone-grad`} x1="0%" y1="0%" x2="0%" y2="100%">
-                <stop offset="0%" stopColor={darkMode ? "rgba(217,249,231,0.85)" : "rgba(22,101,52,0.85)"} />
-                <stop offset="100%" stopColor={darkMode ? "rgba(134,239,172,0.42)" : "rgba(34,197,94,0.45)"} />
-              </linearGradient>
-              <linearGradient id={`${svgIdBase}-scan-line`} x1="0%" y1="0%" x2="0%" y2="100%">
-                <stop offset="0%" stopColor="transparent" />
-                <stop offset="40%" stopColor={darkMode ? "rgba(134,239,172,0.04)" : "rgba(16,185,129,0.06)"} />
-                <stop offset="52%" stopColor={darkMode ? "rgba(167,243,208,0.16)" : "rgba(5,150,105,0.18)"} />
-                <stop offset="64%" stopColor={darkMode ? "rgba(134,239,172,0.04)" : "rgba(16,185,129,0.06)"} />
-                <stop offset="100%" stopColor="transparent" />
-              </linearGradient>
-              <filter id={`${svgIdBase}-bone-glow`} x="-40%" y="-40%" width="180%" height="180%">
-                <feGaussianBlur stdDeviation="2.8" result="blur" />
-                <feMerge>
-                  <feMergeNode in="blur" />
-                  <feMergeNode in="SourceGraphic" />
-                </feMerge>
-              </filter>
-              <pattern id={`${svgIdBase}-injury-grid`} width="44" height="44" patternUnits="userSpaceOnUse">
-                <path
-                  d="M 44 0 L 0 0 0 44"
-                  fill="none"
-                  stroke={darkMode ? "rgba(134,239,172,0.06)" : "rgba(16,185,129,0.08)"}
-                  strokeWidth="1"
-                />
-              </pattern>
               {hotspots.map((h, i) => {
                 const palette = severityPalette[h.tier];
                 return (
-                  <radialGradient key={i} id={`${svgIdBase}-glow-${i}`}>
+                  <radialGradient key={i} id={`${svgIdBase}-hot-${i}`}>
                     <stop offset="0%" stopColor={palette.fill} />
-                    <stop offset="45%" stopColor={palette.glow} />
+                    <stop offset="52%" stopColor={palette.glow} />
                     <stop offset="100%" stopColor="transparent" />
                   </radialGradient>
                 );
               })}
             </defs>
 
-            <rect x="0" y="0" width="724" height="1448" fill={`url(#${svgIdBase}-backdrop)`} />
-            <rect x="0" y="0" width="724" height="1448" fill={`url(#${svgIdBase}-injury-grid)`} opacity={0.72} />
-            <rect x="0" y="-360" width="724" height="360" fill={`url(#${svgIdBase}-scan-line)`} opacity={0.85}>
-              <animate attributeName="y" values="-360;1448" dur="7.5s" repeatCount="indefinite" />
-            </rect>
+            <rect x="0" y="0" width="100" height="200" fill={`url(#${svgIdBase}-halo)`} />
 
-            <g stroke={darkMode ? "rgba(134,239,172,0.08)" : "rgba(15,23,42,0.05)"} strokeWidth="1">
-              <line x1="90" y1="210" x2="634" y2="210" />
-              <line x1="90" y1="470" x2="634" y2="470" />
-              <line x1="90" y1="760" x2="634" y2="760" />
-              <line x1="90" y1="1040" x2="634" y2="1040" />
-              <line x1="180" y1="90" x2="180" y2="1320" />
-              <line x1="544" y1="90" x2="544" y2="1320" />
-            </g>
+            {/* Anatomical silhouette */}
+            {Object.entries(bodyRegions).map(([region, polygons]) => {
+              const baseFill = darkMode ? "rgba(220,252,231,0.12)" : "rgba(16,185,129,0.12)";
+              const baseStroke = darkMode ? "rgba(167,243,208,0.22)" : "rgba(5,150,105,0.18)";
+              return polygons.map((points, i) => (
+                <polygon
+                  key={`${region}-${i}`}
+                  points={points}
+                  fill={baseFill}
+                  stroke={baseStroke}
+                  strokeWidth="0.3"
+                  strokeLinejoin="round"
+                  opacity={0.7}
+                />
+              ));
+            })}
 
-            <g
-              fill="none"
-              stroke={darkMode ? "rgba(251,191,36,0.22)" : "rgba(146,64,14,0.2)"}
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              opacity={0.8}
-            >
-              <animate attributeName="opacity" values="0.62;0.86;0.62" dur="8s" repeatCount="indefinite" />
-              <circle cx="580" cy="112" r="36" />
-              <circle cx="580" cy="112" r="16" />
-              <line x1="580" y1="56" x2="580" y2="38" />
-              <line x1="580" y1="168" x2="580" y2="186" />
-              <line x1="524" y1="112" x2="506" y2="112" />
-              <line x1="636" y1="112" x2="654" y2="112" />
-              <line x1="540" y1="72" x2="526" y2="58" />
-              <line x1="620" y1="152" x2="634" y2="166" />
-              <line x1="620" y1="72" x2="634" y2="58" />
-              <line x1="540" y1="152" x2="526" y2="166" />
-              <path d="M78 330 Q132 300 168 344 Q126 380 176 422 Q124 470 188 516" />
-              <path d="M646 332 Q592 302 556 346 Q598 382 548 424 Q600 468 536 514" />
-              <path d="M112 1182 L188 1116 L262 1182 Z" />
-              <path d="M462 1206 L544 1138 L622 1206 Z" />
-              <path d="M90 1248 L182 1184 L274 1248 Z" />
-              <path d="M438 1274 L538 1200 L640 1274 Z" />
-              <g transform="translate(122 612)">
-                <circle cx="0" cy="0" r="12" />
-                <line x1="0" y1="12" x2="0" y2="56" />
-                <line x1="-22" y1="34" x2="22" y2="34" />
-                <line x1="0" y1="56" x2="-18" y2="88" />
-                <line x1="0" y1="56" x2="18" y2="88" />
-              </g>
-              <g transform="translate(602 622)">
-                <circle cx="0" cy="0" r="12" />
-                <line x1="0" y1="12" x2="0" y2="56" />
-                <line x1="-22" y1="34" x2="22" y2="34" />
-                <line x1="0" y1="56" x2="-18" y2="88" />
-                <line x1="0" y1="56" x2="18" y2="88" />
-              </g>
-            </g>
-
-            <path
-              d="M362 120c-92 0-150 78-150 168 0 88 36 168 36 236 0 58-35 118-35 202 0 80 40 136 92 166v162c0 58-26 130-26 190 0 63 40 116 83 116s83-53 83-116c0-60-26-132-26-190V892c52-30 92-86 92-166 0-84-35-144-35-202 0-68 36-148 36-236 0-90-58-168-150-168Z"
-              fill={darkMode ? "rgba(134,239,172,0.04)" : "rgba(16,185,129,0.05)"}
-            />
-
-            <g
-              fill="none"
-              stroke={`url(#${svgIdBase}-bone-grad)`}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              filter={`url(#${svgIdBase}-bone-glow)`}
-            >
-              <animate attributeName="opacity" values="0.88;1;0.88" dur="4.8s" repeatCount="indefinite" />
-              <g strokeWidth="3.1">
-                <ellipse cx="362" cy="108" rx="56" ry="62" />
-                <path d="M332 142 Q362 158 392 142 Q392 174 362 184 Q332 174 332 142Z" />
-                <circle cx="344" cy="102" r="8" />
-                <circle cx="380" cy="102" r="8" />
-                <path d="M362 170 L362 584" />
-                <path d="M362 202 Q304 198 258 232" />
-                <path d="M362 202 Q420 198 466 232" />
-                <path d="M362 676 Q306 676 272 646 Q274 608 300 594 L362 620 L424 594 Q450 608 452 646 Q418 676 362 676Z" />
-              </g>
-
-              <g strokeWidth="2.3">
-                {[246, 276, 308, 340, 372, 404].map((y) => (
-                  <g key={y}>
-                    <path d={`M362 ${y} Q ${362 - 88} ${y + 18} ${362 - 58} ${y + 42}`} />
-                    <path d={`M362 ${y} Q ${362 + 88} ${y + 18} ${362 + 58} ${y + 42}`} />
-                  </g>
-                ))}
-                {[202, 230, 258, 286, 314, 342, 370, 398, 426, 454, 482, 510, 538, 566].map((y) => (
-                  <circle key={`v-${y}`} cx="362" cy={y} r="5.2" />
-                ))}
-              </g>
-
-              <g strokeWidth="3.4">
-                <line x1="286" y1="254" x2="224" y2="424" />
-                <line x1="224" y1="424" x2="178" y2="622" />
-                <line x1="438" y1="254" x2="500" y2="424" />
-                <line x1="500" y1="424" x2="546" y2="622" />
-
-                <line x1="328" y1="686" x2="302" y2="908" />
-                <line x1="302" y1="924" x2="286" y2="1188" />
-                <line x1="396" y1="686" x2="422" y2="908" />
-                <line x1="422" y1="924" x2="438" y2="1188" />
-              </g>
-
-              <g strokeWidth="2.4">
-                <ellipse cx="222" cy="432" rx="18" ry="24" />
-                <ellipse cx="502" cy="432" rx="18" ry="24" />
-                <ellipse cx="302" cy="914" rx="18" ry="22" />
-                <ellipse cx="422" cy="914" rx="18" ry="22" />
-                <circle cx="286" cy="1188" r="15" />
-                <circle cx="438" cy="1188" r="15" />
-                <path d="M286 1202 L252 1234 L242 1268 L268 1274 L304 1268 L304 1202" />
-                <path d="M438 1202 L472 1234 L482 1268 L456 1274 L420 1268 L420 1202" />
-              </g>
-            </g>
-
-            {/* Hotspot glows */}
+            {/* Pulsing hotspot indicators on injuries */}
             {hotspots.map((h, i) => {
               const palette = severityPalette[h.tier];
-              const radius = h.zone.r * (0.68 + h.activity * 1.05);
-              const pulseMax = radius * 1.92;
-              const pulseMin = radius * 1.58;
+              const core = Math.max(2.3, h.anchor.r * (0.75 + h.activity * 0.4));
+              const auraStart = core * 1.8;
+              const auraEnd = core * 2.4;
               return (
-                <g key={i}>
+                <g key={`${h.anchor.key}-${i}`}>
                   <circle
-                    cx={h.zone.cx}
-                    cy={h.zone.cy}
-                    r={pulseMin}
-                    fill={`url(#${svgIdBase}-glow-${i})`}
-                    opacity={0.34 + h.activity * 0.34}
+                    cx={h.anchor.cx}
+                    cy={h.anchor.cy}
+                    r={auraStart}
+                    fill={`url(#${svgIdBase}-hot-${i})`}
+                    opacity={0.28 + h.activity * 0.34}
                   >
                     <animate
                       attributeName="r"
-                      values={`${pulseMin};${pulseMax};${pulseMin}`}
-                      dur={`${2.2 + (i % 3) * 0.35}s`}
+                      values={`${auraStart};${auraEnd};${auraStart}`}
+                      dur={`${2.2 + (i % 4) * 0.35}s`}
                       repeatCount="indefinite"
                     />
                     <animate
                       attributeName="opacity"
-                      values={`${0.3 + h.activity * 0.16};${0.6 + h.activity * 0.22};${0.3 + h.activity * 0.16}`}
-                      dur={`${2.2 + (i % 3) * 0.35}s`}
+                      values={`${0.24 + h.activity * 0.2};${0.58 + h.activity * 0.22};${0.24 + h.activity * 0.2}`}
+                      dur={`${2.2 + (i % 4) * 0.35}s`}
                       repeatCount="indefinite"
                     />
                   </circle>
+                  <circle cx={h.anchor.cx} cy={h.anchor.cy} r={core * 0.52} fill={palette.fill} />
                   <circle
-                    cx={h.zone.cx}
-                    cy={h.zone.cy}
-                    r={radius * 0.45}
-                    fill={palette.fill}
-                    opacity={0.96}
-                  />
-                  <circle
-                    cx={h.zone.cx}
-                    cy={h.zone.cy}
-                    r={radius * 0.62}
+                    cx={h.anchor.cx}
+                    cy={h.anchor.cy}
+                    r={core * 0.76}
                     fill="none"
                     stroke={palette.ring}
-                    strokeWidth="2"
-                    opacity={0.78}
+                    strokeWidth="0.8"
+                    opacity={0.9}
                   />
                 </g>
               );
             })}
           </svg>
 
-          <div className={`mt-1.5 flex items-center justify-between text-[9px] ${darkMode ? "text-gray-500" : "text-gray-400"}`}>
+          <div
+            className={`mt-1.5 flex items-center justify-between text-[9px] ${
+              darkMode ? "text-gray-500" : "text-gray-400"
+            }`}
+          >
             <span className="inline-flex items-center gap-1">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
               Mild
@@ -1372,7 +1498,7 @@ function InjuryHeatmap({ player, darkMode }: { player: PlayerRisk; darkMode: boo
           </div>
         </div>
 
-        {/* Injury timeline — git-log style beside the skeleton */}
+        {/* Timeline */}
         {(() => {
           const timelineRecords = (player.injury_records || [])
             .filter((r) => r.date)
@@ -1382,16 +1508,28 @@ function InjuryHeatmap({ player, darkMode }: { player: PlayerRisk; darkMode: boo
           if (timelineRecords.length < 2) return null;
 
           const tlDotColor = (days: number) =>
-            days >= 60 ? "bg-red-500 shadow-red-500/40" : days >= 21 ? "bg-amber-500 shadow-amber-500/40" : "bg-emerald-500 shadow-emerald-500/40";
+            days >= 60
+              ? "bg-red-500 shadow-red-500/40"
+              : days >= 21
+                ? "bg-amber-500 shadow-amber-500/40"
+                : "bg-emerald-500 shadow-emerald-500/40";
           const tlSevText = (days: number) =>
-            days >= 60 ? (darkMode ? "text-red-400" : "text-red-600")
-            : days >= 21 ? (darkMode ? "text-amber-400" : "text-amber-600")
-            : (darkMode ? "text-emerald-400" : "text-emerald-600");
+            days >= 60
+              ? darkMode
+                ? "text-red-400"
+                : "text-red-600"
+              : days >= 21
+                ? darkMode
+                  ? "text-amber-400"
+                  : "text-amber-600"
+                : darkMode
+                  ? "text-emerald-400"
+                  : "text-emerald-600";
           const tlLineColor = darkMode ? "bg-[#1f1f1f]" : "bg-gray-200";
           const allRecords = (player.injury_records || []).filter((r) => r.date);
 
           return (
-            <div className="flex-1 min-w-0 overflow-hidden pt-1">
+            <div className="w-full flex-1 min-w-0 overflow-hidden pt-1">
               {timelineRecords.map((r, i) => {
                 const d = r.date ? new Date(r.date) : null;
                 const month = d ? d.toLocaleDateString("en-GB", { month: "short" }) : "";
@@ -1400,19 +1538,31 @@ function InjuryHeatmap({ player, darkMode }: { player: PlayerRisk; darkMode: boo
                 return (
                   <div key={i} className="flex gap-2" style={{ minHeight: 40 }}>
                     <div className="w-9 flex-shrink-0 text-right pt-0.5">
-                      <div className={`text-[10px] font-medium leading-tight ${darkMode ? "text-gray-500" : "text-gray-400"}`}>
+                      <div
+                        className={`text-[10px] font-medium leading-tight ${
+                          darkMode ? "text-gray-500" : "text-gray-400"
+                        }`}
+                      >
                         {month}
                       </div>
-                      <div className={`text-[10px] leading-tight ${darkMode ? "text-gray-600" : "text-gray-400"}`}>
+                      <div
+                        className={`text-[10px] leading-tight ${
+                          darkMode ? "text-gray-600" : "text-gray-400"
+                        }`}
+                      >
                         {year}
                       </div>
                     </div>
                     <div className="flex flex-col items-center flex-shrink-0" style={{ width: 14 }}>
-                      <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 shadow-sm ${tlDotColor(r.severity_days)}`} />
+                      <div
+                        className={`w-2.5 h-2.5 rounded-full flex-shrink-0 shadow-sm ${tlDotColor(r.severity_days)}`}
+                      />
                       {!isLast && <div className={`w-px flex-1 ${tlLineColor}`} />}
                     </div>
                     <div className="flex-1 pb-3 min-w-0">
-                      <div className={`text-xs font-medium ${darkMode ? "text-gray-200" : "text-gray-800"}`}>
+                      <div
+                        className={`text-xs font-medium ${darkMode ? "text-gray-200" : "text-gray-800"}`}
+                      >
                         {r.injury_type}
                       </div>
                       <div className="flex items-center gap-2 mt-0.5">
@@ -1424,7 +1574,7 @@ function InjuryHeatmap({ player, darkMode }: { player: PlayerRisk; darkMode: boo
                         </span>
                         {r.games_missed > 0 && (
                           <span className={`text-[10px] ${darkMode ? "text-gray-600" : "text-gray-400"}`}>
-                            · {r.games_missed}gm
+                            · {r.games_missed} games missed
                           </span>
                         )}
                       </div>
@@ -1436,7 +1586,11 @@ function InjuryHeatmap({ player, darkMode }: { player: PlayerRisk; darkMode: boo
                 <div className="flex gap-2">
                   <div className="w-9" />
                   <div className="flex flex-col items-center" style={{ width: 14 }}>
-                    <div className={`w-1.5 h-1.5 rounded-full ${darkMode ? "bg-gray-700" : "bg-gray-300"}`} />
+                    <div
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        darkMode ? "bg-gray-700" : "bg-gray-300"
+                      }`}
+                    />
                   </div>
                   <p className={`text-[10px] ${darkMode ? "text-gray-600" : "text-gray-400"}`}>
                     +{allRecords.length - 8} earlier

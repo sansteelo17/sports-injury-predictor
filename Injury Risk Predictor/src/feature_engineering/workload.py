@@ -112,9 +112,9 @@ def add_workload_metrics(team_matches: pd.DataFrame,
     )
 
     # -----------------------------
-    # 8️⃣ SPIKE FLAG (ACWR danger zone > 1.5)
+    # 8️⃣ SPIKE FLAG (ACWR danger zone > 1.8)
     # -----------------------------
-    df["spike_flag"] = (df["acwr"] > 1.5).astype(int)
+    df["spike_flag"] = (df["acwr"] > 1.8).astype(int)
 
     # Reset index for merging with injuries later
     df = df.reset_index()

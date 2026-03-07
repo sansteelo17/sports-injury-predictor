@@ -204,7 +204,7 @@ def compute_team_workload(matches_df, team, as_of_date):
 
     strain = acute_load * monotony
     fatigue_index = acute_load - chronic_load
-    spike_flag = 1 if acwr > 1.5 else 0
+    spike_flag = 1 if acwr > 1.8 else 0
 
     # Workload slope: trend in match density over last 5 weeks
     # Positive = schedule getting busier, negative = easing off
@@ -627,7 +627,7 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
             "strain": team_workload["strain"],
             "fatigue_index": round(player_fatigue, 2),
             "workload_slope": team_workload["workload_slope"],
-            "spike_flag": 1 if player_acwr > 1.5 else 0,
+            "spike_flag": 1 if player_acwr > 1.8 else 0,
             # Match counts: keep as integers (model trained on integer counts)
             "matches_last_7": team_workload["matches_last_7"],
             "matches_last_14": team_workload["matches_last_14"],

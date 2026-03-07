@@ -343,19 +343,27 @@ async def load_models():
     matches = odds_client.get_upcoming_matches()
     print(f"Loaded odds for {len(matches)} upcoming matches")
 
-    # Load historical fixture data (CSV + optional live backfill for post-2023 coverage)
+    # Load historical fixture data — live cache first (freshest), then local CSV fallback.
+    # Run API refresh/backfill in the background so startup remains fast.
     try:
-        historical_matches_df = _load_fixture_history_dataset()
+        historical_matches_df = _load_fixture_history_live_cached_first()
         fixture_history_cache = {}
         if historical_matches_df is not None and not historical_matches_df.empty:
             latest_date = historical_matches_df["Date"].max()
             latest_str = str(latest_date.date()) if hasattr(latest_date, "date") else str(latest_date)[:10]
             print(
-                f"Loaded historical fixtures: {len(historical_matches_df)} rows "
+                f"Loaded historical fixtures (live-first): {len(historical_matches_df)} rows "
                 f"(latest={latest_str})"
             )
         else:
-            print("No fixture history available — team-v-team context disabled")
+            print("No cached/live or local fixture history — context stays limited until backfill completes")
+        # Kick off API refresh/backfill in a background thread (may take 60s+ due to rate limits)
+        backfill_thread = threading.Thread(
+            target=_backfill_fixture_history_async,
+            daemon=True,
+            name="fixture-history-backfill",
+        )
+        backfill_thread.start()
     except Exception as e:
         print(f"WARNING: Failed to load historical fixture data: {e}")
 
@@ -837,6 +845,20 @@ class RiskComparison(BaseModel):
     position_total: int
 
 
+class PlayerImportance(BaseModel):
+    """Fan-facing importance context for narrative explainability."""
+    score: float
+    tier: str
+    ownership_pct: Optional[float] = None
+    price: Optional[float] = None
+    price_tier: Optional[str] = None
+    captaincy_proxy_pct: Optional[float] = None
+    role_importance: Optional[str] = None
+    form_signal: Optional[str] = None
+    h2h_signal: Optional[str] = None
+    summary: str
+
+
 class CleanSheetOdds(BaseModel):
     """Clean sheet odds for defenders/goalkeepers."""
     clean_sheet_probability: float
@@ -962,6 +984,7 @@ class PlayerRisk(BaseModel):
     spike_flag: Optional[bool] = None
     fpl_points_projection: Optional[FPLPointsProjection] = None
     risk_comparison: Optional[RiskComparison] = None
+    player_importance: Optional[PlayerImportance] = None
 
 
 class WhatIfProjection(BaseModel):
@@ -1050,9 +1073,9 @@ class StandingsSummary(BaseModel):
 
 ARCHETYPE_DESCRIPTIONS = {
     "Durable": "Resilient player with limited injury history and good recovery",
-    "Fragile": "When injured, tends to be serious — requires extended recovery periods",
+    "Fragile": "When injured, tends to be serious. Requires extended recovery periods",
     "Injury Prone": "Frequently picks up injuries, though typically not severe",
-    "Recurring Issues": "Recent pattern of repeated injuries — needs targeted management",
+    "Recurring Issues": "Recent pattern of repeated injuries. Needs targeted management",
     "Moderate Risk": "Average injury profile with no major red flags",
     "Clean Record": "No significant injury history on record",
     "Currently Vulnerable": "Recently returned from injury, elevated re-injury risk",
@@ -1861,6 +1884,62 @@ def _fetch_live_fixture_history_backfill(local_df):
     return live_df.reset_index(drop=True)
 
 
+def _load_fixture_history_local_only():
+    """Load only the local CSV fixture history (fast, no API calls)."""
+    import pandas as pd
+
+    history_path = Path(PROJECT_ROOT) / "csv" / "premier-league-matches.csv"
+    if not history_path.exists():
+        return pd.DataFrame(columns=["Date", "Home", "Away", "HomeGoals", "AwayGoals"])
+    try:
+        local_df = pd.read_csv(
+            history_path,
+            usecols=["Date", "Home", "Away", "HomeGoals", "AwayGoals"],
+        )
+        return _normalize_fixture_history_df(local_df)
+    except Exception as e:
+        logger.warning(f"Failed loading local fixture history CSV: {e}")
+        return pd.DataFrame(columns=["Date", "Home", "Away", "HomeGoals", "AwayGoals"])
+
+
+def _load_fixture_history_live_cached_first():
+    """Load fixture history with live cache precedence, then local CSV fallback."""
+    import pandas as pd
+
+    local_df = _load_fixture_history_local_only()
+    cache_path = _fixture_history_cache_path()
+    cached_live_df, _ = _load_cached_live_fixture_history(cache_path)
+
+    parts = []
+    if cached_live_df is not None and not cached_live_df.empty:
+        parts.append(cached_live_df)
+    if local_df is not None and not local_df.empty:
+        parts.append(local_df)
+
+    if not parts:
+        return pd.DataFrame(columns=["Date", "Home", "Away", "HomeGoals", "AwayGoals"])
+
+    return _normalize_fixture_history_df(pd.concat(parts, ignore_index=True))
+
+
+def _backfill_fixture_history_async():
+    """Run API backfill in background thread, then merge into global df."""
+    global historical_matches_df, fixture_history_cache
+    try:
+        full_df = _load_fixture_history_dataset()
+        if full_df is not None and not full_df.empty:
+            historical_matches_df = full_df
+            fixture_history_cache = {}  # Clear cache so new data is used
+            latest_date = full_df["Date"].max()
+            latest_str = str(latest_date.date()) if hasattr(latest_date, "date") else str(latest_date)[:10]
+            print(
+                f"Fixture history backfill complete: {len(full_df)} rows "
+                f"(latest={latest_str})"
+            )
+    except Exception as e:
+        logger.warning(f"Background fixture history backfill failed: {e}")
+
+
 def _load_fixture_history_dataset():
     import pandas as pd
 
@@ -1895,10 +1974,10 @@ def _load_fixture_history_dataset():
                 logger.warning(f"Failed writing fixture history cache: {e}")
 
     parts = []
-    if local_df is not None and not local_df.empty:
-        parts.append(local_df)
     if live_df is not None and not live_df.empty:
         parts.append(live_df)
+    if local_df is not None and not local_df.empty:
+        parts.append(local_df)
 
     if not parts:
         return pd.DataFrame(columns=["Date", "Home", "Away", "HomeGoals", "AwayGoals"])
@@ -2776,7 +2855,9 @@ def calculate_expected_points(
         return None
 
     position = str(enriched_row.get("position", "")).lower()
-    if any(t in position for t in ("forward", "striker", "winger", "attack")):
+    if any(t in position for t in ("midfield", "mid", "playmaker", "am", "cm", "dm")):
+        pos_baseline = 3.6
+    elif any(t in position for t in ("forward", "striker", "winger", "centre-forward", "center-forward", "attacker", "fwd")):
         pos_baseline = 4.0
     elif any(t in position for t in ("def", "back")):
         pos_baseline = 3.8
@@ -2827,6 +2908,183 @@ def calculate_expected_points(
     }
 
 
+def _position_importance_role(position: str) -> str:
+    """Map raw position text into a stable role bucket for importance scoring."""
+    pos = str(position or "").strip().lower()
+    if any(t in pos for t in ("goalkeeper", "keeper", "gk")):
+        return "goalkeeper"
+    if any(t in pos for t in ("def", "back")):
+        return "defender"
+    if any(t in pos for t in ("midfield", "mid", "playmaker", "am", "cm", "dm")):
+        return "midfielder"
+    if any(t in pos for t in ("forward", "striker", "winger", "attacker", "fwd")):
+        return "attacker"
+    return "other"
+
+
+def calculate_player_importance(
+    player_row: Dict[str, Any],
+    fpl_stats: Optional[Dict[str, Any]] = None,
+    matchup_context: Optional[Dict[str, Any]] = None,
+    fixture_history: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Build a fan-facing importance score from FPL exposure + football context.
+
+    This is not a talent rating; it measures practical decision impact for fan picks:
+    ownership/price exposure, reliability, recent form, and fixture/H2H signal.
+    """
+    stats = fpl_stats or {}
+    matchup = matchup_context or {}
+    fixture = fixture_history or {}
+
+    ownership = _safe_float(stats.get("selected_by", player_row.get("selected_by")), 0.0)
+    price = _safe_float(stats.get("price", player_row.get("price")), 0.0)
+    ppg = _safe_float(stats.get("points_per_game", player_row.get("points_per_game")), 0.0)
+    form = _safe_float(stats.get("form", player_row.get("form")), 0.0)
+    minutes = _safe_int(stats.get("minutes", player_row.get("minutes")), 0)
+    role = _position_importance_role(player_row.get("position", ""))
+
+    # If no useful signal is available at all, don't emit noisy placeholders.
+    if (
+        ownership <= 0
+        and price <= 0
+        and ppg <= 0
+        and form <= 0
+        and minutes <= 0
+        and not matchup
+        and not fixture
+    ):
+        return None
+
+    if price >= 11.0:
+        price_tier = "Premium"
+    elif price >= 8.0:
+        price_tier = "High"
+    elif price >= 6.0:
+        price_tier = "Mid"
+    else:
+        price_tier = "Budget"
+
+    role_weights = {
+        "attacker": 1.06,
+        "midfielder": 1.02,
+        "defender": 0.96,
+        "goalkeeper": 0.90,
+        "other": 0.95,
+    }
+
+    if ownership >= 25 or price >= 10.5:
+        role_importance = "Talisman"
+    elif role == "attacker" and ownership >= 10:
+        role_importance = "Primary attacker"
+    elif role == "midfielder" and (ownership >= 8 or ppg >= 4.5):
+        role_importance = "Creative hub"
+    elif role in {"defender", "goalkeeper"} and ppg >= 4:
+        role_importance = "Defensive anchor"
+    elif ownership <= 5:
+        role_importance = "Differential"
+    else:
+        role_importance = "Squad option"
+
+    recent_form = matchup.get("recent_form") or {}
+    recent_samples = _safe_int(recent_form.get("samples", 0), 0)
+    recent_goals = _safe_int(recent_form.get("goals", 0), 0)
+    recent_assists = _safe_int(recent_form.get("assists", 0), 0)
+    recent_clean_sheets = _safe_int(recent_form.get("clean_sheets", 0), 0)
+    if recent_samples > 0:
+        if role in {"defender", "goalkeeper"}:
+            form_signal_value = min(recent_clean_sheets / max(1, recent_samples), 1.0)
+            form_signal = f"{recent_clean_sheets} clean sheets in last {recent_samples}"
+        else:
+            recent_gi = recent_goals + recent_assists
+            form_signal_value = min((recent_gi / max(1, recent_samples)) / 1.2, 1.0)
+            form_signal = f"{recent_goals} goals + {recent_assists} assists in last {recent_samples}"
+    else:
+        form_signal_value = min(form / 10.0, 1.0)
+        form_signal = "Form sample still building"
+
+    vs_opponent = matchup.get("vs_opponent") or {}
+    vs_samples = _safe_int(vs_opponent.get("samples", 0), 0)
+    opponent = matchup.get("opponent") or fixture.get("opponent") or "the opponent"
+    if vs_samples > 0:
+        if role in {"defender", "goalkeeper"}:
+            vs_clean_sheets = _safe_int(vs_opponent.get("clean_sheets", 0), 0)
+            h2h_value = min(vs_clean_sheets / max(1, vs_samples), 1.0)
+            h2h_signal = f"{vs_clean_sheets} clean sheets in {vs_samples} vs {opponent}"
+        else:
+            vs_gi = _safe_int(vs_opponent.get("goals", 0), 0) + _safe_int(vs_opponent.get("assists", 0), 0)
+            h2h_value = min((vs_gi / max(1, vs_samples)) / 1.2, 1.0)
+            h2h_signal = f"{vs_gi} returns in {vs_samples} vs {opponent}"
+    else:
+        fixture_samples = _safe_int(fixture.get("samples", 0), 0)
+        if fixture_samples >= 3:
+            wins = _safe_int(fixture.get("wins", 0), 0)
+            draws = _safe_int(fixture.get("draws", 0), 0)
+            losses = _safe_int(fixture.get("losses", 0), 0)
+            h2h_value = min(wins / max(1, fixture_samples), 1.0)
+            h2h_signal = f"Team trend {wins}-{draws}-{losses} vs {opponent} ({fixture_samples} recent)"
+        else:
+            h2h_value = 0.45
+            h2h_signal = f"Direct H2H signal still thin vs {opponent}"
+
+    ownership_score = min(max(ownership / 40.0, 0.0), 1.0)
+    price_score = min(max(price / 12.5, 0.0), 1.0)
+    ppg_score = min(max(ppg / 8.0, 0.0), 1.0)
+    minutes_score = min(max(minutes / 2500.0, 0.0), 1.0)
+    role_score = role_weights.get(role, 0.95)
+
+    composite = (
+        ownership_score * 0.30
+        + price_score * 0.18
+        + ppg_score * 0.16
+        + minutes_score * 0.10
+        + role_score * 0.10
+        + form_signal_value * 0.10
+        + h2h_value * 0.06
+    )
+    score = round(min(max(composite * 100, 0.0), 100.0), 1)
+
+    if score >= 75:
+        tier = "Core"
+    elif score >= 60:
+        tier = "High"
+    elif score >= 45:
+        tier = "Balanced"
+    else:
+        tier = "Differential"
+
+    captaincy_proxy_pct = min(
+        100.0,
+        max(
+            0.0,
+            ownership * 1.25
+            + max(price - 8.0, 0.0) * 6.0
+            + max(ppg - 4.0, 0.0) * 10.0,
+        ),
+    )
+
+    call_name = get_popular_player_name(player_row.get("name", "This player"), fpl_stats=stats or None)
+    summary = (
+        f"{call_name} grades as {tier.lower()} importance "
+        f"({ownership:.1f}% owned, {price_tier.lower()} price tier at £{price:.1f}m, {ppg:.1f} PPG). "
+        f"Form: {form_signal}. H2H: {h2h_signal}."
+    )
+
+    return {
+        "score": score,
+        "tier": tier,
+        "ownership_pct": round(ownership, 2),
+        "price": round(price, 1) if price > 0 else None,
+        "price_tier": price_tier,
+        "captaincy_proxy_pct": round(captaincy_proxy_pct, 1),
+        "role_importance": role_importance,
+        "form_signal": form_signal,
+        "h2h_signal": h2h_signal,
+        "summary": summary,
+    }
+
+
 def calculate_risk_comparison(player_name: str, team: str, position: str, prob: float) -> Optional[Dict]:
     """Compare player's risk to squad and position averages."""
     if inference_df is None:
@@ -2841,12 +3099,16 @@ def calculate_risk_comparison(player_name: str, team: str, position: str, prob: 
     squad_total = len(team_players)
 
     pos_lower = position.lower()
-    if any(t in pos_lower for t in ("forward", "striker", "winger", "attack")):
-        pos_group = "Forward"
-        pos_filter = inference_df["position"].str.lower().str.contains("forward|striker|winger|attack", regex=True, na=False)
-    elif any(t in pos_lower for t in ("midfield",)):
+    if any(t in pos_lower for t in ("midfield", "mid", "playmaker", "am", "cm", "dm")):
         pos_group = "Midfielder"
-        pos_filter = inference_df["position"].str.lower().str.contains("midfield", na=False)
+        pos_filter = inference_df["position"].str.lower().str.contains("midfield|\\bmid\\b|playmaker|\\bam\\b|\\bcm\\b|\\bdm\\b", regex=True, na=False)
+    elif any(t in pos_lower for t in ("forward", "striker", "winger", "centre-forward", "center-forward", "attacker", "fwd")):
+        pos_group = "Forward"
+        pos_filter = inference_df["position"].str.lower().str.contains(
+            "forward|striker|winger|centre-forward|center-forward|\\battacker\\b|\\bfwd\\b",
+            regex=True,
+            na=False,
+        )
     elif any(t in pos_lower for t in ("def", "back")):
         pos_group = "Defender"
         pos_filter = inference_df["position"].str.lower().str.contains("def|back", regex=True, na=False)
@@ -2931,6 +3193,12 @@ def player_row_to_risk(row) -> PlayerRisk:
         team_hint=team,
         next_fixture_data=next_fixture_data,
     )
+    importance_data = calculate_player_importance(
+        player_row=enriched_row,
+        fpl_stats=fpl_stats,
+        matchup_context=matchup_context_data,
+        fixture_history=fixture_history_data,
+    )
 
     scorer_market_snapshot = None
     if odds_client:
@@ -2965,6 +3233,7 @@ def player_row_to_risk(row) -> PlayerRisk:
         "bookmaker_consensus": bookmaker_consensus_data,
         "matchup_context": matchup_context_data,
         "injury_records": injury_records,
+        "player_importance": importance_data,
     }
     scoring_odds_data = calculate_scoring_odds(enriched_row, extra_context=narrative_context)
     fpl_value_data = get_fpl_value_assessment(enriched_row, extra_context=narrative_context)
@@ -3074,6 +3343,7 @@ def player_row_to_risk(row) -> PlayerRisk:
         spike_flag=bool(enriched_row.get("spike_flag", 0)),
         fpl_points_projection=FPLPointsProjection(**fpl_points_data) if fpl_points_data else None,
         risk_comparison=RiskComparison(**risk_comparison_data) if risk_comparison_data else None,
+        player_importance=PlayerImportance(**importance_data) if importance_data else None,
     )
 
 
@@ -3482,7 +3752,7 @@ async def what_if_projection(player_name: str, rest_next: bool = False, play_all
         if "fatigue_index" in modified.index:
             modified["fatigue_index"] = float(modified["acute_load"]) - chronic
         if "spike_flag" in modified.index:
-            modified["spike_flag"] = 1 if acwr_projected > 1.5 else 0
+            modified["spike_flag"] = 1 if acwr_projected > 1.8 else 0
 
         # Patch sklearn compat: older pickled LogisticRegression may have removed attrs
         meta = getattr(ensemble, "meta_model_", None)
