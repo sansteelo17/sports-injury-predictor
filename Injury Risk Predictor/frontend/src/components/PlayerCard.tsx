@@ -6,7 +6,6 @@ import { RiskBadge } from "./RiskBadge";
 import { RiskMeter } from "./RiskMeter";
 import {
   Activity,
-  Anchor,
   Ambulance,
   Calendar,
   Clock,
@@ -339,12 +338,14 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
               "attacker",
               "centre-forward",
             ].some((k) => positionLabel.includes(k));
-            const isDefensiveProfile = [
-              "def",
-              "back",
+            const isGoalkeeperProfile = [
               "goalkeeper",
               "keeper",
               "gk",
+            ].some((k) => positionLabel.includes(k));
+            const isDefenderProfile = [
+              "def",
+              "back",
             ].some((k) => positionLabel.includes(k));
             const isMidfieldProfile = [
               "midfield",
@@ -363,13 +364,15 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                 />
                 <StatCard
                   icon={
-                    isDefensiveProfile
-                      ? <Shield size={18} />
+                    isGoalkeeperProfile
+                      ? <KeeperGlovesIcon size={18} />
+                      : isDefenderProfile
+                        ? <DefenderTackleIcon size={18} />
                       : isMidfieldProfile
-                        ? <Anchor size={18} />
+                        ? <MidfieldPassIcon size={18} />
                       : isForwardProfile
-                        ? <BootIcon size={18} />
-                        : <Target size={18} />
+                        ? <StrikerShotIcon size={18} />
+                        : <StrikerShotIcon size={18} />
                   }
                   label="Position Rank"
                   value={posLabel}
@@ -992,7 +995,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
   );
 }
 
-function BootIcon({ size = 18 }: { size?: number }) {
+function KeeperGlovesIcon({ size = 18 }: { size?: number }) {
   return (
     <svg
       width={size}
@@ -1005,11 +1008,77 @@ function BootIcon({ size = 18 }: { size?: number }) {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M4 15.5c3.2-.2 5.4-2 6.6-5.2L11.4 8h2.8l.7 3.5c.3 1.7 1.7 3 3.4 3.2l1.7.3V18H4.2c-1.2 0-2.2-1-2.2-2.2v-.3l2-.2Z" />
+      <path d="M7.2 5.2 9.1 6l1.2 2.7-.9 2.9-2.8 1.2-2.4-1.8.7-3.4 2.3-2.4Z" />
+      <path d="m16.8 5.2-1.9.8-1.2 2.7.9 2.9 2.8 1.2 2.4-1.8-.7-3.4-2.3-2.4Z" />
+      <circle cx="12" cy="10" r="2.1" />
+    </svg>
+  );
+}
+
+function DefenderTackleIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="7.8" cy="5.7" r="1.4" />
+      <path d="m8 7.4 3.3 2 2.2-1.2 1.1 1.2-2.4 1.5-1.8 2.5" />
+      <path d="m11.3 9.5-2.3 3.1-3.1 1.9" />
+      <path d="m13.8 15.4 3.8-1.2" />
+      <circle cx="19.2" cy="14.1" r="1.7" />
+    </svg>
+  );
+}
+
+function MidfieldPassIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 15.2c2.9-.2 4.9-1.6 6-4.6L10.8 8h2.5l.6 2.9c.2 1.3 1.2 2.2 2.5 2.4l1.5.2V17H4.2A2.2 2.2 0 0 1 2 14.8v-.5l2-.1Z" />
+      <path d="M15.6 6.5c2 .2 3.3 1 4.2 2.3" />
+      <path d="m18.5 5.2 1.3 3.5-3.5 1.3" />
+      <circle cx="21" cy="14.2" r="1.4" />
+    </svg>
+  );
+}
+
+function StrikerShotIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 15.2c3-.2 5-1.7 6.2-4.8L11 8h2.5l.6 3c.2 1.3 1.2 2.3 2.5 2.5l1.4.2V17H4.2A2.2 2.2 0 0 1 2 14.8V14l2-.2Z" />
       <path d="M7 18v2" />
       <path d="M10.2 18v2" />
       <path d="M13.4 18v2" />
       <path d="M16.6 18v2" />
+      <path d="M17.2 6.5h3.8v3.8" />
+      <path d="m21 6.5-4.8 4.8" />
+      <circle cx="21" cy="14.4" r="1.3" />
     </svg>
   );
 }
