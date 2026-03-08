@@ -68,7 +68,7 @@ class FootballDataClient:
             time.sleep(sleep_time)
         self._last_request_time = time.time()
 
-    def _get(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
+    def _get(self, endpoint: str, params: Optional[Dict] = None, _retries: int = 0) -> Dict:
         """Make a GET request to the API."""
         self._rate_limit()
 
@@ -78,10 +78,11 @@ class FootballDataClient:
         response = self.session.get(url, params=params)
 
         if response.status_code == 429:
-            # Rate limited - wait and retry
-            logger.warning("Rate limited, waiting 60s...")
+            if _retries >= 3:
+                raise RuntimeError(f"API rate limit exceeded after 3 retries: {url}")
+            logger.warning(f"Rate limited, waiting 60s (retry {_retries + 1}/3)...")
             time.sleep(60)
-            return self._get(endpoint, params)
+            return self._get(endpoint, params, _retries=_retries + 1)
 
         response.raise_for_status()
         return response.json()

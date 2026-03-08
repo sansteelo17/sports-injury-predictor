@@ -56,7 +56,10 @@ def _safe_float(value, default=0.0):
     try:
         if value is None:
             return default
-        return float(value)
+        result = float(value)
+        if result != result or result == float("inf") or result == float("-inf"):
+            return default
+        return result
     except (TypeError, ValueError):
         return default
 
@@ -65,7 +68,10 @@ def _safe_int(value, default=0):
     try:
         if value is None:
             return default
-        return int(float(value))
+        f = float(value)
+        if f != f or f == float("inf") or f == float("-inf"):
+            return default
+        return int(f)
     except (TypeError, ValueError):
         return default
 
@@ -156,11 +162,16 @@ def _position_group(position: str) -> str:
     pos = (position or "").strip().lower()
     if not pos:
         return "other"
-    if any(token in pos for token in ["goalkeeper", "keeper", "gk", "def", "back"]):
+    # Check goalkeeper FIRST — they are not defenders
+    if any(token in pos for token in ["goalkeeper", "keeper", "gk"]):
+        return "goalkeeper"
+    if any(token in pos for token in ["centre-back", "center-back", "full-back", "fullback",
+                                       "wing-back", "wingback", "defender", "back"]):
         return "defender"
-    if any(token in pos for token in ["forward", "fwd", "striker", "winger", "wing"]):
+    if any(token in pos for token in ["forward", "fwd", "striker", "winger", "centre-forward",
+                                       "center-forward"]):
         return "attacker"
-    if any(token in pos for token in ["midfielder", "mid", "am", "cm", "dm", "playmaker"]):
+    if any(token in pos for token in ["midfielder", "midfield", "cm", "dm", "am", "playmaker"]):
         return "midfielder"
     return "other"
 
@@ -213,36 +224,53 @@ def _build_importance_sentence(importance: Dict, first_name: str, risk_pct: int)
 
     tier = str(importance.get("tier", "") or "").strip()
     ownership = _safe_float(importance.get("ownership_pct", 0.0), 0.0)
+    price = _safe_float(importance.get("price", 0.0), 0.0)
+    price_tier = str(importance.get("price_tier", "") or "").strip()
     role_importance = str(importance.get("role_importance", "") or "").strip()
+    form_signal = str(importance.get("form_signal", "") or "").strip()
+    h2h_signal = str(importance.get("h2h_signal", "") or "").strip()
 
+    parts: List[str] = []
+
+    # Ownership context — the core of FPL importance
     if tier in {"Core", "High"} and ownership > 0:
         if risk_pct >= 45:
-            return (
-                f"{first_name} is high-exposure this week ({ownership:.1f}% owned), "
-                f"so that {risk_pct}% risk can swing rank fast."
+            parts.append(
+                f"{ownership:.1f}% of managers own {first_name}, "
+                f"so that {risk_pct}% risk can swing rank either way"
             )
-        return (
-            f"{first_name} is high-exposure ({ownership:.1f}% owned), "
-            "so fading this spot carries rank risk."
+        else:
+            parts.append(
+                f"{ownership:.1f}% ownership means fading {first_name} carries rank risk"
+            )
+    elif tier == "Differential" and ownership > 0:
+        parts.append(
+            f"Just {ownership:.1f}% ownership for {first_name}. "
+            "Returns here would be pure differential upside"
         )
 
-    if tier == "Differential" and ownership > 0:
-        return (
-            f"{first_name} sits at just {ownership:.1f}% ownership, "
-            "so returns here would be pure differential upside."
-        )
+    # Price context for premium players
+    if price >= 10.0 and not parts:
+        parts.append(f"At £{price:.1f}m, {first_name} locks a big chunk of budget")
 
-    if role_importance:
+    # Role context with specific data if available
+    if not parts and role_importance:
         role = role_importance.strip().lower()
-        if role == "primary attacker":
-            return f"{first_name} is one of the main attacking focal points for this side."
-        if role == "creative hub":
-            return f"{first_name} is central to this side's chance creation."
-        if role == "defensive anchor":
-            return f"{first_name} is a key defensive piece in this setup."
-        return f"{first_name} is currently profiled as a {role} in this team context."
+        if role == "talisman":
+            parts.append(f"{first_name} is the talisman for this side")
+        elif role == "primary attacker":
+            parts.append(f"{first_name} is the primary attacking outlet")
+        elif role == "creative hub":
+            parts.append(f"{first_name} is central to chance creation")
+        elif role == "defensive anchor":
+            parts.append(f"{first_name} anchors the defensive setup")
+        else:
+            parts.append(f"{first_name} profiles as a {role} in this context")
 
-    return None
+    if not parts:
+        return None
+
+    return ". ".join(parts) + "."
 
 
 # ── OptaJoe voice helpers ───────────────────────────────────────────────────
@@ -409,88 +437,88 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
     # Track which topics the LEAD already covered so later sections skip them
     covered = set()  # e.g. {"recency", "history", "workload", "severity", "fixture"}
 
-    # LEAD: stat-first headline — OptaJoe voice
+    # LEAD: stat-first headline — sentence should NOT restate the stat-lead number
     if prob >= 0.60 and days_since < 60:
         sentences.append(
-            f"{_stat_lead(days_since)}{first_name} has been back just {days_since} days "
-            f"and already sits at {risk_pct}% risk. The last setback echoes through every metric"
+            f"{_stat_lead(days_since, 'days')}That is all the recovery time {first_name} has had "
+            f"since the last setback, and the model reads {risk_pct}% risk"
         )
         covered.update({"recency"})
     elif prob >= 0.60 and prev_injuries >= 5:
         sentences.append(
-            f"{_stat_lead(prev_injuries)}{first_name} has {prev_injuries} injuries on file, "
-            f"costing {_safe_int(days_lost)} days total. That history drives the {risk_pct}% reading"
+            f"{_stat_lead(prev_injuries, 'career injuries')}That record has cost {first_name} "
+            f"{_safe_int(days_lost)} days and drives the {risk_pct}% reading"
         )
         covered.update({"history"})
     elif prob >= 0.60 and acwr > 1.5:
         sentences.append(
-            f"ACWR is {acwr:.2f}, above the elevated threshold. "
-            f"{first_name} sits at {risk_pct}% risk with load rising faster than recovery."
+            f"{_stat_lead(acwr, 'ACWR')}Above the elevated threshold for {first_name}, "
+            f"who sits at {risk_pct}% risk with load rising faster than recovery"
         )
         covered.update({"workload"})
     elif prob >= 0.60 and avg_days >= 30:
         sentences.append(
-            f"{_stat_lead(avg_days, 'days')}{first_name} averages {avg_days:.0f} days out per setback "
-            f"across {_pl(prev_injuries, 'injury')}. Severity is the headline at {risk_pct}% risk"
+            f"{_stat_lead(avg_days, 'days per setback')}Severity is the headline for {first_name} "
+            f"across {_pl(prev_injuries, 'injury')}, pushing risk to {risk_pct}%"
         )
         covered.update({"history", "severity"})
     elif prob >= 0.60 and matches_last_30 >= 5:
         sentences.append(
-            f"{first_name} has played {matches_last_30} matches in 30 days, "
-            f"and the schedule load alone pushes risk to {risk_pct}%."
+            f"{_stat_lead(matches_last_30, 'matches in 30 days')}Schedule load alone pushes "
+            f"{first_name} to {risk_pct}% risk"
         )
         covered.update({"workload"})
     elif prob >= 0.60:
         sentences.append(
-            f"{_stat_lead(risk_pct, '%')}{first_name} reads {risk_pct}% risk with "
-            f"{_pl(prev_injuries, 'injury')} and {_safe_int(days_lost)} days lost. Elevated across the board"
+            f"{_stat_lead(risk_pct, '% risk')}{first_name} has {_pl(prev_injuries, 'injury')} "
+            f"and {_safe_int(days_lost)} days lost on the books"
         )
         covered.update({"history"})
     elif prob >= 0.40 and days_since < 60:
         sentences.append(
-            f"{_stat_lead(days_since)}{first_name} is only {days_since} days post-injury "
-            f"and profiles at {risk_pct}%. Still inside the danger window"
+            f"{_stat_lead(days_since, 'days post-injury')}{first_name} is still inside "
+            f"the danger window at {risk_pct}% risk"
         )
         covered.update({"recency"})
     elif prob >= 0.40 and prev_injuries >= 4:
         sentences.append(
-            f"{_stat_lead(prev_injuries)}{prev_injuries} career injuries anchor "
-            f"{first_name} at {risk_pct}% risk. Not alarming alone, but the baseline is elevated"
+            f"{_stat_lead(prev_injuries, 'career injuries')}That history anchors "
+            f"{first_name} at {risk_pct}% risk. Not alarming alone, but the baseline matters"
         )
         covered.update({"history"})
     elif prob >= 0.40 and avg_days >= 30:
         sentences.append(
-            f"{_stat_lead(avg_days, 'days')}{first_name} averages {avg_days:.0f} days per layoff. "
-            f"At {risk_pct}%, each setback tends to be costly"
+            f"{_stat_lead(avg_days, 'days per layoff')}When {first_name} gets hurt, "
+            f"it tends to be costly. {risk_pct}% risk reflects that pattern"
         )
         covered.update({"history", "severity"})
     elif prob >= 0.40:
         sentences.append(
-            f"{_stat_lead(risk_pct, '%')}{first_name} reads {risk_pct}% risk with "
+            f"{_stat_lead(risk_pct, '% risk')}{first_name} has "
             f"{_pl(prev_injuries, 'injury')} and {_safe_int(days_lost)} days lost on record"
         )
         covered.update({"history"})
     elif prob >= 0.25 and prev_injuries >= 3:
         sentences.append(
-            f"{_stat_lead(risk_pct, '%')}{first_name} profiles at {risk_pct}%, manageable, "
-            f"but {prev_injuries} injuries on file keep the baseline honest"
+            f"{_stat_lead(risk_pct, '% risk')}Manageable for {first_name}, "
+            f"but {_pl(prev_injuries, 'injury')} on file keep the baseline honest"
         )
         covered.update({"history"})
     elif prob < 0.20 and days_since >= 365:
         sentences.append(
-            f"{_stat_lead(days_since, 'days')}Over {days_since} days without injury. "
-            f"{first_name} reads just {risk_pct}%. One of the safer picks in the pool"
+            f"{_stat_lead(days_since, 'days')}No injury in that stretch for {first_name}. "
+            f"Just {risk_pct}% risk. One of the safer picks in the pool"
         )
         covered.update({"recency"})
     elif prob < 0.20:
         sentences.append(
-            f"{_stat_lead(risk_pct, '%')}{first_name} reads {risk_pct}% risk. "
+            f"{_stat_lead(risk_pct, '% risk')}"
             + ("Clean record" if prev_injuries == 0 else f"{_pl(prev_injuries, 'injury')} logged")
-            + ", manageable workload"
+            + f" for {first_name}. Manageable workload"
         )
     else:
         sentences.append(
-            f"{_stat_lead(risk_pct, '%')}{first_name} sits at {risk_pct}% with "
+            f"{_stat_lead(risk_pct, '% risk')}{first_name} has "
             f"{_pl(prev_injuries, 'injury')} and {_safe_int(days_lost)} days lost. Nothing alarming"
         )
         covered.update({"history"})
@@ -1023,7 +1051,7 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
     else:
         lead = f"Current injury-risk read for {first_name} is {risk_pct}%."
 
-    action = "Start if owned"
+    action = "Start"
     reason_bits: List[str] = []
 
     importance_tier = str(player_importance.get("tier", "") or "").strip()
@@ -1037,52 +1065,81 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
     )
     high_output_player = output_per_90 >= 0.4 or (role in ("defender", "goalkeeper") and recent_clean_sheets >= 2)
 
+    is_key_player = importance_tier in {"Core", "High"} or importance_ownership >= 15
+
+    # ── Build action + natural-language reasoning ──
     if minutes < 180:
         action = "Bench"
-        reason_bits.append(f"minutes are too thin ({minutes})")
+        reason_bits.append(f"Not enough minutes on the pitch yet ({minutes}). Hard to trust that")
     elif is_currently_injured or days_since < 14:
         action = "Bench"
-        reason_bits.append(f"only {days_since} days since the last setback")
+        reason_bits.append(
+            f"Only {days_since} days since the last injury. Too soon to throw back in"
+        )
     elif injury_prob >= 0.55:
-        if fixture_is_attractive and high_output_player:
-            action = "Start with bench cover"
-            reason_bits.append("high risk but the fixture and output ceiling justify the gamble")
+        if (fixture_is_attractive and high_output_player) or (is_key_player and fixture_is_attractive):
+            action = "Start"
+            reason_bits.append(
+                f"I know {risk_pct}% risk looks scary. But look at the fixture and what this player does when fit. "
+                f"I would start but make sure there is a decent bench option behind"
+            )
+        elif is_key_player and high_output_player:
+            action = "Start"
+            reason_bits.append(
+                f"The body says be careful, the ownership says you cannot afford to be. "
+                f"{importance_ownership:.0f}% of managers have {first_name}. Benching is a gamble in itself"
+            )
         else:
             action = "Bench"
-            reason_bits.append("availability risk is too high for this fixture")
+            reason_bits.append(
+                f"{risk_pct}% risk and nothing about this fixture screams must-play. "
+                f"Save the headache"
+            )
     elif injury_prob >= 0.40:
-        if fixture_is_attractive or high_output_player:
-            action = "Start with bench cover"
-            reason_bits.append("elevated risk but upside is there")
+        if fixture_is_attractive or high_output_player or is_key_player:
+            action = "Start"
+            reason_bits.append(
+                f"Risk is elevated but the upside is real. "
+                f"Keep a strong bench option and go for it"
+            )
         else:
-            action = "Start only with bench cover"
-            reason_bits.append("availability risk is still elevated")
-    elif role == "defender":
+            action = "Start"
+            reason_bits.append(
+                f"Not the cleanest risk profile this week. "
+                f"Would want a reliable bench option if {first_name} pulls up short"
+            )
+    elif role in ("defender", "goalkeeper"):
         if recent_clean_sheets >= 2 and injury_prob < 0.35:
             action = "Start"
-            reason_bits.append("clean-sheet floor is live")
+            reason_bits.append("Clean-sheet floor is live and the body is fine. Lock it in")
         elif recent_clean_sheets == 0 and recent_samples >= 4:
-            action = "Bench-first"
-            reason_bits.append("recent clean-sheet trend is cold")
+            action = "Bench"
+            reason_bits.append("No clean sheets recently. Hard to justify starting on hope alone")
     else:
         if output_per_90 >= 0.45 and recent_returns >= 2 and injury_prob < 0.35:
             action = "Start"
-            reason_bits.append("output trend and availability both support it")
+            reason_bits.append("Output trend and availability both look good. Easy one")
         elif recent_returns == 0 and recent_samples >= 4:
             action = "Bench"
-            reason_bits.append("no recent returns")
+            reason_bits.append("No recent returns. Form is cold and that matters more than the name")
 
+    # Layer in importance context naturally
     importance_sentence = _build_importance_sentence(player_importance, first_name, risk_pct)
     if importance_sentence and len(reason_bits) < 2:
         reason_bits.append(importance_sentence.rstrip("."))
     elif importance_tier in {"Core", "High"} and importance_ownership > 0 and len(reason_bits) < 2:
-        reason_bits.append(f"high ownership ({importance_ownership:.1f}%) makes this a rank-impact decision")
+        reason_bits.append(
+            f"With {importance_ownership:.1f}% ownership, what {first_name} does this week moves rank"
+        )
     elif importance_tier == "Differential" and importance_ownership > 0 and len(reason_bits) < 2:
-        reason_bits.append(f"low ownership ({importance_ownership:.1f}%) gives differential upside if it lands")
+        reason_bits.append(
+            f"Only {importance_ownership:.1f}% own {first_name}. "
+            f"If this lands, it is pure differential"
+        )
 
-    # Fixture and matchup context
+    # Fixture and matchup colour
     conceded_line = _natural_conceding_line(opponent, opp_conceded)
-    if role == "defender":
+    if role in ("defender", "goalkeeper"):
         if conceded_line:
             reason_bits.append(conceded_line)
         if vs_samples >= 2:
@@ -1093,22 +1150,21 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
         if vs_samples >= 2 and (vs_goals + vs_assists) > 0:
             reason_bits.append(f"{vs_goals + vs_assists} returns in {vs_samples} H2H meetings")
         elif vs_samples >= 2 and vs_returns == 0:
-            reason_bits.append("no H2H returns yet in this fixture")
+            reason_bits.append(f"Nothing to show against {opponent} yet in H2H")
 
-    # Align with value tier, but don't override if fixture context says otherwise
+    # Value tier nudge
     value_assessment = get_fpl_value_assessment(player_data, extra_context=extra_context)
     if value_assessment:
         tier = (value_assessment.get("tier") or "").strip().lower()
         if tier == "avoid" and not fixture_is_attractive:
             action = "Bench"
-            reason_bits = ["upside has been too thin for the price and risk profile"]
+            reason_bits = [f"The numbers just are not there for the price. Would look elsewhere this week"]
         elif tier == "avoid" and fixture_is_attractive:
-            # Don't override to Bench if fixture is juicy - let the manager decide
-            reason_bits.append("value tier is low but this fixture could change things")
+            reason_bits.append(f"Value has been poor, but this fixture could flip the script")
         elif tier == "rotation" and action == "Start":
-            action = "Start only with bench cover"
+            reason_bits.append("Fixture dependent. Not someone to set and forget")
 
-    # Inject one strong signal-stack clause for variation without bloat
+    # Signal stack for extra colour
     signals = _build_fpl_signal_stack(
         recent_form=recent_form,
         vs_opponent=vs_opponent,
@@ -1119,11 +1175,9 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
         first_name=first_name,
         opponent=opponent,
     )
-    # Only add signal stack if it doesn't overlap with existing reason_bits
     existing_lower = " ".join(reason_bits).lower()
     for sig in signals:
         sig_lower = sig.lower()
-        # Skip if the signal's core info (opponent name, H2H, clean sheet) is already covered
         overlaps = False
         if opponent.lower() in sig_lower and opponent.lower() in existing_lower:
             overlaps = True
@@ -1160,26 +1214,28 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
         if clean and key not in seen:
             seen.add(key)
             concise_reasons.append(clean)
-        if len(concise_reasons) >= 2:
+        if len(concise_reasons) >= 3:
             break
 
+    # Build natural-sounding fallback instead of template
     fixture_slice = f"{venue_label} vs {opponent}".strip() if venue_label else f"vs {opponent}"
-    reason_text = "; ".join(concise_reasons) if concise_reasons else "mixed signal profile this week"
+    reason_body = ". ".join(concise_reasons) if concise_reasons else "Mixed signals this week"
     fallback_text = _as_sentence(
         re.sub(
             r"\s{2,}",
             " ",
-            f"{lead} {action} for {first_name} {fixture_slice}: {reason_text}.",
+            f"{lead} {reason_body}.",
         ).strip(),
     )
 
     # Optional LLM polish, grounded by section-planned RAG facts.
     polished = generate_grounded_narrative(
         task=(
-            "Write one punchy FPL manager tip sentence. "
-            "Lead with a decisive stat, then clear action for managers. "
+            "Write a short, natural FPL manager tip in Yara's voice. "
+            "Sound like a sharp football friend giving advice, not a template. "
             "Use the player's recent form, their record vs this opponent, "
-            "and the opponent's defensive record. Do NOT repeat the same fact twice."
+            "and the opponent's defensive record. "
+            "Do NOT repeat the same fact twice. No bullet points."
         ),
         player_name=player_data.get("name", "This player"),
         context_chunks=context_chunks,
@@ -1350,99 +1406,129 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
     avg_days_per_injury = total_days_lost / prev_injuries if prev_injuries > 0 else 0
     injury_prone = prev_injuries >= 5 or (prev_injuries >= 3 and avg_days_per_injury >= 30)
     high_risk = injury_prob >= 0.40
-    low_output = output_signal < (0.18 if role == "defender" else 0.18)
+    low_output = output_signal < 0.18
     durability_signal = days_since >= 240 and prev_injuries <= 2
 
-    # Use name hash to deterministically pick phrasing variants
-    _variant = hash(name) % 3
+    # Player importance context
+    player_importance = _extract_player_importance(extra_context)
+    importance_tier = str(player_importance.get("tier", "") or "").strip()
+    importance_ownership = _safe_float(player_importance.get("ownership_pct", 0.0), 0.0)
+    is_key_player = importance_tier in {"Core", "High"} or importance_ownership >= 15
+
+    # Fixture attractiveness for value override
+    next_fixture = extra_context.get("next_fixture") or {}
+    opp_conceded = _safe_float(matchup_context.get("opponent_goals_conceded_avg", 0), 0.0)
+    vs_opponent = matchup_context.get("vs_opponent") or {}
+    vs_samples = _safe_int(vs_opponent.get("samples", 0), 0)
+    vs_goals = _safe_int(vs_opponent.get("goals", 0), 0)
+    vs_assists = _safe_int(vs_opponent.get("assists", 0), 0)
+    is_home = matchup_context.get("is_home") or next_fixture.get("is_home")
+    fixture_attractive = (
+        (opp_conceded >= 1.2 and is_home is True)
+        or (opp_conceded >= 1.5)
+        or (vs_samples >= 2 and (vs_goals + vs_assists) >= 2)
+    )
+
+    # Override: key players with attractive fixtures shouldn't be "Avoid"
+    if tier == "Avoid" and is_key_player and fixture_attractive and not low_output:
+        tier, emoji = "Rotation", "rotate-cw"
 
     risk_pct = round(injury_prob * 100)
 
     if tier == "Avoid":
         if low_output and high_risk:
             verdict = (
-                f"{_stat_lead(ga_per_90, 'G+A/90')}{first_name} at {risk_pct}% risk. "
-                f"Output thin, availability heavy. {_pick_kicker('avoid', first_name)}"
+                f"{ga_per_90:.2f} G+A per 90 at {risk_pct}% risk. "
+                f"Not much coming back for {first_name} and the body is a concern too. "
+                f"Would look elsewhere. {_pick_kicker('avoid', first_name)}"
             )
         elif low_output and durability_signal:
             verdict = (
-                f"{_stat_lead(days_since, 'days injury-free')}Body is fine. "
-                f"Output is not. {ga_per_90:.2f} G+A/90 at £{price:.1f}m. {_pick_kicker('avoid', first_name)}"
+                f"The body is fine for {first_name}, that is not the issue. "
+                f"It is the {ga_per_90:.2f} G+A per 90 at £{price:.1f}m. "
+                f"That money works harder somewhere else. {_pick_kicker('avoid', first_name)}"
             )
         elif low_output:
             verdict = (
-                f"{_stat_lead(ga_per_90, 'G+A/90')}At £{price:.1f}m, {first_name} needs more. "
-                f"{_pick_kicker('avoid', first_name)}"
+                f"{ga_per_90:.2f} G+A per 90 at £{price:.1f}m. "
+                f"{first_name} needs to do more to justify the spot. {_pick_kicker('avoid', first_name)}"
             )
         elif high_risk:
             verdict = (
-                f"{_stat_lead(risk_pct, '% risk')}Injury drag swallows the upside for {first_name}. "
-                f"{_pick_kicker('avoid', first_name)}"
+                f"I see the talent but {risk_pct}% risk keeps eating into {first_name}'s value. "
+                f"The injury drag is real. {_pick_kicker('avoid', first_name)}"
             )
         else:
             verdict = (
-                f"{_stat_lead(adjusted_value)}Projected return too low for £{price:.1f}m. "
-                f"Reinvest elsewhere. {_pick_kicker('avoid', first_name)}"
+                f"Hard to make the numbers work for {first_name} at £{price:.1f}m right now. "
+                f"That budget does more elsewhere. {_pick_kicker('avoid', first_name)}"
             )
     elif tier == "Rotation":
         if low_output:
             verdict = (
-                f"{_stat_lead(ga_per_90, 'G+A/90')}Minutes are usable, upside isn't. "
-                f"Bench fodder. {_pick_kicker('default', first_name)}"
+                f"{first_name} is getting minutes but not doing much with them. "
+                f"{ga_per_90:.2f} G+A per 90. Bench fodder at best. {_pick_kicker('default', first_name)}"
             )
         elif high_risk:
             verdict = (
-                f"{_stat_lead(risk_pct, '% risk')}Talent is there but the body needs more runway. "
-                f"Bench and revisit. {_pick_kicker('moderate_risk', first_name)}"
+                f"The talent is there for {first_name} but the body needs more runway. "
+                f"{risk_pct}% risk. Keep an eye on it, revisit in a week or two. "
+                f"{_pick_kicker('moderate_risk', first_name)}"
             )
         else:
             verdict = (
-                f"Fixture-dependent for {first_name}. Better as depth than a locked starter. "
-                f"{_pick_kicker('default', first_name)}"
+                f"Fixture-dependent for {first_name}. Fine as depth on a good week, "
+                f"but not someone to lock in every gameweek. {_pick_kicker('default', first_name)}"
             )
     elif tier == "Decent":
         if high_risk:
             verdict = (
-                f"{_stat_lead(risk_pct, '% risk')}Decent value when fit, "
-                f"but availability is the wildcard. Need a backup plan. {_pick_kicker('moderate_risk', first_name)}"
+                f"Decent value when fit, but that is the catch with {first_name}. "
+                f"{risk_pct}% risk means you need a real backup plan. "
+                f"{_pick_kicker('moderate_risk', first_name)}"
             )
         else:
             verdict = (
-                f"{_stat_lead(ga_per_90, 'G+A/90')}Balanced upside and risk for {first_name}. "
-                f"Reliable floor at £{price:.1f}m. {_pick_kicker('default', first_name)}"
+                f"{ga_per_90:.2f} G+A per 90 at £{price:.1f}m. "
+                f"{first_name} gives a reliable floor without breaking the bank. "
+                f"{_pick_kicker('default', first_name)}"
             )
     elif tier == "Strong":
         if recent_returns >= 3 and recent_samples > 0:
             verdict = (
-                f"{_stat_lead(recent_returns)}{recent_returns} returns in {recent_samples} for {first_name}. "
-                f"The form is real, the body is holding. {_pick_kicker('form_hot', first_name)}"
+                f"{recent_returns} returns in the last {recent_samples} for {first_name}. "
+                f"The form is real and the body is holding up. "
+                f"I like this a lot. {_pick_kicker('form_hot', first_name)}"
             )
         else:
             verdict = (
-                f"{_stat_lead(ga_per_90, 'G+A/90')}Consistent output, manageable risk at £{price:.1f}m. "
-                f"{first_name} is quietly one of the better value picks. {_pick_kicker('premium', first_name)}"
+                f"Quietly one of the better value picks in the game right now. "
+                f"{ga_per_90:.2f} G+A per 90 at £{price:.1f}m for {first_name}. "
+                f"{_pick_kicker('premium', first_name)}"
             )
     else:  # Premium
         if goals_per_90 >= 0.5:
             verdict = (
-                f"{_stat_lead(goals_per_90, 'goals/90')}{first_name} at {risk_pct}% risk. "
+                f"{goals_per_90:.2f} goals per 90 for {first_name} at {risk_pct}% risk. "
                 f"The maths prints money. Armband candidate. {_pick_kicker('premium', first_name)}"
             )
         else:
             verdict = (
-                f"{_stat_lead(adjusted_value)}Set and forget {first_name}. "
-                f"Output ceiling and floor both elite for £{price:.1f}m. {_pick_kicker('premium', first_name)}"
+                f"Set and forget {first_name}. Output ceiling and floor both "
+                f"look elite at £{price:.1f}m. {_pick_kicker('premium', first_name)}"
             )
 
     if archetype == "Currently Vulnerable" and days_since < 60:
         verdict = (
-            f"{_stat_lead(days_since, 'days')}{first_name} is back but the return window caps FPL trust. "
-            f"Give it another week. {_pick_kicker('moderate_risk', first_name)}"
+            f"{first_name} is back but it has only been {days_since} days. "
+            f"I would give it another week before trusting this in FPL. "
+            f"{_pick_kicker('moderate_risk', first_name)}"
         )
     elif injury_prone and days_since < 120 and tier in {"Decent", "Strong", "Premium"}:
         verdict = (
-            f"{_stat_lead(prev_injuries, 'injuries')}{avg_days_per_injury:.0f}-day average layoff. "
-            f"Real upside for {first_name}, high volatility. Need bench insurance. {_pick_kicker('moderate_risk', first_name)}"
+            f"Real upside here with {first_name}, but {prev_injuries} injuries "
+            f"averaging {avg_days_per_injury:.0f} days each. High ceiling, high volatility. "
+            f"Make sure the bench can cover. {_pick_kicker('moderate_risk', first_name)}"
         )
 
     position_insight = None
@@ -1589,20 +1675,20 @@ def _yara_value_found(name, yara, market, opponent, is_home, inj_prob, days_sinc
     edge = round((yara - market) * 100, 1)
 
     if days_since < 60:
-        context = "Recent return adds uncertainty, but underlying output is there."
+        context = "Recent return adds some noise, but the underlying output supports it."
     elif inj_prob < 0.25:
-        context = "Fitness profile is clean. No red flags."
+        context = "Fitness profile is clean too."
     elif g90 >= 0.5:
-        context = f"{g90:.2f} goals/90 backs it up."
+        context = f"Scoring at {g90:.2f} per 90 backs that up."
     elif archetype == "Durable":
-        context = "Durability is underpriced."
+        context = "The durability is being underpriced here."
     else:
         venue = "at home" if is_home else "away"
-        context = f"Playing {venue} against {opponent} favours the over."
+        context = f"Playing {venue} against {opponent} helps."
 
     return (
-        f"{_stat_lead(edge, '%')}That's the gap between my model and the bookies on {name}. "
-        f"I have {yara*100:.0f}%, they have {market*100:.0f}%. {context} "
+        f"I see a {edge}% gap on {name}. My model says {yara*100:.0f}%, "
+        f"the bookies have {market*100:.0f}%. {context} "
         f"{_pick_kicker('form_hot', name)}"
     )
 
@@ -1612,31 +1698,31 @@ def _yara_market_generous(name, yara, market, opponent, inj_prob, archetype):
     gap = round((market - yara) * 100, 1)
 
     if inj_prob >= 0.45:
-        reason = f"Injury risk at {inj_prob*100:.0f}% is non-trivial."
+        reason = f"and the {inj_prob*100:.0f}% injury risk is part of why."
     elif archetype in ("Fragile", "Currently Vulnerable"):
-        reason = f"The {archetype.lower()} tag means availability isn't guaranteed."
+        reason = f"and that {archetype.lower()} profile makes availability a question mark."
     else:
-        reason = "Underlying scoring rate doesn't justify the market price."
+        reason = "and the underlying scoring rate does not back the market price."
 
     return (
-        f"{_stat_lead(gap, '%')}Market overrates {name} by {gap}%. "
-        f"They say {market*100:.0f}%, I'm at {yara*100:.0f}%. {reason} "
-        f"{_pick_kicker('avoid', name)}"
+        f"The market is being generous with {name}. They say {market*100:.0f}%, "
+        f"I am at {yara*100:.0f}%. That is a {gap}% gap the other way, "
+        f"{reason} {_pick_kicker('avoid', name)}"
     )
 
 
 def _yara_aligned(name, yara, market, opponent, inj_prob):
     """Market and model agree."""
     if inj_prob < 0.3:
-        note = "Low injury risk is one tailwind not fully priced in."
+        note = "Low injury risk is one small tailwind that might not be fully priced in."
     elif inj_prob >= 0.45:
-        note = "Watch the teamsheet. Availability is the only variable."
+        note = "The only variable is the teamsheet. Watch for late news."
     else:
-        note = "No edge either way. Move on to better spots."
+        note = "No real edge either way. I would look elsewhere for value."
 
     return (
-        f"Market and model agree on {name} at ~{yara*100:.0f}%. {note} "
-        f"{_pick_kicker('default', name)}"
+        f"Market and model land in the same place on {name}, around {yara*100:.0f}%. "
+        f"{note} {_pick_kicker('default', name)}"
     )
 
 
@@ -1644,29 +1730,34 @@ def _yara_no_market(name, yara, inj_prob, g90, a90, archetype, days_since):
     """No market odds available. Projection only."""
     if g90 >= 0.5 and inj_prob < 0.35:
         tone = (
-            f"{_stat_lead(yara * 100, '%')}No market line, but {name} scores at {g90:.2f}/90 "
-            f"and the body is holding. {_pick_kicker('form_hot', name)}"
+            f"No market line to compare, but {name} is scoring at {g90:.2f} per 90 "
+            f"and the body is holding up. I have the scoring probability at {yara*100:.0f}%. "
+            f"{_pick_kicker('form_hot', name)}"
         )
     elif g90 >= 0.3 and inj_prob < 0.4:
         tone = (
-            f"{_stat_lead(yara * 100, '%')}No market comparison. "
-            f"Decent output, manageable risk. {_pick_kicker('default', name)}"
+            f"No bookmaker line for {name} this week. "
+            f"My model says {yara*100:.0f}% to score. Decent output, manageable risk. "
+            f"{_pick_kicker('default', name)}"
         )
     elif inj_prob >= 0.45:
         tone = (
-            f"{_stat_lead(inj_prob * 100, '% risk')}No market line. "
-            f"Only {yara*100:.0f}% to score. Injury is the headline. {_pick_kicker('high_risk', name)}"
+            f"No market odds, and honestly the injury picture is the bigger story. "
+            f"{inj_prob*100:.0f}% risk with only a {yara*100:.0f}% chance to score. "
+            f"{_pick_kicker('high_risk', name)}"
         )
     elif days_since < 60:
         tone = (
-            f"{_stat_lead(days_since, 'days back')}No market data. "
-            f"Projecting {yara*100:.0f}% but still in the return window. {_pick_kicker('moderate_risk', name)}"
+            f"No market data for {name}. Still only {days_since} days back from injury. "
+            f"Projecting {yara*100:.0f}% but would want to see more first. "
+            f"{_pick_kicker('moderate_risk', name)}"
         )
     else:
         involvement = (g90 + a90) * 100
         tone = (
-            f"{_stat_lead(yara * 100, '%')}No market line. "
-            f"{involvement:.0f}% for any goal involvement. {_pick_kicker('default', name)}"
+            f"Cannot compare to the market this week. "
+            f"My model gives {name} a {involvement:.0f}% chance of any goal involvement. "
+            f"{_pick_kicker('default', name)}"
         )
 
     return tone

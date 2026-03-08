@@ -38,7 +38,7 @@ if _env_path.exists():
             _line = _line.strip()
             if _line and not _line.startswith("#") and "=" in _line:
                 _key, _val = _line.split("=", 1)
-                os.environ.setdefault(_key.strip(), _val.strip())
+                os.environ.setdefault(_key.strip(), _val.strip().strip('"').strip("'"))
 import numpy as np
 
 # Add project root to path

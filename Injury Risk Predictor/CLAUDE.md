@@ -1,190 +1,131 @@
 # Football Injury Risk Predictor - Project Context
 
 ## Overview
-ML system predicting injury risk for football (soccer) players using ensemble models (CatBoost, LightGBM, XGBoost). Educational/portfolio project, not for medical use.
+ML system predicting injury risk for football (soccer) players using ensemble models (CatBoost, LightGBM, XGBoost). Features a Next.js frontend, FastAPI backend, narrative generation with LLM enrichment, and FPL (Fantasy Premier League) insights. Educational/portfolio project, not for medical use.
 
 ## Data Sources
-- `data/raw/All_Players_1992-2025.csv` - Player stats (49MB, 92K+ rows)
+- `data/raw/All_Players_1992-2025.csv` - Historical player stats (49MB, 92K+ rows)
 - `data/raw/player_injuries_impact.csv` - Injury records with days lost
 - `data/raw/premier-league-matches.csv` - Match data for workload calculations
+- **FPL API** (live) - Current season stats, fixtures, gameweek data via `src/data_loaders/fpl_api.py`
+- **football-data.org API** - Match results, squad data via `src/data_loaders/api_client.py`
+- **Odds API** - Bookmaker odds via `src/data_loaders/odds_api.py`
 
 ## Architecture
 
 ```
+api/
+└── main.py                    # FastAPI backend (3700+ lines, monolithic)
+
+frontend/
+├── src/app/page.tsx           # Next.js entry
+├── src/components/
+│   ├── PlayerCard.tsx         # Main player view (risk, FPL, narrative, injury map)
+│   ├── PlayerList.tsx         # Player list/search
+│   ├── TeamOverview.tsx       # Team-level risk summary
+│   ├── ShareCard.tsx          # Social sharing card
+│   └── ...
+├── src/types/api.ts           # TypeScript types for API responses
+└── src/lib/api.ts             # API client
+
 src/
-├── data_loaders/load_data.py     # Load raw CSVs
-├── preprocessing/
-│   ├── clean_injuries.py         # Clean injury data
-│   ├── clean_stats.py            # Clean player stats
-│   ├── clean_matches.py          # Clean match data
-│   ├── team_normalization.py     # Normalize team names
-│   ├── merge_injury_stats.py     # Merge injuries + stats
-│   └── merge_injury_matches.py   # Merge with match data
+├── data_loaders/
+│   ├── load_data.py           # Load raw CSVs
+│   ├── fpl_api.py             # FPL API client (live data)
+│   ├── api_client.py          # football-data.org client
+│   └── odds_api.py            # Bookmaker odds client
+├── preprocessing/             # Data cleaning pipeline
 ├── feature_engineering/
-│   ├── workload.py              # ACWR, monotony, strain, fatigue (key file)
-│   ├── injury_history.py        # Previous injuries, days since last
-│   ├── match_features.py        # Matches in 7/14/30 days, rest days
-│   ├── archetype.py             # K-means clustering for player profiles
-│   ├── severity.py              # Injury severity features
-│   └── negative_sampling.py     # Generate non-injury samples
+│   ├── workload.py            # ACWR, monotony, strain, fatigue
+│   ├── injury_history.py      # Previous injuries, days since last
+│   ├── match_features.py      # Matches in 7/14/30 days, rest days
+│   ├── archetype.py           # K-means clustering for player profiles
+│   ├── severity.py            # Injury severity features
+│   └── negative_sampling.py   # Generate non-injury samples
 ├── models/
-│   ├── classification.py        # Train injury risk classifier
-│   ├── severity.py              # Train severity predictor (short/medium/long)
-│   ├── classification_ensemble.py   # Weighted LightGBM + XGBoost ensemble
-│   ├── stacking_ensemble.py     # Stacking with CatBoost meta-learner
-│   ├── thresholding.py          # Optimize classification threshold
-│   ├── smote_utils.py           # Handle class imbalance
-│   └── temporal_validation.py   # Time-based train/test splits
+│   ├── stacking_ensemble.py   # Stacking with CatBoost meta-learner (primary)
+│   ├── severity.py            # CatBoost severity classifier
+│   └── ...
 ├── inference/
-│   ├── inference_pipeline.py    # Full prediction pipeline (key file)
-│   ├── risk_card.py             # Generate player risk cards
-│   └── validation.py            # Input validation for inference
+│   ├── inference_pipeline.py  # Full prediction pipeline
+│   ├── story_generator.py     # Narrative generation (OptaJoe voice, FPL insights)
+│   ├── context_rag.py         # RAG context chunks for LLM enrichment
+│   ├── llm_client.py          # LLM integration (Ollama/OpenAI-compatible)
+│   ├── risk_card.py           # Generate player risk cards
+│   └── validation.py          # Input validation for inference
+├── utils/
+│   └── model_io.py            # Model serialization/loading
 └── dashboard/
-    └── player_dashboard.py      # Streamlit components
+    └── player_dashboard.py    # Streamlit components (legacy)
+
+scripts/
+└── refresh_predictions.py     # Rebuild inference_df from live data
 ```
 
-## Key Features Computed
+## Key Thresholds (keep in sync across files)
+- **ACWR spike_flag**: `> 1.8` (workload.py, story_generator.py, context_rag.py, validation.py, risk_card.py, negative_sampling.py, refresh_predictions.py, api/main.py)
+- **ACWR elevated narrative**: `>= 1.5` (story_generator.py, context_rag.py)
+- **Demanding schedule**: `matches_last_7 >= 3`, `matches_last_30 >= 8`
+- **Probability tiers**: 0.60 (high), 0.40 (elevated), 0.25 (moderate), 0.20 (low)
+- **Risk levels** (api/main.py `get_risk_level`): percentile-based with 0.80/0.40 thresholds
 
-### Workload Metrics (src/feature_engineering/workload.py)
-- `acute_load` - 7-day rolling match count
-- `chronic_load` - 28-day rolling match count
-- `acwr` - Acute:Chronic Workload Ratio (injury risk > 1.5)
-- `monotony` - Training monotony index
-- `strain` - Acute load * monotony
-- `fatigue_index` - Acute - chronic load
-- `workload_slope` - 5-match trend
-- `spike_flag` - ACWR > 1.5 danger indicator
+## Narrative System (story_generator.py + context_rag.py + llm_client.py)
+- **Voice**: OptaJoe — stat-first lead, short declarative sentences, no hedging
+- **`_stat_lead(number, unit)`**: Formats stat-first leads like "4 career injuries. " — the sentence that follows must NOT restate the number
+- **`_position_group()`**: Returns "goalkeeper", "defender", "attacker", "midfielder", or "other" — goalkeepers are NOT defenders
+- **`_safe_float()` / `_safe_int()`**: Handle None, NaN, and Inf — defined in both story_generator.py and context_rag.py
+- **Topic dedup**: `covered` set in `generate_player_story()` tracks what the LEAD already said to prevent repetition
+- **3-layer match data**: (1) player recent form, (2) opponent defensive record, (3) player H2H vs opponent
+- **Role-aware**: Goals/assists for attackers, clean sheets for defenders
+- **No em dashes** in risk analysis or FPL insights — use proper sentence breaks
 
-### Match Features
-- `matches_last_7`, `matches_last_14`, `matches_last_30`
-- `rest_days_before_injury`, `avg_rest_last_5`
-- `win_streak`, `loss_streak`, `form_last_5`
+## FPL Model Logic (story_generator.py `get_fpl_insight`)
+- `fixture_is_attractive`: opponent concedes >= 1.2 at home or >= 1.5 away, or player H2H >= 2
+- `high_output_player`: output_per_90 >= 0.4, or defender with >= 2 recent clean sheets
+- High risk + attractive fixture + high output = "Start with bench cover" (not hard "Bench")
+- Value assessment respects fixture context — don't auto-avoid high-risk players with great fixtures
 
-### Injury History
-- `previous_injuries` - Count of prior injuries
-- `days_since_last_injury` - Recovery time
+## Known Issues / Tech Debt
+- `api/main.py` is monolithic (3700+ lines) — `player_row_to_risk()` alone is 212 lines
+- `_safe_float`/`_safe_int` defined in 3 places (story_generator, context_rag, api/main.py) — should be shared
+- Variable extraction duplicated between `generate_player_story()` and `get_fpl_insight()` (~40 lines each)
+- `get_risk_level()` accepts unused `row` parameter at all call sites
+- `api/main.py` global mutable state (inference_df, caches) accessed from background threads without locks
+- FPL API calls not cached per-request — multiple round-trips per player view
+- `calculate_scoring_odds()` treats `goals_per_90` as probability (it's a rate) — scoring odds are systematically off
+- `SECTION_RAG_PREFIXES` in context_rag.py has identical templates — the variation system does nothing
+- `calculate_clean_sheet_odds()` uses hardcoded 1.2 PL average, ignores actual team defense
+- Fixture/venue RAG chunks overlap — can produce repetitive LLM output
+- `severity_skewed` outlier detection doesn't handle duplicate max values correctly
+- Archetype rule-based fallback: "Recurring Issues" must be checked before "Injury Prone" (fixed, was unreachable)
+
+## Running
+```bash
+# Backend
+cd "Injury Risk Predictor" && uvicorn api.main:app --reload
+
+# Frontend
+cd "Injury Risk Predictor/frontend" && npm run dev
+
+# Refresh predictions from live data
+python scripts/refresh_predictions.py --mode api
+```
 
 ## Model Pipeline
 
 1. **Classification**: Predict if player will get injured (binary)
-   - Ensemble of CatBoost + LightGBM + XGBoost
-   - Weighted averaging or stacking meta-learner
+   - Ensemble of CatBoost + LightGBM + XGBoost (stacking)
    - Threshold tuned for F1/precision-recall balance
 
 2. **Severity**: Predict injury duration (short/medium/long)
-   - Bins: short (0-21 days), medium (21-60 days), long (60+ days)
-   - **CatBoost** with `auto_class_weights='Balanced'` (62% accuracy, 94%+ adjacent accuracy)
-   - Key metrics: accuracy, adjacent accuracy (within 1 category)
+   - CatBoost with `auto_class_weights='Balanced'` (62% accuracy, 94%+ adjacent accuracy)
 
-3. **Archetype**: Cluster players into 5 risk profiles
-   - **Injury Prone** - Gets injured often, usually minor
-   - **Unpredictable** - Varied injury patterns, hard to manage
-   - **Recurring Issues** - Same body parts keep getting injured
-   - **Durable** - Rarely gets seriously injured
-   - **Fragile** - When injured, it's serious
-
-## Notebooks
-- `notebooks/exploration.ipynb` - Main notebook with 106 cells covering:
-  - Data loading and inspection
-  - Missing value analysis
-  - Data cleaning functions
-  - Feature engineering
-  - Model training experiments
-
-## App
-- `app.py` - Streamlit dashboard (demo mode)
-- Run with: `streamlit run app.py` or `./run_dashboard.sh`
-- Currently uses mock predictions; needs trained models for production
-
-## Current Status
-- Data pipeline: Complete
-- Feature engineering: Complete
-- Classification model: StackingEnsemble (CatBoost + LightGBM + XGBoost)
-- Severity model: CatBoost with balanced class weights (62% accuracy, 94%+ adjacent accuracy)
-- Dashboard: Demo mode working
-- Git: Project reorganized, untracked
-
-## Recent Changes (This Session)
-- Fixed adjacent accuracy bug in severity evaluation (CatBoost returns shape (n,1) not (n,))
-- Added `auto_class_weights='Balanced'` to CatBoost severity classifier
-- Improved severity accuracy from 53.8% to 62.3%, adjacent accuracy to 94.6%
-- Tested ordinal regression and ensemble approaches (in severity.py) but rolled back:
-  - CatBoost alone performed equal/better (94.6% vs 91.5% adjacent accuracy)
-  - Keeping CatBoost for simplicity; ordinal/ensemble code remains available if needed
-- Fixed archetype clustering bug: 0-d numpy arrays in features caused `.median()` to fail
-  - Added `_unwrap_array_values()` helper in archetype.py to sanitize data
-- Fixed monotony/strain explosion bug in workload.py
-  - Previously: monotony = 1e9 when std near zero (regular schedule)
-  - Now: capped at 5 (realistic sports science range)
-- Fixed inference pipeline missing feature engineering
-  - Added `apply_all_feature_engineering()` to inference_pipeline.py
-  - Now applies temporal, position, and workload interaction features
-  - Automatically cleans up merge artifacts (age_x → age)
-- Fixed dashboard `panel_severity_projection()` for inference mode
-  - Now works with both ground truth (severity_days) and predicted (predicted_severity_class)
-- Fixed notebook archetype clustering to include player history features
-  - Previously missing: is_injury_prone, player_avg_severity, etc.
-
-## Typical Workflow
-```python
-# 1. Load data
-from src.data_loaders.load_data import load_all_data
-data = load_all_data()
-
-# 2. Clean data
-from src.preprocessing.clean_injuries import clean_injury_df
-injury_df = clean_injury_df(data["injuries"])
-
-# 3. Add features
-from src.feature_engineering.workload import add_workload_metrics
-df = add_workload_metrics(match_df)
-
-# 4. Train models (in notebooks)
-# 5. Run inference
-from src.inference.inference_pipeline import build_full_inference_df
-```
-
-## Severity Classification Usage
-
-```python
-from src.models.severity import (
-    get_severity_classification_splits,
-    train_severity_classifier,
-    evaluate_severity_classifier,
-)
-
-# Get temporal splits
-X_train, X_val, X_test, y_train, y_val, y_test = get_severity_classification_splits(df)
-
-# Train CatBoost classifier (balanced class weights)
-model = train_severity_classifier(X_train, y_train, X_val, y_val, model_type="catboost")
-results = evaluate_severity_classifier(model, X_test, y_test)
-
-# Results: 62% accuracy, 94%+ adjacent accuracy
-```
-
-Note: OrdinalClassifier and SeverityEnsemble are also implemented in severity.py
-but CatBoost alone performs equally well with simpler code.
-
-## Key Functions Reference
-
-### src/models/severity.py
-| Function | Purpose |
-|----------|---------|
-| `get_severity_classification_splits()` | Temporal train/val/test split |
-| `train_severity_classifier()` | Train CatBoost (recommended) or LightGBM |
-| `evaluate_severity_classifier()` | Evaluate with accuracy + adjacent accuracy |
-
-### src/models/classification_shap.py
-| Function | Purpose |
-|----------|---------|
-| `compute_stacking_ensemble_shap()` | SHAP values for StackingEnsemble |
-| `explain_player_ensemble()` | Explain single player prediction |
-| `build_temporal_output_df()` | Final output with predictions + SHAP |
+3. **Archetype**: Cluster players into risk profiles
+   - Injury Prone, Recurring Issues, Fragile, Durable, Currently Vulnerable, Moderate Risk, Clean Record
 
 ## Dependencies
-- pandas, numpy, scikit-learn
-- catboost, lightgbm, xgboost
-- shap (explainability)
-- optuna (hyperparameter tuning)
-- streamlit (dashboard)
+- pandas, numpy, scikit-learn, catboost, lightgbm, xgboost
+- shap (explainability), optuna (tuning)
+- fastapi, uvicorn (API)
+- next.js, tailwindcss (frontend)
+- Ollama or OpenAI-compatible LLM (narrative enrichment, optional)
