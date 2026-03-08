@@ -9,9 +9,10 @@ interface TeamOverviewProps {
 }
 
 export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
-  const highPct = Math.round((team.high_risk_count / team.total_players) * 100);
-  const medPct = Math.round((team.medium_risk_count / team.total_players) * 100);
-  const lowPct = Math.round((team.low_risk_count / team.total_players) * 100);
+  const total = Math.max(team.total_players, 1);
+  const highPct = Math.round((team.high_risk_count / total) * 100);
+  const medPct = Math.round((team.medium_risk_count / total) * 100);
+  const lowPct = Math.max(0, 100 - highPct - medPct);
 
   // Key positions that typically affect match odds (attackers & midfielders)
   const isKeyPosition = (position: string) => {

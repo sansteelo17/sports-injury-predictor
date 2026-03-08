@@ -480,12 +480,12 @@ def assign_rule_based_archetypes(df):
         if ((count >= 4 and avg_sev >= 45 and worst >= 75) or
                 (count >= 3 and avg_sev >= 60 and worst >= 75)):
             return "Fragile"
+        # Recurring Issues: frequent, recent, AND not just minor knocks (check before Injury Prone)
+        if count >= 5 and days_since < 90 and avg_sev >= 20:
+            return "Recurring Issues"
         # Injury Prone: many injuries AND they're not just minor knocks
         if count >= 5 and avg_sev >= 20:
             return "Injury Prone"
-        # Recurring Issues: frequent, recent, AND not just minor knocks
-        if count >= 5 and days_since < 90 and avg_sev >= 20:
-            return "Recurring Issues"
         # Durable: few injuries, long time since last
         if count <= 2 and days_since > 365:
             return "Durable"
@@ -1210,8 +1210,8 @@ def get_team_badge_url(team_name: str) -> Optional[str]:
 
 
 def _normalize_team(t: str) -> str:
-    """Normalize team name for comparison."""
-    return t.lower().replace("fc", "").replace("city", "").replace("united", "").strip()
+    """Normalize team name for fuzzy comparison (preserves 'city'/'united' to avoid Man City/Man Utd collision)."""
+    return t.lower().replace(" fc", "").replace("afc ", "").strip()
 
 
 def _strip_accents(s: str) -> str:

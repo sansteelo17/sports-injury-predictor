@@ -58,7 +58,10 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None:
             return default
-        return float(value)
+        result = float(value)
+        if result != result or result == float("inf") or result == float("-inf"):
+            return default
+        return result
     except (TypeError, ValueError):
         return default
 
@@ -67,7 +70,10 @@ def _safe_int(value: Any, default: int = 0) -> int:
     try:
         if value is None:
             return default
-        return int(float(value))
+        f = float(value)
+        if f != f or f == float("inf") or f == float("-inf"):
+            return default
+        return int(f)
     except (TypeError, ValueError):
         return default
 
@@ -103,7 +109,9 @@ def _natural_conceded_phrase(opponent: str, avg_conceded: float) -> str:
         return f"{opp} have been conceding about a goal a game lately"
     if avg < 1.8:
         return f"{opp} have been conceding around one and a half goals a game lately"
-    return f"{opp} have been conceding close to two goals a game lately"
+    if avg < 2.2:
+        return f"{opp} have been conceding about two goals a game lately"
+    return f"{opp} have been leaking over two goals a game lately"
 
 
 def _days_to_years_label(days: int) -> str:
@@ -163,39 +171,22 @@ def _position_group(position: Any) -> str:
     if not pos:
         return "other"
 
+    # Check goalkeeper FIRST — they are not defenders
+    gk_tokens = ["goalkeeper", "keeper", "gk"]
     defender_tokens = [
-        "goalkeeper",
-        "keeper",
-        "gk",
-        "def",
-        "back",
-        "centre-back",
-        "center-back",
-        "full-back",
-        "fullback",
-        "wing-back",
-        "wingback",
+        "centre-back", "center-back", "full-back", "fullback",
+        "wing-back", "wingback", "defender", "back",
     ]
     attacker_tokens = [
-        "forward",
-        "fwd",
-        "striker",
-        "winger",
-        "wing",
-        "centre-forward",
-        "center-forward",
-        "inside forward",
-        "attacker",
+        "forward", "fwd", "striker", "winger",
+        "centre-forward", "center-forward", "inside forward", "attacker",
     ]
     midfielder_tokens = [
-        "midfielder",
-        "mid",
-        "cm",
-        "dm",
-        "am",
-        "playmaker",
+        "midfielder", "midfield", "cm", "dm", "am", "playmaker",
     ]
 
+    if any(token in pos for token in gk_tokens):
+        return "goalkeeper"
     if any(token in pos for token in defender_tokens):
         return "defender"
     if any(token in pos for token in attacker_tokens):
