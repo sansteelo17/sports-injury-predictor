@@ -1641,11 +1641,6 @@ function InjuryHeatmap({ player, darkMode }: { player: PlayerRisk; darkMode: boo
                         <span className={`text-[10px] ${darkMode ? "text-gray-600" : "text-gray-400"}`}>
                           {r.body_area}
                         </span>
-                        {r.games_missed > 0 && (
-                          <span className={`text-[10px] ${darkMode ? "text-gray-600" : "text-gray-400"}`}>
-                            · {r.games_missed} games missed
-                          </span>
-                        )}
                       </div>
                     </div>
                   </div>

@@ -2733,7 +2733,7 @@ def enhance_yara_response(
         edge = yara_pct - market_pct
         if edge > 0:
             template_text = (
-                f"{abs(edge)}% — That's the gap between my model and the bookies on {first_name}. "
+                f"{abs(edge)}% gap between me and the bookies on {first_name}. "
                 f"I have {yara_pct}% {market_type_label}, they have {market_pct}%. "
                 f"{goals_per_90:.2f} goals/90 at {risk_pct}% injury risk."
             )

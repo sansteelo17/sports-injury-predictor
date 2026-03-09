@@ -70,14 +70,14 @@ scripts/
 - **Risk levels** (api/main.py `get_risk_level`): percentile-based with 0.80/0.40 thresholds
 
 ## Narrative System (story_generator.py + context_rag.py + llm_client.py)
-- **Voice**: OptaJoe — stat-first lead, short declarative sentences, no hedging
+- **Yara IS the model.** She speaks in first person ("I have", "I see"). Never say "my model says" or "the model reads". Yara is the analyst, not a wrapper around a model.
+- **Voice**: Natural, conversational, like a sharp football friend. Stat-driven but human. No template-speak, no dropdown labels ("Start with bench cover"). Say things like "I see why you would want him" or "The numbers just are not there."
 - **`_stat_lead(number, unit)`**: Formats stat-first leads like "4 career injuries. " — the sentence that follows must NOT restate the number
 - **`_position_group()`**: Returns "goalkeeper", "defender", "attacker", "midfielder", or "other" — goalkeepers are NOT defenders
 - **`_safe_float()` / `_safe_int()`**: Handle None, NaN, and Inf — defined in both story_generator.py and context_rag.py
 - **Topic dedup**: `covered` set in `generate_player_story()` tracks what the LEAD already said to prevent repetition
 - **3-layer match data**: (1) player recent form, (2) opponent defensive record, (3) player H2H vs opponent
 - **Role-aware**: Goals/assists for attackers, clean sheets for defenders
-- **No em dashes** in risk analysis or FPL insights — use proper sentence breaks
 
 ## FPL Model Logic (story_generator.py `get_fpl_insight`)
 - `fixture_is_attractive`: opponent concedes >= 1.2 at home or >= 1.5 away, or player H2H >= 2
