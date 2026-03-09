@@ -1049,31 +1049,38 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
 
     is_key_player = importance_tier in {"Core", "High"} or importance_ownership >= 15
 
-    # ── Gather matchup signals ──
+    # ── Gather matchup signals (position-aware) ──
     team = _display_team_name(str(player_data.get("team", "") or ""))
-    has_form = False
-    has_weak_opponent = False
-    has_h2h = False
 
-    # Form
+    # Fixture history (team level)
+    fixture_history = extra_context.get("fixture_history") or {}
+    fh_samples = _safe_int(fixture_history.get("samples", 0), 0)
+    fh_wins = _safe_int(fixture_history.get("wins", 0), 0)
+    team_dominates = fh_samples >= 3 and fh_wins >= 2
+
     if role in ("defender", "goalkeeper"):
+        # Defenders: form = clean sheets, H2H = clean sheets, fixture = team dominance
         has_form = recent_clean_sheets >= 2 and recent_samples > 0
         form_cold = recent_clean_sheets == 0 and recent_samples >= 3
+        has_h2h = vs_samples >= 1 and vs_clean_sheets > 0
+        has_good_fixture = team_dominates or (is_home is True and fh_samples >= 2)
+        # "opponent concedes a lot" is irrelevant for a defender's clean sheet potential
+        form_detail = f"{recent_clean_sheets} clean sheets in {recent_samples}" if has_form else ""
+        h2h_detail = f"{vs_clean_sheets} clean sheet{'s' if vs_clean_sheets != 1 else ''} in {vs_samples} against {opponent}" if has_h2h else ""
     else:
+        # Attackers/midfielders: form = goal involvements, H2H = returns, fixture = weak opponent
         has_form = recent_gi >= 2 and recent_samples > 0
         form_cold = recent_gi == 0 and recent_samples >= 3
-
-    # Opponent defense
-    has_weak_opponent = opp_conceded >= 1.0
-    opponent_tight = 0 < opp_conceded < 0.8
-
-    # H2H
-    if role in ("defender", "goalkeeper"):
-        has_h2h = vs_samples >= 1 and vs_clean_sheets > 0
-    else:
         has_h2h = vs_samples >= 1 and (vs_goals + vs_assists) >= 1
+        has_good_fixture = opp_conceded >= 1.0
+        form_detail = f"{recent_gi} goal involvements in {recent_samples}" if has_form else ""
+        h2h_detail = (
+            f"{vs_goals + vs_assists} return{'s' if (vs_goals + vs_assists) != 1 else ''} in {vs_samples} against {opponent}"
+            if has_h2h else ""
+        )
 
-    all_align = has_form and has_weak_opponent and has_h2h
+    signals_for = sum([has_form, has_h2h, has_good_fixture, is_home is True])
+    all_align = has_form and has_good_fixture and has_h2h
 
     # ── Decision ──
     if minutes < 180:
@@ -1087,74 +1094,95 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
             f"Only {days_since} days back, too soon to be starting in FPL"
         )
     elif all_align:
-        # Everything lines up: form, opponent, H2H — this is the "I see why you want him" case
         action = "Start"
         if injury_prob >= 0.50:
             reason_bits.append(
                 f"I can see why a {team} fan would want {first_name} in against {opponent} this week. "
-                f"The risk is there but the form, the matchup, and the history all say go for it. Bench cover is a must"
+                f"{form_detail}, {h2h_detail}, and the team have been dominant in this fixture. "
+                f"The risk is real but everything else says go for it. Bench cover is a must"
             )
         else:
             reason_bits.append(
-                f"Form, opponent, and history all line up for {first_name} against {opponent}. "
-                f"This is as good a week as any to have this player in"
+                f"{form_detail}, {h2h_detail}, and {team} own this fixture. "
+                f"As good a week as any to have {first_name} in"
             )
-    elif has_form and has_weak_opponent:
-        # Two of three — decent case
+    elif has_form and has_good_fixture:
         action = "Start"
-        if injury_prob >= 0.50:
+        if role in ("defender", "goalkeeper"):
+            reason_bits.append(
+                f"{form_detail} and {team} tend to control games against {opponent}. "
+                f"Clean sheet potential is there"
+            )
+        elif injury_prob >= 0.50:
             reason_bits.append(
                 f"{first_name} is in form and {opponent} have been giving up chances. "
                 f"Worth the gamble this week but make sure the bench is solid"
             )
         else:
             reason_bits.append(
-                f"{first_name} is ticking and {opponent} are not exactly shutting teams out. Good week to start"
+                f"{form_detail} and {opponent} are not exactly shutting teams out. Good week to start"
             )
     elif has_form and has_h2h:
         action = "Start"
         reason_bits.append(
-            f"{first_name} has the form and the personal record against {opponent}. That is enough to go with"
+            f"{form_detail} and {h2h_detail}. That is enough to go with"
         )
-    elif has_weak_opponent and has_h2h:
+    elif has_good_fixture and has_h2h:
         action = "Start"
-        reason_bits.append(
-            f"{opponent} are leaky and {first_name} has delivered against them before. Fixture does the talking"
-        )
+        if role in ("defender", "goalkeeper"):
+            reason_bits.append(
+                f"{h2h_detail} and {team} tend to boss this fixture. Good clean sheet spot"
+            )
+        else:
+            reason_bits.append(
+                f"{opponent} are conceding and {h2h_detail}. The fixture does the talking"
+            )
     elif has_form:
-        action = "Start"
         if injury_prob >= 0.45:
+            action = "Start"
             reason_bits.append(
-                f"The form is there for {first_name} but the body and the fixture do not scream must-start"
+                f"{form_detail} but the body and the fixture do not scream must-start"
             )
         else:
-            reason_bits.append(f"{first_name} is in decent form. Fine to run with this week")
-    elif has_weak_opponent:
-        action = "Start" if injury_prob < 0.50 else "Bench"
-        if action == "Start":
-            reason_bits.append(
-                f"{opponent} are conceding enough to make {first_name} interesting, but the form needs to back it up"
-            )
+            action = "Start"
+            reason_bits.append(f"{form_detail}. Fine to run with this week")
+    elif has_good_fixture:
+        if role in ("defender", "goalkeeper"):
+            action = "Start" if injury_prob < 0.50 else "Bench"
+            if action == "Start":
+                reason_bits.append(
+                    f"{team} have been solid in this fixture but {first_name}'s own form needs to back it up"
+                )
+            else:
+                reason_bits.append(
+                    f"The fixture history favours {team} but {risk_pct}% risk is hard to ignore for a defender"
+                )
         else:
-            reason_bits.append(
-                f"{opponent} are beatable but {first_name}'s body is the bigger story right now"
-            )
-    elif form_cold and opponent_tight:
-        action = "Bench"
-        reason_bits.append(
-            f"Cold form against a tight defence. Nothing here pulls you towards starting {first_name}"
-        )
+            action = "Start" if injury_prob < 0.50 else "Bench"
+            if action == "Start":
+                reason_bits.append(
+                    f"{opponent} are conceding enough to make {first_name} interesting, but the form needs to back it up"
+                )
+            else:
+                reason_bits.append(
+                    f"{opponent} are beatable but {first_name}'s body is the bigger story right now"
+                )
     elif form_cold:
         action = "Bench"
-        reason_bits.append(
-            f"{first_name} has gone quiet recently. Hard to justify the start on reputation alone"
-        )
+        if role in ("defender", "goalkeeper"):
+            reason_bits.append(
+                f"No clean sheets recently for {first_name}. Hard to justify the start"
+            )
+        else:
+            reason_bits.append(
+                f"{first_name} has gone quiet recently. Hard to justify the start on reputation alone"
+            )
     elif injury_prob >= 0.55:
         action = "Bench"
         reason_bits.append(
             f"{risk_pct}% risk and no standout matchup data to override it"
         )
-    elif injury_prob < 0.30 and not form_cold:
+    elif injury_prob < 0.30:
         action = "Start"
         reason_bits.append(f"Low risk and no red flags. {first_name} is fine to start")
     else:
@@ -1371,20 +1399,27 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
     vs_assists = _safe_int(vs_opponent.get("assists", 0), 0)
     is_home = matchup_context.get("is_home") or next_fixture.get("is_home")
 
-    # Check if form + opponent + H2H all point the same way
+    # Check if form + fixture + H2H all point the same way (position-aware)
+    val_fixture_history = extra_context.get("fixture_history") or {}
+    val_fh_samples = _safe_int(val_fixture_history.get("samples", 0), 0)
+    val_fh_wins = _safe_int(val_fixture_history.get("wins", 0), 0)
+
     if role in ("defender", "goalkeeper"):
+        # Defenders: clean sheet form, clean sheet H2H, team dominance
         val_has_form = recent_clean_sheets >= 2 and recent_samples > 0
         val_has_h2h = vs_samples >= 1 and _safe_int(vs_opponent.get("clean_sheets", 0), 0) > 0
+        val_has_good_fixture = (val_fh_samples >= 3 and val_fh_wins >= 2) or (is_home is True and val_fh_samples >= 2)
     else:
+        # Attackers: goal form, scoring H2H, weak opponent defense
         val_has_form = (recent_goals + recent_assists) >= 2 and recent_samples > 0
         val_has_h2h = vs_samples >= 1 and (vs_goals + vs_assists) >= 1
-    val_has_weak_opp = opp_conceded >= 1.0
-    matchup_all_align = val_has_form and val_has_weak_opp and val_has_h2h
+        val_has_good_fixture = opp_conceded >= 1.0
+    matchup_all_align = val_has_form and val_has_good_fixture and val_has_h2h
 
     # Override: when matchup fully aligns, Avoid becomes Rotation
     if tier == "Avoid" and matchup_all_align and not low_output:
         tier, emoji = "Rotation", "rotate-cw"
-    elif tier == "Avoid" and is_key_player and val_has_form and val_has_weak_opp and not low_output:
+    elif tier == "Avoid" and is_key_player and val_has_form and val_has_good_fixture and not low_output:
         tier, emoji = "Rotation", "rotate-cw"
 
     risk_pct = round(injury_prob * 100)
@@ -1427,11 +1462,19 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
             opponent_name = _display_team_name(
                 matchup_context.get("opponent") or next_fixture.get("opponent") or ""
             )
-            verdict = (
-                f"The {risk_pct}% risk would normally push {first_name} to Avoid, "
-                f"but the form, {opponent_name}'s defence, and the personal record against them all say this week is different. "
-                f"Worth a punt with bench cover."
-            )
+            if role in ("defender", "goalkeeper"):
+                verdict = (
+                    f"The {risk_pct}% risk would normally push {first_name} to Avoid, "
+                    f"but the clean sheet form, the team's dominance in this fixture, "
+                    f"and the personal record against {opponent_name} all say this week is different. "
+                    f"Worth a punt with bench cover."
+                )
+            else:
+                verdict = (
+                    f"The {risk_pct}% risk would normally push {first_name} to Avoid, "
+                    f"but the form, {opponent_name}'s defence, and the personal record against them all say this week is different. "
+                    f"Worth a punt with bench cover."
+                )
         elif high_risk:
             verdict = (
                 f"The talent is there for {first_name} but {risk_pct}% risk makes this week-to-week. "
