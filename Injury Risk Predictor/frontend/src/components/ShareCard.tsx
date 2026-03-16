@@ -14,9 +14,24 @@ interface ShareCardProps {
 }
 
 const FORMAT_SIZES: Record<Format, { w: number; h: number; label: string }> = {
-  twitter: { w: 1200, h: 628, label: "Twitter (1200×628)" },
-  instagram: { w: 1080, h: 1920, label: "Stories (1080×1920)" },
+  twitter: { w: 1200, h: 628, label: "Twitter (1200x628)" },
+  instagram: { w: 1080, h: 1920, label: "Stories (1080x1920)" },
 };
+
+function riskColor(level: string): string {
+  if (level === "High") return "#ef4444";
+  if (level === "Medium") return "#f59e0b";
+  return "#22c55e";
+}
+
+function tierColor(tier: string): string {
+  const t = (tier || "").toLowerCase();
+  if (t === "premium") return "#a855f7";
+  if (t === "strong") return "#22c55e";
+  if (t === "decent") return "#3b82f6";
+  if (t === "rotation") return "#f59e0b";
+  return "#ef4444"; // avoid
+}
 
 export function ShareCard({ player, onClose }: ShareCardProps) {
   const cardRef = useRef<HTMLDivElement>(null);
@@ -24,21 +39,22 @@ export function ShareCard({ player, onClose }: ShareCardProps) {
   const [downloading, setDownloading] = useState(false);
 
   const size = FORMAT_SIZES[format];
-  const riskColor =
-    player.risk_level === "High"
-      ? "#ef4444"
-      : player.risk_level === "Medium"
-        ? "#f59e0b"
-        : "#22c55e";
+  const rc = riskColor(player.risk_level);
+  const isStories = format === "instagram";
 
-  const yaraLine =
-    player.yara_response?.response_text?.slice(0, 140) ??
-    player.story?.slice(0, 140) ??
-    null;
+  const riskPct = Math.round(player.risk_probability * 100);
 
   const fixtureLabel = player.next_fixture
     ? `${player.next_fixture.is_home ? "vs" : "@"} ${player.next_fixture.opponent}`
     : null;
+
+  // Best available narrative line
+  const insightLine = player.fpl_insight || null;
+  const storyLine = player.story?.slice(0, 180) || null;
+  const displayLine = insightLine || storyLine;
+
+  const valueTier = player.fpl_value?.tier || null;
+  const valuePrice = player.fpl_value?.price || null;
 
   const handleDownload = useCallback(async () => {
     if (!cardRef.current || downloading) return;
@@ -51,7 +67,7 @@ export function ShareCard({ player, onClose }: ShareCardProps) {
         logging: false,
       });
       const link = document.createElement("a");
-      link.download = `${player.name.replace(/\s+/g, "_")}_risk_card.png`;
+      link.download = `${player.name.replace(/\s+/g, "_")}_yara.png`;
       link.href = canvas.toDataURL("image/png");
       link.click();
     } finally {
@@ -59,8 +75,9 @@ export function ShareCard({ player, onClose }: ShareCardProps) {
     }
   }, [downloading, player.name]);
 
-  // Scale factor for preview (fit in modal)
-  const previewScale = format === "twitter" ? 0.42 : 0.22;
+  const previewScale = isStories ? 0.22 : 0.42;
+  const pad = isStories ? 56 : 44;
+  const gap = isStories ? 40 : 20;
 
   return (
     <div
@@ -115,21 +132,22 @@ export function ShareCard({ player, onClose }: ShareCardProps) {
                 height: size.h,
                 transform: `scale(${previewScale})`,
                 transformOrigin: "top left",
-                background: "linear-gradient(160deg, #141414 0%, #0d1f0d 50%, #141414 100%)",
+                background:
+                  "linear-gradient(160deg, #141414 0%, #0d1f0d 50%, #141414 100%)",
                 fontFamily: "system-ui, -apple-system, sans-serif",
                 position: "relative",
                 display: "flex",
                 flexDirection: "column",
-                padding: format === "twitter" ? "40px 48px" : "80px 56px",
+                justifyContent: "space-between",
+                padding: `${pad}px ${pad + 4}px`,
               }}
             >
-              {/* Top Bar */}
+              {/* ── Top: Branding + Team ── */}
               <div
                 style={{
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "space-between",
-                  marginBottom: format === "twitter" ? 24 : 48,
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -137,38 +155,32 @@ export function ShareCard({ player, onClose }: ShareCardProps) {
                     <img
                       src={player.team_badge_url}
                       alt=""
-                      style={{ width: 32, height: 32 }}
+                      style={{ width: isStories ? 36 : 28, height: isStories ? 36 : 28 }}
                       crossOrigin="anonymous"
                     />
                   )}
                   <span
                     style={{
                       color: "#9ca3af",
-                      fontSize: format === "twitter" ? 14 : 18,
+                      fontSize: isStories ? 18 : 14,
                       fontWeight: 500,
                     }}
                   >
                     {player.team} · {player.position}
                   </span>
                 </div>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                  }}
-                >
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <div
                     style={{
-                      width: 20,
-                      height: 20,
+                      width: isStories ? 24 : 20,
+                      height: isStories ? 24 : 20,
                       borderRadius: "50%",
                       background: "#22c55e",
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
                       color: "white",
-                      fontSize: 11,
+                      fontSize: isStories ? 13 : 11,
                       fontWeight: 700,
                     }}
                   >
@@ -177,136 +189,142 @@ export function ShareCard({ player, onClose }: ShareCardProps) {
                   <span
                     style={{
                       color: "#6b7280",
-                      fontSize: 12,
+                      fontSize: isStories ? 14 : 11,
                       fontWeight: 600,
                       letterSpacing: "0.05em",
                     }}
                   >
-                    YARASPORTS
+                    YARA
                   </span>
                 </div>
               </div>
 
-              {/* Player Name + Risk */}
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "flex-end",
-                  justifyContent: "space-between",
-                  marginBottom: format === "twitter" ? 20 : 40,
-                  gap: 16,
-                }}
-              >
-                <div>
-                  <div
-                    style={{
-                      color: "white",
-                      fontSize: format === "twitter" ? 36 : 52,
-                      fontWeight: 800,
-                      lineHeight: 1.1,
-                      letterSpacing: "-0.02em",
-                    }}
-                  >
-                    {player.name}
-                  </div>
-                  {fixtureLabel && (
-                    <div
-                      style={{
-                        color: "#6b7280",
-                        fontSize: format === "twitter" ? 14 : 18,
-                        marginTop: 6,
-                      }}
-                    >
-                      Next: {fixtureLabel}
-                    </div>
-                  )}
-                </div>
-                <div style={{ textAlign: "right", flexShrink: 0 }}>
-                  <div
-                    style={{
-                      color: riskColor,
-                      fontSize: format === "twitter" ? 48 : 64,
-                      fontWeight: 800,
-                      lineHeight: 1,
-                    }}
-                  >
-                    {Math.round(player.risk_probability * 100)}%
-                  </div>
-                  <div
-                    style={{
-                      color: riskColor,
-                      fontSize: format === "twitter" ? 12 : 15,
-                      fontWeight: 600,
-                      opacity: 0.8,
-                      textTransform: "uppercase" as const,
-                      letterSpacing: "0.08em",
-                    }}
-                  >
-                    {player.risk_level} Risk
-                  </div>
-                </div>
-              </div>
-
-              {/* Yara's Response */}
-              {yaraLine && (
+              {/* ── Middle: Name + Risk + Fixture ── */}
+              <div style={{ marginTop: gap }}>
                 <div
                   style={{
-                    background: "rgba(255,255,255,0.04)",
-                    borderRadius: 12,
-                    padding: format === "twitter" ? "14px 18px" : "20px 24px",
-                    borderLeft: "3px solid #22c55e",
-                    marginBottom: format === "twitter" ? 20 : 40,
-                    flex: format === "instagram" ? 1 : undefined,
+                    display: "flex",
+                    alignItems: "flex-end",
+                    justifyContent: "space-between",
+                    gap: 16,
                   }}
                 >
-                  <div
-                    style={{
-                      color: "#d1d5db",
-                      fontSize: format === "twitter" ? 15 : 20,
-                      lineHeight: 1.5,
-                      fontStyle: "italic",
-                    }}
-                  >
-                    &ldquo;{yaraLine}&rdquo;
+                  <div>
+                    <div
+                      style={{
+                        color: "white",
+                        fontSize: isStories ? 52 : 38,
+                        fontWeight: 800,
+                        lineHeight: 1.1,
+                        letterSpacing: "-0.02em",
+                      }}
+                    >
+                      {player.name}
+                    </div>
+                    {fixtureLabel && (
+                      <div
+                        style={{
+                          color: "#6b7280",
+                          fontSize: isStories ? 18 : 14,
+                          marginTop: 6,
+                        }}
+                      >
+                        Next: {fixtureLabel}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ textAlign: "right", flexShrink: 0 }}>
+                    <div
+                      style={{
+                        color: rc,
+                        fontSize: isStories ? 64 : 48,
+                        fontWeight: 800,
+                        lineHeight: 1,
+                      }}
+                    >
+                      {riskPct}%
+                    </div>
+                    <div
+                      style={{
+                        color: rc,
+                        fontSize: isStories ? 15 : 12,
+                        fontWeight: 600,
+                        opacity: 0.8,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.08em",
+                      }}
+                    >
+                      Injury Risk
+                    </div>
                   </div>
                 </div>
-              )}
 
-              {/* Stats Row */}
+                {/* Insight quote */}
+                {displayLine && (
+                  <div
+                    style={{
+                      background: "rgba(255,255,255,0.04)",
+                      borderRadius: 12,
+                      padding: isStories ? "20px 24px" : "14px 18px",
+                      borderLeft: "3px solid #22c55e",
+                      marginTop: gap,
+                    }}
+                  >
+                    <div
+                      style={{
+                        color: "#d1d5db",
+                        fontSize: isStories ? 20 : 15,
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      {displayLine}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── Bottom: Pills ── */}
               <div
                 style={{
                   display: "flex",
-                  gap: format === "twitter" ? 24 : 32,
+                  gap: isStories ? 20 : 16,
                   marginTop: "auto",
-                  paddingTop: format === "twitter" ? 0 : 24,
+                  paddingTop: gap,
+                  flexWrap: "wrap",
                 }}
               >
                 {player.archetype && (
-                  <StatPill
-                    label="Archetype"
+                  <Pill
+                    label="Profile"
                     value={player.archetype}
-                    format={format}
+                    isStories={isStories}
                   />
                 )}
-                {player.fpl_points_projection && (
-                  <StatPill
-                    label="xPts"
-                    value={player.fpl_points_projection.expected_points.toFixed(1)}
-                    format={format}
+                {valueTier && (
+                  <Pill
+                    label="FPL Value"
+                    value={
+                      valuePrice
+                        ? `${valueTier} (${"\u00A3"}${valuePrice.toFixed(1)}m)`
+                        : valueTier
+                    }
+                    color={tierColor(valueTier)}
+                    isStories={isStories}
                   />
                 )}
-                {player.yara_response && (
-                  <StatPill
-                    label="Yara Prob"
-                    value={`${Math.round(player.yara_response.yara_probability * 100)}%`}
-                    format={format}
+                {player.factors && (
+                  <Pill
+                    label="Injuries"
+                    value={`${player.factors.previous_injuries} career`}
+                    isStories={isStories}
                   />
                 )}
-                {player.implied_odds && (
-                  <StatPill
-                    label="Odds"
-                    value={player.implied_odds.american}
-                    format={format}
+                {player.acwr != null && player.acwr > 0 && (
+                  <Pill
+                    label="ACWR"
+                    value={player.acwr.toFixed(2)}
+                    color={player.acwr >= 1.5 ? "#ef4444" : undefined}
+                    isStories={isStories}
                   />
                 )}
               </div>
@@ -326,7 +344,7 @@ export function ShareCard({ player, onClose }: ShareCardProps) {
           </button>
           <button
             onClick={() => {
-              const text = `${player.name} — ${Math.round(player.risk_probability * 100)}% injury risk (${player.risk_level})\n${yaraLine ? `"${yaraLine}"` : ""}\n\nvia @YaraSports`;
+              const text = `${player.name} — ${riskPct}% injury risk (${player.risk_level})${displayLine ? `\n"${displayLine.slice(0, 140)}"` : ""}\n\nvia @YaraSports`;
               window.open(
                 `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`,
                 "_blank"
@@ -335,7 +353,7 @@ export function ShareCard({ player, onClose }: ShareCardProps) {
             className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#222] text-gray-300 text-sm font-medium border border-[#333] hover:border-[#444] transition-colors"
           >
             <Twitter size={15} />
-            Tweet
+            Post
           </button>
         </div>
       </div>
@@ -343,23 +361,25 @@ export function ShareCard({ player, onClose }: ShareCardProps) {
   );
 }
 
-function StatPill({
+function Pill({
   label,
   value,
-  format,
+  color,
+  isStories,
 }: {
   label: string;
   value: string;
-  format: Format;
+  color?: string;
+  isStories: boolean;
 }) {
   return (
     <div>
       <div
         style={{
           color: "#6b7280",
-          fontSize: format === "twitter" ? 10 : 13,
+          fontSize: isStories ? 12 : 10,
           fontWeight: 600,
-          textTransform: "uppercase" as const,
+          textTransform: "uppercase",
           letterSpacing: "0.08em",
           marginBottom: 2,
         }}
@@ -368,8 +388,8 @@ function StatPill({
       </div>
       <div
         style={{
-          color: "white",
-          fontSize: format === "twitter" ? 15 : 20,
+          color: color || "white",
+          fontSize: isStories ? 18 : 14,
           fontWeight: 700,
         }}
       >

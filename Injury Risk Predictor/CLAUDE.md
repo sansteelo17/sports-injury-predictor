@@ -3,6 +3,59 @@
 ## Overview
 ML system predicting injury risk for football (soccer) players using ensemble models (CatBoost, LightGBM, XGBoost). Features a Next.js frontend, FastAPI backend, narrative generation with LLM enrichment, and FPL (Fantasy Premier League) insights. Educational/portfolio project, not for medical use.
 
+## Workflow Orchestration
+
+### 1. Plan Mode Default
+- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions)
+- If something goes sideways, STOP and re-plan immediately — don't keep pushing
+- Use plan mode for verification steps, not just building
+- Write detailed specs upfront to reduce ambiguity
+
+### 2. Subagent Strategy
+- Use subagents liberally to keep main context window clean
+- Offload research, exploration, and parallel analysis to subagents
+- For complex problems, throw more compute at it via subagents
+- One task per subagent for focused execution
+
+### 3. Self-Improvement Loop
+- After ANY correction from the user: update `tasks/lessons.md` with the pattern
+- Write rules for yourself that prevent the same mistake
+- Ruthlessly iterate on these lessons until mistake rate drops
+- Review lessons at session start for relevant project
+
+### 4. Verification Before Done
+- Never mark a task complete without proving it works
+- Diff behavior between main and your changes when relevant
+- Ask yourself: "Would a staff engineer approve this?"
+- Run tests, check logs, demonstrate correctness
+
+### 5. Demand Elegance (Balanced)
+- For non-trivial changes: pause and ask "is there a more elegant way?"
+- If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"
+- Skip this for simple, obvious fixes — don't over-engineer
+- Challenge your own work before presenting it
+
+### 6. Autonomous Bug Fixing
+- When given a bug report: just fix it. Don't ask for hand-holding
+- Point at logs, errors, failing tests — then resolve them
+- Zero context switching required from the user
+- Go fix failing CI tests without being told how
+
+## Task Management
+
+1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
+2. **Verify Plan**: Check in before starting implementation
+3. **Track Progress**: Mark items complete as you go
+4. **Explain Changes**: High-level summary at each step
+5. **Document Results**: Add review section to `tasks/todo.md`
+6. **Capture Lessons**: Update `tasks/lessons.md` after corrections
+
+## Core Principles
+
+- **Simplicity First**: Make every change as simple as possible. Impact minimal code.
+- **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
+- **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
+
 ## Data Sources
 - `data/raw/All_Players_1992-2025.csv` - Historical player stats (49MB, 92K+ rows)
 - `data/raw/player_injuries_impact.csv` - Injury records with days lost
@@ -23,7 +76,6 @@ frontend/
 │   ├── PlayerCard.tsx         # Main player view (risk, FPL, narrative, injury map)
 │   ├── PlayerList.tsx         # Player list/search
 │   ├── TeamOverview.tsx       # Team-level risk summary
-│   ├── ShareCard.tsx          # Social sharing card
 │   └── ...
 ├── src/types/api.ts           # TypeScript types for API responses
 └── src/lib/api.ts             # API client
@@ -48,7 +100,7 @@ src/
 │   └── ...
 ├── inference/
 │   ├── inference_pipeline.py  # Full prediction pipeline
-│   ├── story_generator.py     # Narrative generation (OptaJoe voice, FPL insights)
+│   ├── story_generator.py     # Narrative generation (Yara voice, FPL insights)
 │   ├── context_rag.py         # RAG context chunks for LLM enrichment
 │   ├── llm_client.py          # LLM integration (Ollama/OpenAI-compatible)
 │   ├── risk_card.py           # Generate player risk cards
@@ -72,18 +124,27 @@ scripts/
 ## Narrative System (story_generator.py + context_rag.py + llm_client.py)
 - **Yara IS the model.** She speaks in first person ("I have", "I see"). Never say "my model says" or "the model reads". Yara is the analyst, not a wrapper around a model.
 - **Voice**: Natural, conversational, like a sharp football friend. Stat-driven but human. No template-speak, no dropdown labels ("Start with bench cover"). Say things like "I see why you would want him" or "The numbers just are not there."
+- **No em dashes.** Do not use — in any generated text.
 - **`_stat_lead(number, unit)`**: Formats stat-first leads like "4 career injuries. " — the sentence that follows must NOT restate the number
 - **`_position_group()`**: Returns "goalkeeper", "defender", "attacker", "midfielder", or "other" — goalkeepers are NOT defenders
 - **`_safe_float()` / `_safe_int()`**: Handle None, NaN, and Inf — defined in both story_generator.py and context_rag.py
 - **Topic dedup**: `covered` set in `generate_player_story()` tracks what the LEAD already said to prevent repetition
 - **3-layer match data**: (1) player recent form, (2) opponent defensive record, (3) player H2H vs opponent
-- **Role-aware**: Goals/assists for attackers, clean sheets for defenders
+- **Role-aware signals**: Goals/assists for attackers, clean sheets for defenders. "Opponent concedes a lot" is a PRO for attackers but IRRELEVANT for defenders (their value comes from clean sheets, not opponent defensive weakness).
 
-## FPL Model Logic (story_generator.py `get_fpl_insight`)
-- `fixture_is_attractive`: opponent concedes >= 1.2 at home or >= 1.5 away, or player H2H >= 2
-- `high_output_player`: output_per_90 >= 0.4, or defender with >= 2 recent clean sheets
-- High risk + attractive fixture + high output = "Start with bench cover" (not hard "Bench")
-- Value assessment respects fixture context — don't auto-avoid high-risk players with great fixtures
+## FPL Insight Logic (story_generator.py `get_fpl_insight`)
+- **Position-aware matchup signals**:
+  - Attackers/mids: form = goal involvements, fixture = weak opponent defense (opp_conceded >= 1.0), H2H = scoring record
+  - Defenders/GKs: form = clean sheets, fixture = team dominance in fixture history, H2H = clean sheet record
+- **Decision is data-driven**: gather pros (form, fixture, H2H, home, ownership) and cons (risk, cold form, tight opponent), then weigh them
+- **"Fan desire" case**: When form + fixture + H2H ALL align for a high-risk player, use language like "I can see why a {team} fan would want {name} in against {opponent}". This ONLY fires when all three signals point the same way — not for partial matches.
+- **FPL Insight and Value must be coherent**: If value says Avoid, insight should not say Start unless the matchup fully overrides it. Both sections use the same position-aware matchup logic.
+- **No action label prefix**: The insight text is the sentence itself, not "Start. {reason}" — the action is metadata, not prose.
+
+## FPL Value Logic (story_generator.py `get_fpl_value_assessment`)
+- Tier thresholds based on `adjusted_value = output_signal * risk_factor`
+- **Matchup override**: When form + fixture + H2H all align (position-aware), Avoid bumps to Rotation
+- Verdict text is position-aware: defenders get clean sheet language, attackers get scoring language
 
 ## Known Issues / Tech Debt
 - `api/main.py` is monolithic (3700+ lines) — `player_row_to_risk()` alone is 212 lines
@@ -97,7 +158,7 @@ scripts/
 - `calculate_clean_sheet_odds()` uses hardcoded 1.2 PL average, ignores actual team defense
 - Fixture/venue RAG chunks overlap — can produce repetitive LLM output
 - `severity_skewed` outlier detection doesn't handle duplicate max values correctly
-- Archetype rule-based fallback: "Recurring Issues" must be checked before "Injury Prone" (fixed, was unreachable)
+- ShareCard removed — needs full rebuild with useful data before re-adding
 
 ## Running
 ```bash
