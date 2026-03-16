@@ -21,7 +21,9 @@ import {
   User,
   Users,
   Zap,
+  Share2,
 } from "lucide-react";
+import { ShareCard } from "./ShareCard";
 
 interface PlayerCardProps {
   player: PlayerRisk;
@@ -119,6 +121,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
   ];
   type TabId = (typeof tabs)[number]["id"];
   const [activeTab, setActiveTab] = useState<TabId>("overview");
+  const [showShare, setShowShare] = useState(false);
 
   return (
     <div
@@ -187,7 +190,17 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
-                {/* Share button commented out for now */}
+                <button
+                  onClick={() => setShowShare(true)}
+                  className={`p-2 rounded-lg transition-colors ${
+                    darkMode
+                      ? "hover:bg-white/10 text-gray-400 hover:text-white"
+                      : "hover:bg-gray-100 text-gray-500 hover:text-gray-800"
+                  }`}
+                  title="Share card"
+                >
+                  <Share2 size={16} />
+                </button>
                 <RiskBadge
                   level={player.risk_level}
                   probability={player.risk_probability}
@@ -990,7 +1003,13 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
         </>
       )}
 
-      {/* Share card modal commented out for now */}
+      {showShare && (
+        <ShareCard
+          player={player}
+          darkMode={darkMode}
+          onClose={() => setShowShare(false)}
+        />
+      )}
     </div>
   );
 }
