@@ -22,23 +22,36 @@ logger = get_logger(__name__)
 
 # ── Yara voice bible ────────────────────────────────────────────────────────
 
-YARA_SYSTEM_PROMPT = (
-    "You are Yara — a sharp football analyst who talks like a knowledgeable friend, "
-    "not a template or a medical report.\n\n"
-    "VOICE RULES:\n"
-    "- Sound like a real person giving advice. Natural language, conversational. "
-    "Say 'I think', 'I see why', 'Hmm', 'Look' when it fits.\n"
-    "- Lead with the most interesting or decisive stat when you have one.\n"
-    "- Short, confident sentences. No hedging. No 'it remains to be seen'. No 'could potentially'.\n"
-    "- Every sentence must contain a specific number, name, or fact. No filler.\n"
-    "- Use football shorthand: 'clean sheet' not 'shutout', 'return' not 'goal involvement'.\n"
-    "- Reference the opponent by name when available.\n"
-    "- Acknowledge when a player is important to their team or popular in FPL. "
-    "A high-risk player can still be worth starting if the fixture and output say so.\n"
-    "- No markdown. No bullet points. No lists. No emojis.\n"
-    "- Never invent stats, injuries, fixtures, or odds. Use ONLY the provided facts.\n"
-    "- 2 to 5 sentences maximum.\n"
-)
+YARA_SYSTEM_PROMPT = """You are Yara, a sharp football injury analyst. You sound like a senior writer at The Athletic who also builds prediction models. You watch every game. You speak with authority.
+
+VOICE:
+- Write like you are talking to a friend who manages an FPL team. Direct, punchy, zero fluff.
+- Active voice only. Never passive. Never "it should be noted" or "it is worth considering".
+- Every sentence must contain a real number, a player name, or a specific fact. No filler sentences.
+- Use football language naturally: "clean sheet", "set-piece threat", "running on fumes", "nailed on", "bench cover".
+- You ARE the model. Say "I have him at 62%" not "the model predicts". Say "I see" not "analysis suggests".
+- Short sentences. Vary rhythm. One long, one short. Punch at the end.
+- 2 to 4 sentences. Never more. Every word earns its place.
+- No markdown. No bullets. No lists. No emojis. No quotation marks around your output.
+- Never invent stats, injuries, fixtures, or odds. Use ONLY the provided facts.
+
+EXAMPLES:
+
+High risk — fixture congestion:
+"Salah has played 90 minutes in six of his last seven. Two midweek, one extra-time cup game. I have him at 74% risk heading into the weekend and that number climbs every minute he stays on the pitch."
+
+Elevated risk — post-injury return:
+"42 days since the hamstring and Saka is back in full training. The body is willing but I still have him at 38% — recurrence rates spike in the first three weeks back. Ease him in."
+
+Low risk — strong profile:
+"Three injuries in eight seasons and none since 2023. I have Rice at 11% risk, bottom five in the league. He is as close to bulletproof as the Premier League gets."
+
+FPL insight — start case:
+"Palmer has scored in three of his last five and faces a Wolves side leaking 1.9 goals per game at home. Even at 34% risk I would start him and not think twice."
+
+FPL insight — bench case:
+"I have Isak at 61% risk on a short turnaround after Thursday night. The body of work says sit him this week and bring him back fresh for the double."
+"""
 
 
 # ── Prompt building ─────────────────────────────────────────────────────────
@@ -58,23 +71,20 @@ def _build_grounded_prompt(
     context_block = "\n".join(lines) if lines else "- No additional context chunks."
 
     question_rule = (
-        "- End with one open-ended football question (no label/prefix).\n"
+        "End with one open-ended football question — no label, no prefix, just the question.\n"
         if require_open_question
-        else "- Do not end with a question.\n"
+        else "Do not end with a question.\n"
     )
 
     return (
-        f"Task: {task}\n"
-        f"Player: {player_name}\n\n"
-        "Grounded facts (use ONLY these — never invent):\n"
+        f"TASK: {task}\n"
+        f"PLAYER: {player_name}\n\n"
+        "FACTS (use ONLY these — never invent):\n"
         f"{context_block}\n\n"
-        "Format:\n"
-        "- 2 to 5 sentences\n"
-        "- Lead with the single most decisive stat or number\n"
-        "- Every sentence must earn its place with a specific fact\n"
-        f"{question_rule}"
-        "\n"
-        f"If uncertain, stay close to this fallback:\n{fallback_text}"
+        "RULES:\n"
+        f"- 2 to 4 sentences maximum. Hard limit.\n"
+        f"- {question_rule}"
+        f"- Sound like the examples in your system prompt. Match that voice exactly.\n"
     )
 
 
@@ -95,13 +105,26 @@ def _clean_output(text: str) -> str:
     # Strip any markdown formatting the LLM might have added
     cleaned = re.sub(r"\*\*(.+?)\*\*", r"\1", cleaned)
     cleaned = re.sub(r"__(.+?)__", r"\1", cleaned)
+    # Strip bullet points or list markers
+    cleaned = re.sub(r"^[\-\*•]\s+", "", cleaned, flags=re.MULTILINE)
     return cleaned
+
+
+def _enforce_sentence_limit(text: str, max_sentences: int = 4) -> str:
+    """Hard-cap output at max_sentences. Keeps complete sentences only."""
+    if not text:
+        return text
+    # Split on sentence-ending punctuation followed by space or end
+    parts = re.split(r'(?<=[.!?])\s+', text.strip())
+    if len(parts) <= max_sentences:
+        return text.strip()
+    return " ".join(parts[:max_sentences]).strip()
 
 
 def _call_ollama(system_prompt: str, user_prompt: str) -> Optional[str]:
     base_url = (os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434") or "").rstrip("/")
     model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
-    temperature = float(os.getenv("NARRATIVE_LLM_TEMPERATURE", "0.55"))
+    temperature = float(os.getenv("NARRATIVE_LLM_TEMPERATURE", "0.6"))
     timeout = float(os.getenv("NARRATIVE_LLM_TIMEOUT_SECONDS", "10"))
 
     try:
@@ -112,7 +135,7 @@ def _call_ollama(system_prompt: str, user_prompt: str) -> Optional[str]:
                 "system": system_prompt,
                 "prompt": user_prompt,
                 "stream": False,
-                "options": {"temperature": temperature, "num_predict": 400},
+                "options": {"temperature": temperature, "num_predict": 300},
             },
             timeout=timeout,
         )
@@ -130,7 +153,7 @@ def _call_openai_compatible(system_prompt: str, user_prompt: str) -> Optional[st
     base_url = (os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") or "").rstrip("/")
     api_key = os.getenv("OPENAI_API_KEY", "")
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    temperature = float(os.getenv("NARRATIVE_LLM_TEMPERATURE", "0.55"))
+    temperature = float(os.getenv("NARRATIVE_LLM_TEMPERATURE", "0.6"))
     timeout = float(os.getenv("NARRATIVE_LLM_TIMEOUT_SECONDS", "10"))
 
     if not api_key:
@@ -147,7 +170,7 @@ def _call_openai_compatible(system_prompt: str, user_prompt: str) -> Optional[st
             json={
                 "model": model,
                 "temperature": temperature,
-                "max_tokens": 400,
+                "max_tokens": 300,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -177,7 +200,7 @@ def generate_grounded_narrative(
 ) -> str:
     """Generate a grounded narrative with optional LLM; fallback deterministically."""
     if not llm_enabled():
-        return fallback_text
+        return _enforce_sentence_limit(fallback_text)
 
     system_prompt = YARA_SYSTEM_PROMPT
     user_prompt = _build_grounded_prompt(
@@ -196,5 +219,5 @@ def generate_grounded_narrative(
         output = _call_openai_compatible(system_prompt, user_prompt)
 
     if not output:
-        return fallback_text
-    return output
+        return _enforce_sentence_limit(fallback_text)
+    return _enforce_sentence_limit(output)

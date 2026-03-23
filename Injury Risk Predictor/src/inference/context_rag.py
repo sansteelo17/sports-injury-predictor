@@ -1006,7 +1006,7 @@ def build_player_context_chunks(
     # Venue chunk
     is_home = (matchup.get("is_home")
                if matchup.get("is_home") is not None
-               else extra_context.get("next_fixture", {}).get("is_home"))
+               else (extra_context.get("next_fixture") or {}).get("is_home"))
     if opponent and is_home is not None:
         venue_text = (f"This is a home fixture for {call_name}'s side against {matchup_opponent_display or opponent}."
                       if is_home else

@@ -831,12 +831,10 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
 
     return generate_grounded_narrative(
         task=(
-            f"Write a stat-first risk narrative for {first_name}. "
-            "Lead with the most decisive number. Short declarative sentences. "
-            "Every sentence earns its place with a specific fact. "
-            "Reference the player's recent form, their personal record against this opponent, "
-            "and the opponent's defensive record if available in the context. "
-            "Do NOT repeat any fact already stated. Keep it sharp and specific."
+            f"Write {first_name}'s injury risk story. You are a football analyst who watches every game. "
+            f"Lead with the single most telling number — minutes played, days since last injury, "
+            f"schedule density, whatever drives the risk. Then explain what it means in 1-2 more sentences. "
+            f"Sound like The Athletic, not a medical report. Active voice, punchy, specific."
         ),
         player_name=name,
         context_chunks=context_chunks,
@@ -1097,7 +1095,7 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
         action = "Start"
         if injury_prob >= 0.50:
             reason_bits.append(
-                f"I can see why a {team} fan would want {first_name} in against {opponent} this week. "
+                f"I can see why {'an' if team and team[0] in 'AEIOUaeiou' else 'a'} {team} fan would want {first_name} in against {opponent} this week. "
                 f"{form_detail}, {h2h_detail}, and the team have been dominant in this fixture. "
                 f"The risk is real but everything else says go for it. Bench cover is a must"
             )
@@ -1180,7 +1178,7 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
     elif injury_prob >= 0.55:
         action = "Bench"
         reason_bits.append(
-            f"{risk_pct}% risk and no standout matchup data to override it"
+            f"I have {first_name} at {risk_pct}% risk and nothing in the fixture or form to talk me out of benching"
         )
     elif injury_prob < 0.30:
         action = "Start"
@@ -1203,9 +1201,10 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
 
     polished = generate_grounded_narrative(
         task=(
-            f"Write a 1-2 sentence FPL decision for {first_name} in Yara's voice. "
-            f"The decision is: {action}. Give the reason why, do not repeat "
-            "facts from the risk analysis. Sound like a sharp football friend."
+            f"Write a 2-3 sentence FPL manager tip for {first_name}. "
+            f"The decision is: {action}. Explain why using fixture, form, and matchup data. "
+            f"Talk like a sharp friend who manages a top-1k FPL team — confident, direct, no hedging. "
+            f"Do not restate injury risk numbers already covered in the risk analysis."
         ),
         player_name=player_data.get("name", "This player"),
         context_chunks=context_chunks,
@@ -1284,7 +1283,7 @@ def calculate_scoring_odds(player_data: Dict, extra_context: Optional[Dict] = No
         )
     )
     scoring_analysis = generate_grounded_narrative(
-        task="Write a concise odds-to-score analysis for this player.",
+        task=f"Write a 2-sentence scoring odds take for {player_data.get('name', 'this player')}. Lead with the key number — goals per 90, scoring rate, or opponent defensive record. Say whether the price is right.",
         player_name=player_data.get("name", "This player"),
         context_chunks=scoring_context,
         fallback_text=fallback_analysis,
@@ -1772,41 +1771,38 @@ def _generate_fpl_tip(player_data, yara_prob, market_prob, opponent, is_home):
     """Generate FPL-specific tip based on model + market analysis."""
     name = _call_name(player_data)
     injury_prob = player_data.get("ensemble_prob", 0.5)
-    archetype = player_data.get("archetype", "Unknown")
-    form = player_data.get("form", 0)
     price = player_data.get("price", 0)
     days_since = player_data.get("days_since_last_injury", 365)
 
     # High value + low risk = strong pick
     if yara_prob >= 0.4 and injury_prob < 0.3:
         if market_prob and yara_prob > market_prob:
-            return f"Strong pick. {name}'s output exceeds market expectations and injury risk is low. Captain material if the fixture is right."
-        return f"Reliable starter with consistent output. {name} is a set-and-forget option right now."
+            return f"I have {name} outperforming the market and the body is holding up. Captain shout if the fixture lands."
+        return f"{name} is nailed on right now. Low risk, consistent output. Set and forget."
 
     # Good output but injury concerns
     if yara_prob >= 0.3 and injury_prob >= 0.4:
-        return f"High ceiling, high floor. {name} delivers when fit but the injury flag means you need bench cover ready."
+        return f"{name} delivers when fit but {injury_prob*100:.0f}% risk means you need someone ready on the bench."
 
     # Recently returned
     if days_since < 30:
-        return f"Just back from injury. {name} may be eased in so don't expect full 90s. Wait a week before committing."
+        return f"{name} is {days_since} days back from injury. Expect managed minutes. Give it another week."
 
     # Fixture-dependent
     if opponent and is_home is not None:
-        venue = "home" if is_home else "away"
         if is_home and yara_prob >= 0.25:
-            return f"Home fixture favors {name}. Worth a punt if you have the funds, but don't reach."
+            return f"Home fixture helps {name}. Worth the punt but do not captain."
         elif not is_home and yara_prob < 0.25:
-            return f"Tough away fixture. {name} is a hold, not a buy this week."
+            return f"Tough away trip. Hold {name} this week, do not chase."
 
     # Low output
     if yara_prob < 0.15:
-        return f"{name}'s scoring rate is too low for FPL relevance. Look elsewhere unless you need a bench filler."
+        return f"{name} is not scoring enough to justify a spot. Bench fodder at best."
 
     # Default
     if price and price > 8:
-        return f"At {price}m, {name} needs consistent returns to justify the price tag. Monitor form before committing."
-    return f"Solid mid-range option. {name} won't lose you your league but won't win it either."
+        return f"{name} at {price}m needs to return every week to pay off. The numbers say hold, not buy."
+    return f"Steady option. {name} ticks along without setting the world on fire."
 
 
 def generate_lab_notes(player_data: Dict, extra_context: Optional[Dict] = None) -> Optional[Dict]:
@@ -2018,8 +2014,9 @@ def generate_lab_notes(player_data: Dict, extra_context: Optional[Dict] = None) 
         })
     summary = generate_grounded_narrative(
         task=(
-            "Write Yara's Lab Notes summary for builders in plain football language. "
-            "Keep it human-readable and avoid jargon. 2-3 short sentences."
+            f"Write a 2-3 sentence lab notes summary for {name}. "
+            "Explain what is driving the risk number in plain football language. "
+            "Name the top driver and say why it matters. Direct and specific, no jargon."
         ),
         player_name=name,
         context_chunks=llm_context,
