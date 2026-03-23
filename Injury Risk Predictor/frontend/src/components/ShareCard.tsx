@@ -339,7 +339,7 @@ async function drawCard(
     ctx.fillStyle = stat.color;
     const isLongVal = stat.value.length > 6;
     ctx.font = `700 ${isLongVal ? 18 : 26}px ${FONT}`;
-    ctx.fillText(stat.value, sx + 14, sy + isLongVal ? 52 : 56);
+    ctx.fillText(stat.value, sx + 14, sy + (isLongVal ? 52 : 56));
   });
 
   // ── Narrative strip at bottom ──
