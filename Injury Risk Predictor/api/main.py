@@ -2139,6 +2139,7 @@ def get_player_matchup_context(
         played = sorted(played, key=lambda h: h.get("kickoff_time") or "")
 
         recent = played[-5:]
+        minutes_last_5 = [_safe_int(h.get("minutes"), 0) for h in played[-5:]]
         recent_goals = sum(_safe_int(h.get("goals_scored"), 0) for h in recent)
         recent_assists = sum(_safe_int(h.get("assists"), 0) for h in recent)
         recent_clean_sheets = sum(_safe_int(h.get("clean_sheets"), 0) for h in recent)
@@ -2155,6 +2156,11 @@ def get_player_matchup_context(
             2,
         )
 
+        # Past seasons summary for richer H2H context
+        history_past = summary.get("history_past", [])
+        past_season_minutes = sum(_safe_int(s.get("total_points"), 0) for s in history_past)
+        seasons_played = len(history_past)
+
         opponent = next_fixture_data.get("opponent") if next_fixture_data else None
         opponent_id = _resolve_fpl_team_id(opponent)
         vs_opponent = []
@@ -2167,7 +2173,7 @@ def get_player_matchup_context(
         vs_context = None
         if opponent:
             if vs_opponent:
-                vs_recent = vs_opponent[-3:]
+                vs_recent = vs_opponent[-5:]
                 vs_goals = sum(_safe_int(h.get("goals_scored"), 0) for h in vs_recent)
                 vs_assists = sum(_safe_int(h.get("assists"), 0) for h in vs_recent)
                 vs_clean_sheets = sum(_safe_int(h.get("clean_sheets"), 0) for h in vs_recent)
@@ -2222,6 +2228,9 @@ def get_player_matchup_context(
                 "avg_points": recent_avg_points,
                 "total_xg": recent_total_xg,
             },
+            "minutes_last_5": minutes_last_5,
+            "games_played": len(played),
+            "seasons_played": seasons_played,
             "opponent": opponent,
             "is_home": bool(next_fixture_data.get("is_home")) if next_fixture_data else None,
             "vs_opponent": vs_context,
@@ -2778,10 +2787,10 @@ def enhance_yara_response(
             })
 
         llm_task = (
-            f"Lead with the gap between your projection and the bookmakers on {first_name}. "
-            f"Say whether the market is right or wrong and why. "
-            f"Reference {first_name}'s scoring rate, injury risk, and the opponent. "
-            f"Keep it concise and specific."
+            f"Write Yara's market take on {first_name} in 2-3 sentences. "
+            f"Lead with the gap between your number and the bookmakers. "
+            f"Say whether the market is sleeping on him or has it right, and why. "
+            f"Reference scoring rate and the opponent. Confident, direct, no hedging."
         )
         enriched = generate_grounded_narrative(
             task=llm_task,
@@ -2798,11 +2807,11 @@ def enhance_yara_response(
     fpl_tip = base_response.get("fpl_tip") if base_response else None
     if not fpl_tip:
         if injury_prob >= 0.45:
-            fpl_tip = f"Start with cover only. {risk_pct}% risk caps the ceiling."
+            fpl_tip = f"I would have bench cover ready. {risk_pct}% risk is too high to go in blind."
         elif yara_probability >= 0.4:
-            fpl_tip = f"Start if owned. {yara_pct}% projection supports confidence."
+            fpl_tip = f"Start him. I have {yara_pct}% confidence in the output this week."
         else:
-            fpl_tip = "Playable, not a captain priority this week."
+            fpl_tip = "Playable but not a captaincy shout. Steady floor, limited ceiling."
 
     return {
         "response_text": response_text,
@@ -3476,6 +3485,169 @@ async def list_players(team: Optional[str] = None, risk_level: Optional[str] = N
         ))
 
     return players
+
+
+def _prediction_risk_label(score: float) -> str:
+    if score >= 0.65:
+        return "HIGH"
+    elif score >= 0.35:
+        return "ELEVATED"
+    return "LOW"
+
+
+def _build_player_reasons(row: dict, matchup: Optional[dict], fpl: Optional[dict]) -> List[str]:
+    """Build 2-3 short, specific reasons from actual model features."""
+    reasons: List[str] = []
+    name = row.get("name", "Player")
+    first = name.split()[-1] if name else "Player"
+
+    # Minutes / workload
+    minutes_list = (matchup or {}).get("minutes_last_5", [])
+    full_90s = sum(1 for m in minutes_list if m >= 85)
+    matches_30 = _safe_int(row.get("matches_last_30", 0), 0)
+    if full_90s >= 4 and len(minutes_list) >= 5:
+        reasons.append(f"played 90 mins in {full_90s} of last {len(minutes_list)} games")
+    elif matches_30 >= 6:
+        reasons.append(f"{matches_30} matches in 30 days")
+    elif matches_30 >= 4:
+        reasons.append(f"{matches_30} games in a month, limited rest")
+
+    # Injury recency
+    days_since = _safe_int(row.get("days_since_last_injury", 365), 365)
+    if days_since < 30:
+        reasons.append(f"only {days_since} days since last injury")
+    elif days_since < 60:
+        reasons.append(f"still in recovery window at {days_since} days back")
+
+    # Injury history
+    prev = _safe_int(row.get("previous_injuries", 0), 0)
+    total_lost = _safe_int(row.get("total_days_lost", 0), 0)
+    if prev >= 8:
+        reasons.append(f"{prev} career injuries, {total_lost} total days lost")
+    elif prev >= 4:
+        reasons.append(f"{prev} previous injuries on record")
+
+    # ACWR / workload spike
+    acwr = _safe_float(row.get("acwr", 0.0), 0.0)
+    if acwr >= 1.5:
+        reasons.append(f"ACWR at {acwr:.2f}, workload spike flagged")
+    elif acwr >= 1.2:
+        reasons.append(f"elevated workload ratio at {acwr:.2f}")
+
+    # Age factor
+    age = _safe_int(row.get("age", 25), 25)
+    if age >= 32 and prev >= 3:
+        reasons.append(f"age {age} with injury history raises baseline risk")
+
+    # FPL injury news
+    if fpl and fpl.get("news"):
+        news = fpl["news"][:50]
+        reasons.append(news.rstrip(". ").lower())
+
+    # Cap at 3, ensure at least 2
+    if len(reasons) < 2:
+        prob = _safe_float(row.get("ensemble_prob", 0.5), 0.5)
+        if prob >= 0.5:
+            reasons.append("model flags elevated baseline from combined features")
+        else:
+            reasons.append("clean recent profile supports availability")
+
+    return reasons[:3]
+
+
+def _build_odds_movement(row: dict, fpl: Optional[dict]) -> str:
+    """Describe odds movement based on available data."""
+    prob = _safe_float(row.get("ensemble_prob", 0.5), 0.5)
+    implied = calculate_implied_odds(prob)
+    decimal_odds = implied.decimal if hasattr(implied, "decimal") else 1 / max(prob, 0.01)
+
+    # No historical odds tracking yet, so describe current position
+    if prob >= 0.65:
+        return f"short at {decimal_odds:.1f}, model sees high risk"
+    elif prob >= 0.45:
+        return f"sitting at {decimal_odds:.1f}, elevated concern"
+    elif prob >= 0.25:
+        return f"drifting at {decimal_odds:.1f}, moderate risk"
+    return f"long at {decimal_odds:.1f}, low concern"
+
+
+@app.get("/api/predictions")
+async def get_predictions(team: str):
+    """Get injury risk predictions for an entire squad. Used by the auto-poster."""
+    if inference_df is None:
+        raise HTTPException(status_code=503, detail="Models not loaded")
+
+    # Match team name flexibly
+    team_lower = team.lower()
+    df = inference_df[inference_df["team"].str.lower() == team_lower]
+    if df.empty:
+        # Try partial match
+        df = inference_df[inference_df["team"].str.lower().str.contains(team_lower)]
+    if df.empty:
+        raise HTTPException(status_code=404, detail={"error": "Team not found"})
+
+    team_name = df.iloc[0]["team"]
+
+    # Get current gameweek
+    try:
+        client = FPLClient()
+        gw_data = client.get_current_gameweek()
+        gameweek = gw_data.get("id", 0) if gw_data else 0
+    except Exception:
+        gameweek = 0
+
+    # Get next fixture for the team
+    next_fixture_data = get_next_fixture_for_team(team_name, 0.5)
+    next_opponent = (next_fixture_data or {}).get("opponent", "Unknown")
+
+    players_out = []
+    for _, row in df.sort_values("ensemble_prob", ascending=False).iterrows():
+        row_dict = row.to_dict()
+        name = row_dict.get("name", "Unknown")
+        prob = _safe_float(row_dict.get("ensemble_prob", 0.5), 0.5)
+
+        # Get FPL stats
+        fpl = get_fpl_stats_for_player(name, team_hint=team_name)
+
+        # Get matchup context (includes minutes_last_5 after the fix)
+        matchup = get_player_matchup_context(
+            player_name=name,
+            team_hint=team_name,
+            next_fixture_data=next_fixture_data,
+        )
+
+        minutes_last_5 = (matchup or {}).get("minutes_last_5", [])
+        games_last_5 = len([m for m in minutes_last_5 if m > 0])
+
+        # H2H injury rate vs opponent (from fixture history)
+        h2h_injury_rate = 0.0
+        vs_opp = (matchup or {}).get("vs_opponent") or {}
+        vs_samples = _safe_int(vs_opp.get("samples", 0), 0)
+        if vs_samples > 0:
+            # Approximate: if player missed any of these H2H games, injury rate is higher
+            h2h_injury_rate = round(max(0, 1 - (vs_samples / max(vs_samples + 1, 1))), 2)
+
+        reasons = _build_player_reasons(row_dict, matchup, fpl)
+        odds_movement = _build_odds_movement(row_dict, fpl)
+
+        players_out.append({
+            "name": name,
+            "team": team_name,
+            "risk_score": round(prob, 3),
+            "risk_label": _prediction_risk_label(prob),
+            "reasons": reasons,
+            "minutes_last_5": minutes_last_5,
+            "games_last_5": games_last_5,
+            "odds_movement": odds_movement,
+            "h2h_next_opponent": next_opponent,
+            "h2h_injury_rate_vs_opponent": h2h_injury_rate,
+        })
+
+    return {
+        "team": team_name,
+        "gameweek": gameweek,
+        "players": players_out,
+    }
 
 
 @app.get("/api/players/{player_name}/risk", response_model=PlayerRisk)
