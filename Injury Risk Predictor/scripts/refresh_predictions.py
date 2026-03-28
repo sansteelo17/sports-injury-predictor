@@ -561,7 +561,28 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
 
     # Build snapshots with player-scaled workload + team form
     print("\n6. Computing player workloads (team schedule × playing time)...")
-    snapshot_date = datetime.now()
+
+    # Break detection: if no matches in the last 5 days, use the day after
+    # the last match as the snapshot date. This prevents workload features from
+    # collapsing to zero during international breaks. 5 days is safe because
+    # even the longest midweek-to-weekend gap is only 4 days.
+    now = datetime.now()
+    if "Date" in matches.columns and len(matches) > 0:
+        last_match_date = matches["Date"].max()
+        if hasattr(last_match_date, "to_pydatetime"):
+            last_match_date = last_match_date.to_pydatetime()
+        days_since_last = (now - last_match_date).days
+        if days_since_last > 5:
+            snapshot_date = last_match_date + timedelta(days=1)
+            print(f"   Break detected: last match was {days_since_last} days ago "
+                  f"({last_match_date.strftime('%Y-%m-%d')})")
+            print(f"   Using snapshot date {snapshot_date.strftime('%Y-%m-%d')} "
+                  f"instead of today to preserve workload features")
+        else:
+            snapshot_date = now
+    else:
+        snapshot_date = now
+
     rows = []
 
     # Cache team-level computations (same for all players on a team)
