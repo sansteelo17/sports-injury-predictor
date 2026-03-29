@@ -201,30 +201,51 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                 >
                   <Share2 size={16} />
                 </button>
-                <RiskBadge
-                  level={player.risk_level}
-                  probability={player.risk_probability}
-                  size="lg"
-                  darkMode={darkMode}
-                />
+                {player.is_currently_injured ? (
+                  <span className={`inline-block px-3 py-1 rounded-lg text-sm font-bold ${
+                    darkMode ? 'bg-red-900/40 text-red-400 border border-red-500/30' : 'bg-red-100 text-red-600 border border-red-200'
+                  }`}>OUT</span>
+                ) : (
+                  <RiskBadge
+                    level={player.risk_level}
+                    probability={player.risk_probability}
+                    size="lg"
+                    darkMode={darkMode}
+                  />
+                )}
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Risk Meter */}
+      {/* Risk Meter or Injury Banner */}
       <div
         className={`px-4 sm:px-6 py-4 ${darkMode ? "border-b border-[#1f1f1f]" : "border-b border-gray-100"}`}
       >
-        <RiskMeter probability={player.risk_probability} darkMode={darkMode} />
-        {player.risk_percentile != null && player.risk_percentile >= 0.7 && (
-          <p
-            className={`text-xs mt-2 ${darkMode ? "text-gray-500" : "text-gray-400"}`}
-          >
-            Higher risk than {Math.round(player.risk_percentile * 100)}% of
-            Premier League players tracked
-          </p>
+        {player.is_currently_injured ? (
+          <div className={`rounded-lg p-3 ${darkMode ? 'bg-red-900/20 border border-red-500/20' : 'bg-red-50 border border-red-200'}`}>
+            <p className={`text-sm font-medium ${darkMode ? 'text-red-400' : 'text-red-600'}`}>
+              Currently injured
+            </p>
+            {player.injury_news && (
+              <p className={`text-xs mt-1 ${darkMode ? 'text-red-400/70' : 'text-red-500'}`}>
+                {player.injury_news}
+              </p>
+            )}
+          </div>
+        ) : (
+          <>
+            <RiskMeter probability={player.risk_probability} darkMode={darkMode} />
+            {player.risk_percentile != null && player.risk_percentile >= 0.7 && (
+              <p
+                className={`text-xs mt-2 ${darkMode ? "text-gray-500" : "text-gray-400"}`}
+              >
+                Higher risk than {Math.round(player.risk_percentile * 100)}% of
+                Premier League players tracked
+              </p>
+            )}
+          </>
         )}
       </div>
 

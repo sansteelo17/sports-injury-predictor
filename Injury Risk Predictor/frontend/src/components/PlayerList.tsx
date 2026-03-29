@@ -70,14 +70,27 @@ export function PlayerList({ players, onSelectPlayer, selectedPlayer, darkMode =
               </div>
             </div>
             <div className="text-right flex-shrink-0">
-              <RiskBadge level={player.risk_level} size="sm" darkMode={darkMode} />
-              <div className={`text-xs mt-0.5 font-medium ${
-                player.risk_level === 'High' ? 'text-red-400' :
-                player.risk_level === 'Medium' ? 'text-amber-400' :
-                darkMode ? 'text-[#86efac]' : 'text-emerald-600'
-              }`}>
-                {Math.round(player.risk_probability * 100)}%
-              </div>
+              {player.is_currently_injured ? (
+                <>
+                  <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
+                    darkMode ? 'bg-red-900/40 text-red-400' : 'bg-red-100 text-red-600'
+                  }`}>OUT</span>
+                  <div className={`text-xs mt-0.5 ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
+                    Injured
+                  </div>
+                </>
+              ) : (
+                <>
+                  <RiskBadge level={player.risk_level} size="sm" darkMode={darkMode} />
+                  <div className={`text-xs mt-0.5 font-medium ${
+                    player.risk_level === 'High' ? 'text-red-400' :
+                    player.risk_level === 'Medium' ? 'text-amber-400' :
+                    darkMode ? 'text-[#86efac]' : 'text-emerald-600'
+                  }`}>
+                    {Math.round(player.risk_probability * 100)}%
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </button>
