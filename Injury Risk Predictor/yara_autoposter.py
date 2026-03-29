@@ -24,7 +24,7 @@ import random
 import logging
 import schedule
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -257,8 +257,43 @@ def fetch_predictions(team: str) -> dict | None:
         log.warning(f"Yara API error for {team}: {e}")
     return None
 
+def _fetch_fpl_unavailable() -> set[str]:
+    """Return lowercase names of players the FPL API confirms are out.
+
+    Covers status 'i' (injured), 's' (suspended), and 'u' (unavailable,
+    e.g. loans, departures). If a player is already injured there is no
+    risk to predict. They should never appear in risk rankings.
+    """
+    try:
+        resp = requests.get(
+            "https://fantasy.premierleague.com/api/bootstrap-static/",
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        if resp.status_code != 200:
+            return set()
+        data = resp.json()
+    except Exception:
+        return set()
+
+    out = set()
+    for p in data.get("elements", []):
+        status = p.get("status", "a")
+        if status in ("i", "s", "u"):
+            out.add(p.get("web_name", "").lower())
+    return out
+
+
 def fetch_all_predictions() -> list[dict]:
-    """Fetch predictions for all EPL teams, ranked by prominence."""
+    """Fetch predictions for all EPL teams, ranked by prominence.
+
+    Filters out players the FPL API confirms are injured (0% chance) or
+    unavailable (loans, departures) so they never appear as risk flags.
+    """
+    unavailable = _fetch_fpl_unavailable()
+    if unavailable:
+        log.info(f"FPL filter: {len(unavailable)} players confirmed out/unavailable")
+
     all_players = []
     for team in EPL_TEAMS:
         data = fetch_predictions(team)
@@ -267,6 +302,18 @@ def fetch_all_predictions() -> list[dict]:
                 p["team"] = team
             all_players.extend(data["players"])
         time.sleep(0.5)  # polite to the API
+
+    if unavailable:
+        before = len(all_players)
+        all_players = [
+            p for p in all_players
+            if p.get("name", "").split()[-1].lower() not in unavailable
+            and p.get("name", "").lower() not in unavailable
+        ]
+        filtered = before - len(all_players)
+        if filtered:
+            log.info(f"Excluded {filtered} confirmed-out players from rankings")
+
     return rank_by_prominence(all_players)
 
 def get_current_gameweek() -> int:
@@ -414,60 +461,149 @@ def _workload_description(player: dict) -> str:
     full_90s = sum(1 for m in mins if m >= 90)
     total = sum(mins)
     if full_90s >= 4:
-        return f"{full_90s} full 90s in his last 5 appearances ({total} mins total)"
-    return f"{total} minutes across his last 5 appearances"
+        return f"{full_90s} full 90s in his last 5 ({total} mins)"
+    return f"{total} mins across his last 5"
+
+
+def fetch_fpl_break_injuries(recency_days: int = 7) -> list[dict]:
+    """Scan FPL API for players who picked up injuries recently.
+
+    Uses the ``news_added`` timestamp to filter out stale injuries (e.g. a
+    February foot injury still showing in March).  Only returns entries whose
+    news was updated within the last *recency_days* days.
+
+    Returns list of dicts with name, team, news, status, chance_of_playing,
+    filtered to tier 1/2 players with injury/doubtful/unavailable status.
+    """
+    try:
+        resp = requests.get(
+            "https://fantasy.premierleague.com/api/bootstrap-static/",
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+    except Exception as e:
+        log.warning(f"FPL API error fetching break injuries: {e}")
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=recency_days)
+    teams = {t["id"]: t["name"] for t in data.get("teams", [])}
+    injured = []
+
+    for p in data.get("elements", []):
+        status = p.get("status", "a")
+        news = (p.get("news") or "").strip()
+        if status not in ("i", "d", "s", "u") or not news:
+            continue
+
+        # Filter by recency: only surface news updated recently
+        news_added_str = p.get("news_added") or ""
+        if news_added_str:
+            try:
+                news_added = datetime.fromisoformat(
+                    news_added_str.replace("Z", "+00:00")
+                )
+                if news_added < cutoff:
+                    continue
+            except (ValueError, TypeError):
+                continue  # Can't parse date, skip
+        else:
+            continue  # No timestamp, can't verify recency
+
+        name = p.get("web_name", "")
+        team = teams.get(p.get("team"), "Unknown")
+        tier = _get_player_tier(name, None)
+        if tier > 2:
+            continue  # Only surface prominent players
+
+        injured.append({
+            "name": name,
+            "full_name": f"{p.get('first_name', '')} {p.get('second_name', '')}",
+            "team": team,
+            "news": news,
+            "status": status,
+            "chance_of_playing": p.get("chance_of_playing_next_round"),
+            "news_added": news_added_str,
+            "_tier": tier,
+        })
+
+    # Sort by tier (1 first) then alphabetically
+    injured.sort(key=lambda x: (x["_tier"], x["name"]))
+    return injured
 
 
 def build_intl_break_watch(players: list[dict], gw: int) -> dict:
     """Format 4: International Break Injury Watch.
 
-    Surfaces high-risk prominent players who are likely still playing
-    on international duty, accumulating more workload.
+    Top risk players heading into the break + anyone who picked up
+    an injury on international duty (from FPL API).
     """
-    # Filter to elevated+ risk, take top 5 by prominence
-    elevated = [p for p in players if p.get("risk_score", 0) >= 0.35]
-    top5 = elevated[:5]
-    if not top5:
-        top5 = players[:5]
+    top5 = players[:5]
+
+    # Pull live injury data from FPL
+    break_injuries = fetch_fpl_break_injuries()
 
     tw_lines = "\n".join(
-        f"{i+1}. {p['name']} ({p['team']}) — {int(p['risk_score']*100)}% "
-        f"{get_risk_emoji(p['risk_score'])}"
+        f"{i+1}. {p['name']} ({p['team']}) "
+        f"{int(p['risk_score']*100)}% {get_risk_emoji(p['risk_score'])}"
         for i, p in enumerate(top5)
     )
+
+    # Add break casualties to tweet if any
+    injury_tw = ""
+    if break_injuries:
+        casualty_lines = "\n".join(
+            f"🚨 {p['name']} ({p['team']}) — {p['news']}"
+            for p in break_injuries[:3]
+        )
+        injury_tw = f"\n\nPicked up on intl duty:\n{casualty_lines}\n"
+
     twitter = (
-        f"🌍 YARA INTERNATIONAL BREAK WATCH\n\n"
-        f"Risk scores look low right now. They should.\n"
-        f"No PL matches = no PL workload.\n\n"
-        f"But these players are still playing on intl duty, "
-        f"and those minutes don't show up in the model yet:\n\n"
-        f"{tw_lines}\n\n"
-        f"The real risk is higher than the number says.\n\n"
-        f"Full data → yaraspeaks.com\n"
+        f"🌍 YARA INTL BREAK WATCH — GW{gw}\n\n"
+        f"Highest risk heading into the break:\n\n"
+        f"{tw_lines}"
+        f"{injury_tw}\n"
+        f"Full squad data → yaraspeaks.com\n"
         f"#FPL #PremierLeague #InternationalBreak"
     )
 
     rd_lines = "\n".join(
-        f"{i+1}. **{p['name']}** ({p['team']}) — {int(p['risk_score']*100)}% risk — "
+        f"{i+1}. **{p['name']}** ({p['team']}) — {int(p['risk_score']*100)}% — "
         f"{_workload_description(p)}"
         for i, p in enumerate(top5)
     )
-    reddit_title = f"International Break Injury Watch — Why Low Scores Are Misleading Right Now"
+
+    # Build injury section for Reddit
+    injury_section = ""
+    if break_injuries:
+        inj_lines = "\n".join(
+            f"- **{p['name']}** ({p['team']}) — {p['news']}"
+            for p in break_injuries
+        )
+        injury_section = (
+            f"\n\n---\n\n"
+            f"**Injured on international duty:**\n\n"
+            f"{inj_lines}\n\n"
+            f"These players picked up knocks while away with their national teams. "
+            f"Check team news before the GW{gw + 1} deadline."
+        )
+
+    reddit_title = (
+        f"International Break Watch — Top Risks + Break Casualties"
+        if break_injuries else
+        f"International Break Watch — Top 5 Risks Heading Into GW{gw + 1}"
+    )
     reddit_body = (
-        f"You might have noticed that injury risk scores across the board "
-        f"have dropped during the international break. That is expected. "
-        f"Yara's model tracks Premier League workload (matches in the last 7/14/30 days, "
-        f"ACWR, minutes accumulation), and with no PL fixtures, those features cool off.\n\n"
-        f"**The blind spot:** International minutes are not yet fed into the model. "
-        f"So when Salah plays 180 minutes for Egypt or Saka starts both England qualifiers, "
-        f"the model does not see it. The numbers will catch up when the PL resumes, "
-        f"but by then the fatigue is already baked in.\n\n"
-        f"**Players to watch — their risk is higher than the score suggests:**\n\n"
-        f"{rd_lines}\n\n"
-        f"These were the highest-risk prominent players heading into the break. "
-        f"Every international cap adds to their load without the model registering it. "
-        f"Treat these scores as a floor, not a ceiling.\n\n"
-        f"Keep an eye on team news before the GW{gw + 1} deadline. "
+        f"Yara's model preserves pre-break workload data so risk scores reflect "
+        f"the state heading into the break, not an empty fixture window.\n\n"
+        f"**Highest risk players:**\n\n"
+        f"{rd_lines}"
+        f"{injury_section}\n\n"
+        f"International minutes are not yet captured in the model. "
+        f"Players who started both qualifiers carry additional fatigue "
+        f"that the numbers do not reflect.\n\n"
         f"Full squad breakdowns at yaraspeaks.com.\n\n"
         f"*For educational purposes only.*"
     )
@@ -478,48 +614,63 @@ def build_intl_break_watch(players: list[dict], gw: int) -> dict:
 def build_return_gw_preview(players: list[dict], gw: int) -> dict:
     """Format 5: Return Gameweek Preview.
 
-    Posted the Friday before the PL resumes after an international break.
-    Same shape as gameweek preview but framed around break fatigue.
+    Posted the Friday before the PL resumes. Combines risk scores
+    with any injuries picked up during the break.
     """
     top5 = players[:5]
+    break_injuries = fetch_fpl_break_injuries()
 
     tw_lines = "\n".join(
-        f"{i+1}. {p['name']} ({p['team']}) — {int(p['risk_score']*100)}% "
-        f"{get_risk_emoji(p['risk_score'])}"
+        f"{i+1}. {p['name']} ({p['team']}) "
+        f"{int(p['risk_score']*100)}% {get_risk_emoji(p['risk_score'])}"
         for i, p in enumerate(top5)
     )
+
+    injury_tw = ""
+    if break_injuries:
+        injury_tw = "\n\nAlready ruled out or doubtful:\n" + "\n".join(
+            f"❌ {p['name']} — {p['news']}"
+            for p in break_injuries[:3]
+        ) + "\n"
+
     twitter = (
-        f"📊 YARA GW{gw} RETURN WATCH\n\n"
-        f"The PL is back. Scores will spike this week as match "
-        f"workload feeds back into the model.\n\n"
-        f"Highest risk returning:\n\n"
-        f"{tw_lines}\n\n"
-        f"These numbers do not include intl minutes. Real risk is higher.\n\n"
+        f"📊 YARA GW{gw} RETURN PREVIEW\n\n"
+        f"PL is back. Highest risk:\n\n"
+        f"{tw_lines}"
+        f"{injury_tw}\n"
         f"Full breakdowns → yaraspeaks.com\n"
         f"#FPL #PremierLeague #FantasyFootball"
     )
 
     rd_lines = "\n".join(
-        f"{i+1}. **{p['name']}** ({p['team']}) — {int(p['risk_score']*100)}% risk"
+        f"{i+1}. **{p['name']}** ({p['team']}) — {int(p['risk_score']*100)}%"
         + (f" — {p['reasons'][0].capitalize()}" if p.get("reasons") else "")
         for i, p in enumerate(top5)
     )
-    reddit_title = f"GW{gw} Return Watch — Scores Are About to Spike After the Break"
+
+    injury_section = ""
+    if break_injuries:
+        inj_lines = "\n".join(
+            f"- **{p['name']}** ({p['team']}) — {p['news']}"
+            for p in break_injuries
+        )
+        injury_section = (
+            f"\n\n**Break casualties (from FPL API):**\n\n"
+            f"{inj_lines}\n\n"
+            f"These players picked up injuries on international duty. "
+            f"Check your bench."
+        )
+
+    reddit_title = f"GW{gw} Return Preview — Risks + Break Casualties"
     reddit_body = (
-        f"The international break is over and the Premier League returns "
-        f"with GW{gw}.\n\n"
-        f"**Important context on the scores:** Risk numbers dropped during the break "
-        f"because Yara's workload features (matches in 7/14/30 days, ACWR) cooled off "
-        f"with no PL fixtures. International minutes are not yet captured in the model. "
-        f"Expect these scores to jump back up after GW{gw}'s matches feed in.\n\n"
-        f"**Top 5 players to monitor:**\n\n"
-        f"{rd_lines}\n\n"
-        f"Players who flew long-haul for international duty "
-        f"(South America, Africa, Asia) carry additional fatigue risk "
-        f"on top of what the numbers show. The model sees them as rested. "
-        f"Their bodies are not.\n\n"
-        f"If any of these are in your FPL side, make sure you have a "
-        f"playing bench. Full squad-by-squad data at yaraspeaks.com.\n\n"
+        f"The Premier League returns with GW{gw}. Yara's model holds "
+        f"pre-break workload so scores reflect real fatigue, not an empty window.\n\n"
+        f"**Top 5 risks:**\n\n"
+        f"{rd_lines}"
+        f"{injury_section}\n\n"
+        f"Players who flew long-haul for international duty carry "
+        f"additional fatigue on top of what the numbers show.\n\n"
+        f"Full squad data at yaraspeaks.com.\n\n"
         f"*Not financial/betting advice. Educational purposes only.*"
     )
 
@@ -529,39 +680,34 @@ def build_return_gw_preview(players: list[dict], gw: int) -> dict:
 def build_break_recovery(players: list[dict], gw: int) -> dict:
     """Format 6: Break Recovery Tracker.
 
-    Highlights players whose risk is LOW or dropping — the break helped them.
-    Useful for FPL managers looking for differentials coming back fresh.
+    Low-risk prominent players who genuinely benefit from the rest.
     """
-    # Find low-risk prominent players (the break beneficiaries)
     recovering = [
         p for p in players
         if p.get("risk_score", 0) < 0.35
         and _get_player_tier(p.get("name", ""), p) <= 2
     ]
-    # Sort by tier first (tier 1 first), then by lowest risk
     recovering.sort(key=lambda p: (_get_player_tier(p.get("name", ""), p), p.get("risk_score", 0)))
     top5 = recovering[:5]
 
     if not top5:
-        # Fallback: just show the lowest-risk prominent players
         prominent = [p for p in players if _get_player_tier(p.get("name", ""), p) <= 2]
         prominent.sort(key=lambda p: p.get("risk_score", 0))
         top5 = prominent[:5]
 
     if not top5:
-        return None  # Nothing useful to post
+        return None
 
     tw_lines = "\n".join(
-        f"✅ {p['name']} ({p.get('team', '?')}) — {int(p.get('risk_score',0)*100)}%"
+        f"✅ {p['name']} ({p.get('team', '?')}) {int(p.get('risk_score',0)*100)}%"
         for p in top5
     )
     twitter = (
-        f"💚 YARA BREAK RECOVERY TRACKER\n\n"
-        f"Most risk scores are low right now (no PL matches to drive workload).\n\n"
-        f"But these players genuinely benefit from the rest:\n\n"
+        f"💚 YARA BREAK RECOVERY — GW{gw}\n\n"
+        f"Low risk + fresh legs. These players come back in good shape:\n\n"
         f"{tw_lines}\n\n"
-        f"Low base risk + no intl duty = truly fresh legs.\n\n"
-        f"Full squad data → yaraspeaks.com\n"
+        f"Safe captain/start picks heading into GW{gw + 1}.\n\n"
+        f"yaraspeaks.com\n"
         f"#FPL #PremierLeague #FantasyFootball"
     )
 
@@ -569,22 +715,15 @@ def build_break_recovery(players: list[dict], gw: int) -> dict:
         f"- **{p['name']}** ({p.get('team', '?')}) — {int(p.get('risk_score',0)*100)}% risk"
         for p in top5
     )
-    reddit_title = f"Break Recovery Tracker — Who Actually Benefits From the Rest?"
+    reddit_title = f"Break Recovery — Players Coming Back Fresh for GW{gw + 1}"
     reddit_body = (
-        f"A note on the numbers first: most risk scores drop during international "
-        f"breaks because Yara's PL workload features cool off with no fixtures. "
-        f"Low scores across the board do not mean everyone is fine.\n\n"
-        f"**The players below are different.** These are prominent names who were "
-        f"already low risk before the break, were not called up or played limited "
-        f"international minutes, and have no recent injury history dragging them up. "
-        f"The break genuinely helped them.\n\n"
-        f"**Players with the lowest genuine risk heading into GW{gw}:**\n\n"
+        f"Not every break story is about injuries piling up. "
+        f"These prominent players head into GW{gw + 1} with low risk scores "
+        f"and no recent injury flags.\n\n"
+        f"**Lowest risk among tier 1/2 names:**\n\n"
         f"{rd_lines}\n\n"
-        f"Compare these to players whose scores also look low but who played "
-        f"180 minutes on international duty. The model cannot tell the difference "
-        f"yet, but you can.\n\n"
-        f"Good targets if you are looking for captain picks or transfers "
-        f"with low downside risk. Full data at yaraspeaks.com.\n\n"
+        f"Good targets for captain picks or transfers where you want "
+        f"minimal injury downside. Full data at yaraspeaks.com.\n\n"
         f"*For educational purposes only.*"
     )
 
@@ -594,71 +733,80 @@ def build_break_recovery(players: list[dict], gw: int) -> dict:
 def build_accuracy_recap(players: list[dict], gw: int) -> dict:
     """Format 7: Model Accuracy Recap.
 
-    Summarises how many flagged players actually had issues.
-    Uses current data as a proxy — players still at high risk or with
-    injury-related reasons validate the pre-break flag.
+    How many flagged players actually had issues. Cross-references
+    with FPL injury data for confirmed casualties.
     """
-    # High-risk players = those Yara flagged
     flagged = [p for p in players if p.get("risk_score", 0) >= 0.55]
-    tier_1_flagged = [p for p in flagged if _get_player_tier(p.get("name", ""), p) == 1]
-    tier_2_flagged = [p for p in flagged if _get_player_tier(p.get("name", ""), p) == 2]
-
     total_flagged = len(flagged)
-    prominent_flagged = len(tier_1_flagged) + len(tier_2_flagged)
+    prominent_flagged = len([
+        p for p in flagged
+        if _get_player_tier(p.get("name", ""), p) <= 2
+    ])
 
-    # Players with injury/absence signals in their reasons
-    confirmed = []
-    for p in flagged:
-        reasons_text = " ".join(r.lower() for r in (p.get("reasons") or []))
-        if any(kw in reasons_text for kw in [
-            "days since last injury", "career injuries",
-            "recovery window", "injury", "hamstring", "muscle",
-            "knee", "ankle", "groin",
-        ]):
-            confirmed.append(p)
-
-    # Pick top 3 most notable for the highlight
     highlights = rank_by_prominence(list(flagged))[:3]
 
+    # Cross-reference with FPL injury data
+    break_injuries = fetch_fpl_break_injuries()
+    injury_names = {p["name"].lower() for p in break_injuries}
+
+    # Check which flagged players actually got injured
+    confirmed_hits = []
+    for p in flagged:
+        name_lower = p.get("name", "").lower()
+        if any(n in name_lower or name_lower in n for n in injury_names):
+            confirmed_hits.append(p)
+
     hl_lines = "\n".join(
-        f"- {p['name']} ({p.get('team', '?')}) — flagged at "
+        f"- {p['name']} ({p.get('team', '?')}) — "
         f"{int(p.get('risk_score',0)*100)}%"
         + (f" — {p['reasons'][0]}" if p.get("reasons") else "")
         for p in highlights
     )
 
+    hit_note = ""
+    if confirmed_hits:
+        hit_names = ", ".join(p.get("name", "") for p in confirmed_hits[:5])
+        hit_note = (
+            f"\n\nOf those flagged, {len(confirmed_hits)} have since picked up "
+            f"injuries or been marked doubtful: {hit_names}."
+        )
+
     twitter = (
-        f"📈 YARA MODEL RECAP — Pre-Break Flags\n\n"
-        f"Before the break, Yara flagged {total_flagged} players "
-        f"at 55%+ risk.\n\n"
-        f"{prominent_flagged} were big names.\n\n"
-        f"Scores have cooled (no PL matches = lower workload), "
-        f"but the underlying injury history and fatigue are still there.\n\n"
+        f"📈 YARA RECAP — GW{gw}\n\n"
+        f"Yara flagged {total_flagged} players at 55%+ risk "
+        f"before the break. {prominent_flagged} were big names.\n"
+        f"{hit_note}\n\n"
         + "\n".join(
-            f"• {p['name']} — was {int(p.get('risk_score',0)*100)}%"
+            f"• {p['name']} — {int(p.get('risk_score',0)*100)}%"
             for p in highlights
         )
         + f"\n\nyaraspeaks.com\n"
         f"#FPL #PremierLeague"
     )
 
-    reddit_title = f"Yara Model Recap — {total_flagged} Players Were Flagged Before the Break"
+    injury_section = ""
+    if confirmed_hits:
+        inj_lines = "\n".join(
+            f"- **{p.get('name')}** — flagged at "
+            f"{int(p.get('risk_score',0)*100)}%, now confirmed injured/doubtful"
+            for p in confirmed_hits[:5]
+        )
+        injury_section = (
+            f"\n\n**Confirmed hits (flagged + now injured):**\n\n"
+            f"{inj_lines}"
+        )
+
+    reddit_title = f"Yara Recap — {total_flagged} Flagged, {len(confirmed_hits)} Confirmed"
     reddit_body = (
-        f"Before the international break, Yara's ensemble model (CatBoost + XGBoost + LightGBM) "
-        f"flagged **{total_flagged} players** at 55%+ injury risk across the Premier League.\n\n"
-        f"Of those, **{prominent_flagged}** were tier 1 or tier 2 names "
-        f"(globally recognised or high-FPL-ownership players).\n\n"
+        f"Before the international break, Yara flagged **{total_flagged} players** "
+        f"at 55%+ injury risk. **{prominent_flagged}** were tier 1/2 names.\n\n"
         f"**Notable flags:**\n\n"
-        f"{hl_lines}\n\n"
-        f"**A note on current scores:** If you check these players now, their risk scores "
-        f"will look lower. That is because the model's workload features (matches in 7/14/30 days, "
-        f"ACWR) have cooled off during the break with no PL fixtures. International minutes "
-        f"are not yet fed into the pipeline, so the model sees rest that may not exist.\n\n"
-        f"The underlying risk factors (injury history, recurrence windows, career days lost) "
-        f"have not changed. Expect scores to climb back when PL fixtures resume.\n\n"
-        f"The model tracks workload patterns, injury history, and betting market signals. "
-        f"It does not predict specific injuries, but flags elevated probability windows.\n\n"
-        f"Full data and squad breakdowns at yaraspeaks.com.\n\n"
+        f"{hl_lines}"
+        f"{injury_section}\n\n"
+        f"The model tracks workload (ACWR, minutes, fixture density), "
+        f"injury history, and betting market signals. It flags probability windows, "
+        f"not specific injuries.\n\n"
+        f"Full data at yaraspeaks.com.\n\n"
         f"*For educational purposes only.*"
     )
 
