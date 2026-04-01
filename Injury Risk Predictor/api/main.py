@@ -122,6 +122,7 @@ fpl_team_recent_defense = {}  # Team ID -> recent defensive snapshot
 fpl_player_codes = {}  # Player name -> FPL code (for photos)
 fpl_player_team = {}  # Player name -> team name (for photo disambiguation)
 fpl_players_by_team = {}  # Team name -> set of FPL player names (for filtering)
+fpl_element_lookup: Dict[int, Dict] = {}  # FPL element ID -> player stats dict
 shirt_numbers_by_team: Dict[str, Dict[str, int]] = {}  # Normalized team -> normalized player name -> shirt number
 shirt_number_lookup_attempted: Set[str] = set()  # Teams we already tried loading for shirt numbers
 historical_matches_df = None  # Local historical PL fixtures from csv
@@ -201,7 +202,7 @@ def _run_refresh_job(mode: str = "api") -> None:
 async def load_models():
     global artifacts, inference_df, fpl_stats_cache, fpl_team_ids, fpl_team_name_to_id
     global fpl_team_names_by_id, fpl_team_meta, fpl_team_recent_defense
-    global fpl_player_codes, fpl_players_by_team, historical_matches_df, fixture_history_cache, odds_client
+    global fpl_player_codes, fpl_players_by_team, fpl_element_lookup, historical_matches_df, fixture_history_cache, odds_client
     global shirt_numbers_by_team, shirt_number_lookup_attempted
     # Reset caches so manual/cron refreshes don't accumulate stale keys.
     fpl_stats_cache = {}
@@ -212,6 +213,7 @@ async def load_models():
     fpl_team_recent_defense = {}
     fpl_player_codes = {}
     fpl_players_by_team = {}
+    fpl_element_lookup = {}
     shirt_numbers_by_team = {}
     shirt_number_lookup_attempted = set()
     fixture_history_cache = {}
@@ -291,6 +293,12 @@ async def load_models():
                 fpl_players_by_team[team_name].add(full_lower)
                 if last_name and len(last_name) >= 4:
                     fpl_players_by_team[team_name].add(last_name)
+            # Index by FPL element ID for squad sync
+            element_id = p.get("player_id")
+            if element_id is not None:
+                fpl_element_lookup[element_id] = p
+
+        logger.info(f"FPL element lookup: {len(fpl_element_lookup)} players indexed by ID")
 
         # Build team ID lookup for badges — use "code" not "id"!
         # FPL "id" is sequential 1-20 (alphabetical, changes each season).
@@ -1010,6 +1018,35 @@ class TeamOverview(BaseModel):
     next_fixture: Optional[Dict[str, Any]] = None
 
 
+class FPLSquadPlayer(PlayerSummary):
+    """PlayerSummary extended with FPL squad position metadata."""
+    is_captain: bool = False
+    is_vice_captain: bool = False
+    squad_position: int = 0
+    multiplier: int = 1
+
+
+class FPLSquadEntry(BaseModel):
+    """FPL manager info."""
+    team_name: str
+    manager_name: str
+    total_points: int
+    gameweek: int
+    gameweek_points: int
+
+
+class FPLSquadSync(BaseModel):
+    """Full squad sync response."""
+    entry: FPLSquadEntry
+    players: List[FPLSquadPlayer]
+    unmatched: List[str]
+    high_risk_count: int
+    medium_risk_count: int
+    low_risk_count: int
+    avg_risk: float
+    is_gw_finished: bool = False
+
+
 class HealthCheck(BaseModel):
     status: str
     models_loaded: bool
@@ -1578,6 +1615,74 @@ def calculate_implied_odds(prob: float) -> ImpliedOdds:
         american=american_str, decimal=decimal_odds,
         fractional=fractional, implied_prob=round(prob, 3),
     )
+
+
+def _resolve_player_from_element(element_id: int):
+    """Map an FPL element ID to the matching inference_df row.
+
+    Returns (row, fpl_data) tuple or (None, fpl_data) if no inference match.
+    fpl_data may also be None if the element ID is unknown.
+    """
+    fpl_data = fpl_element_lookup.get(element_id)
+    if not fpl_data or inference_df is None:
+        return None, fpl_data
+
+    web_name = (fpl_data.get("name") or "").strip()
+    full_name = (fpl_data.get("full_name") or "").strip()
+    team = (fpl_data.get("team") or "").strip()
+
+    # 1. Exact match on web_name
+    mask = inference_df["name"].str.lower() == web_name.lower()
+    matches = inference_df[mask]
+    if len(matches) == 1:
+        return matches.iloc[0], fpl_data
+    if len(matches) > 1 and team:
+        team_m = matches[matches["team"].str.lower() == team.lower()]
+        if not team_m.empty:
+            return team_m.iloc[0], fpl_data
+
+    # 2. Full name match
+    mask = inference_df["name"].str.lower() == full_name.lower()
+    matches = inference_df[mask]
+    if len(matches) == 1:
+        return matches.iloc[0], fpl_data
+    if len(matches) > 1 and team:
+        team_m = matches[matches["team"].str.lower() == team.lower()]
+        if not team_m.empty:
+            return team_m.iloc[0], fpl_data
+
+    # 3. Word-overlap matching (accent-stripped)
+    # Score candidates by how many name-words overlap, prefer team match
+    web_ascii = _strip_accents(web_name.lower())
+    full_ascii = _strip_accents(full_name.lower())
+    fpl_words = set(full_ascii.split()) | set(web_ascii.split())
+    # Remove very short words (initials like "b", "j") that cause false positives
+    fpl_words = {w for w in fpl_words if len(w) >= 3}
+
+    best_row = None
+    best_score = 0
+    for _, row in inference_df.iterrows():
+        row_name = row.get("name", "").lower()
+        row_ascii = _strip_accents(row_name)
+        row_words = set(row_ascii.split())
+        overlap = fpl_words & row_words
+        if not overlap:
+            continue
+        # Score: number of overlapping words, bonus for team match
+        score = len(overlap)
+        row_team = row.get("team", "").lower()
+        team_ok = not team or team.lower() in row_team or row_team in team.lower()
+        if team_ok:
+            score += 5  # strong team bonus
+        if score > best_score:
+            best_score = score
+            best_row = row
+
+    # Require at least 1 word overlap + team match, OR 2+ word overlap without team
+    if best_row is not None and best_score >= 2:
+        return best_row, fpl_data
+
+    return None, fpl_data
 
 
 def get_fpl_stats_for_player(name: str, team_hint: str = None) -> Optional[Dict]:
@@ -3856,6 +3961,159 @@ async def get_double_gameweeks():
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"FPL API error: {str(e)}")
+
+
+@app.get("/api/fpl/squad/{team_id}", response_model=FPLSquadSync)
+async def get_fpl_squad(team_id: int):
+    """Sync an FPL manager's squad and return Yara risk data for each player."""
+    if inference_df is None:
+        raise HTTPException(status_code=503, detail="Models not loaded")
+
+    client = FPLClient()
+
+    # 1. Get current gameweek
+    gw_data = client.get_current_gameweek()
+    if not gw_data:
+        raise HTTPException(status_code=503, detail="Could not determine current gameweek")
+    current_gw = gw_data["id"]
+    gw_finished = gw_data.get("finished", False)
+
+    # 2. Fetch manager entry
+    try:
+        entry_data = client.get_entry(team_id)
+    except Exception:
+        raise HTTPException(status_code=503, detail="FPL servers are currently unavailable. Try again shortly.")
+    if not entry_data or "id" not in entry_data:
+        raise HTTPException(status_code=404, detail="FPL team not found. Check your Team ID.")
+
+    manager_name = f"{entry_data.get('player_first_name', '')} {entry_data.get('player_last_name', '')}".strip()
+    team_name = entry_data.get("name", "Unknown")
+
+    # 3. Fetch picks for current gameweek (fall back to previous if empty)
+    picks_data = client.get_picks(team_id, current_gw)
+    if not picks_data or not picks_data.get("picks"):
+        if current_gw > 1:
+            picks_data = client.get_picks(team_id, current_gw - 1)
+            current_gw -= 1
+    if not picks_data or not picks_data.get("picks"):
+        raise HTTPException(status_code=404, detail="No picks found for this gameweek.")
+
+    picks = picks_data["picks"]
+    entry_history = picks_data.get("entry_history", {})
+
+    # 3a. Apply auto-subs — swap positions so lineup matches what the user saw
+    auto_subs = picks_data.get("automatic_subs", [])
+    if auto_subs:
+        pick_by_element = {p["element"]: p for p in picks}
+        for sub in auto_subs:
+            el_in = sub.get("element_in")    # bench player coming in
+            el_out = sub.get("element_out")  # starter going out
+            p_in = pick_by_element.get(el_in)
+            p_out = pick_by_element.get(el_out)
+            if p_in and p_out:
+                p_in["position"], p_out["position"] = p_out["position"], p_in["position"]
+                p_in["multiplier"], p_out["multiplier"] = p_out["multiplier"], p_in["multiplier"]
+
+    # 3b. If GW is finished, apply pending transfers for the next GW
+    if gw_finished:
+        try:
+            transfers = client.get_transfers(team_id)
+            next_gw = current_gw + 1
+            pending = [t for t in transfers if t.get("event", 0) == next_gw]
+            if pending:
+                pick_elements = {p["element"] for p in picks}
+                for t in pending:
+                    out_id = t["element_out"]
+                    in_id = t["element_in"]
+                    if out_id in pick_elements:
+                        # Swap: find the pick with the outgoing player, replace element
+                        for p in picks:
+                            if p["element"] == out_id:
+                                p["element"] = in_id
+                                break
+                        pick_elements.discard(out_id)
+                        pick_elements.add(in_id)
+        except Exception:
+            pass  # transfers are best-effort
+
+    # 4. Resolve each pick to a player with risk data
+    players = []
+    unmatched = []
+
+    for pick in picks:
+        element_id = pick["element"]
+        row, fpl_data = _resolve_player_from_element(element_id)
+
+        if row is not None:
+            prob = row.get("ensemble_prob", 0.5)
+            name = row.get("name", "Unknown")
+            fpl = get_fpl_stats_for_player(name)
+            minutes = fpl.get("minutes", 0) if fpl else 0
+            fpl_status = fpl.get("status", "a") if fpl else "a"
+            # Use FPL element type position (GK/DEF/MID/FWD) for clean grouping
+            fpl_pos = fpl_data.get("position", "") if fpl_data else ""
+            _POS_MAP = {"GK": "Goalkeeper", "DEF": "Defender", "MID": "Midfielder", "FWD": "Forward"}
+            display_pos = _POS_MAP.get(fpl_pos, row.get("position", "Unknown"))
+
+            players.append(FPLSquadPlayer(
+                name=name,
+                team=row.get("team", "Unknown"),
+                position=display_pos,
+                shirt_number=_resolve_shirt_number(name, fpl, row.get("team", "Unknown")),
+                risk_level=get_risk_level(prob, row),
+                risk_probability=round(prob, 3),
+                archetype=row.get("archetype", "Unknown"),
+                minutes_played=minutes,
+                is_starter=minutes >= 900,
+                player_image_url=get_player_image_url(name, row.get("team")),
+                days_since_last_injury=_safe_int(row.get("days_since_last_injury", 365), 365),
+                is_currently_injured=fpl_status in ("i", "u"),
+                injury_news=fpl.get("news") or None if fpl else None,
+                chance_of_playing=fpl.get("chance_of_playing") if fpl else None,
+                is_captain=pick.get("is_captain", False),
+                is_vice_captain=pick.get("is_vice_captain", False),
+                squad_position=pick.get("position", 0),
+                multiplier=pick.get("multiplier", 1),
+            ))
+        elif fpl_data:
+            unmatched.append(fpl_data.get("name", f"element_{element_id}"))
+        else:
+            unmatched.append(f"element_{element_id}")
+
+    # 5. Sort: starters by risk desc, then bench by risk desc
+    starters = sorted(
+        [p for p in players if p.squad_position <= 11],
+        key=lambda p: p.risk_probability, reverse=True
+    )
+    bench = sorted(
+        [p for p in players if p.squad_position > 11],
+        key=lambda p: p.risk_probability, reverse=True
+    )
+    sorted_players = starters + bench
+
+    # 6. Risk counts
+    probs = [p.risk_probability for p in players]
+    high = sum(1 for p in probs if p >= 0.6)
+    medium = sum(1 for p in probs if 0.4 <= p < 0.6)
+    low = sum(1 for p in probs if p < 0.4)
+    avg = round(sum(probs) / len(probs), 3) if probs else 0.0
+
+    return FPLSquadSync(
+        entry=FPLSquadEntry(
+            team_name=team_name,
+            manager_name=manager_name,
+            total_points=entry_data.get("summary_overall_points", 0),
+            gameweek=current_gw,
+            gameweek_points=entry_history.get("points", 0),
+        ),
+        players=sorted_players,
+        unmatched=unmatched,
+        high_risk_count=high,
+        medium_risk_count=medium,
+        low_risk_count=low,
+        avg_risk=avg,
+        is_gw_finished=gw_finished,
+    )
 
 
 @app.get("/api/players/{player_name}/what-if", response_model=WhatIfProjection)

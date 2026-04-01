@@ -8,12 +8,14 @@ import {
   getFPLInsights,
   getStandingsSummary,
   getTeamBadges,
+  getFPLSquad,
 } from "@/lib/api";
 import {
   TeamOverview as TeamOverviewType,
   PlayerRisk,
   FPLInsights as FPLInsightsType,
   StandingsSummary,
+  FPLSquadSync,
 } from "@/types/api";
 import { TeamSelector } from "@/components/TeamSelector";
 import { TeamOverview } from "@/components/TeamOverview";
@@ -22,6 +24,8 @@ import { PlayerCard } from "@/components/PlayerCard";
 import { LabNotes } from "@/components/LabNotes";
 import { FPLInsights } from "@/components/FPLInsights";
 import { StandingsCards } from "@/components/StandingsCards";
+import { FPLSquadInput } from "@/components/FPLSquadInput";
+import { FPLSquadView } from "@/components/FPLSquadView";
 import {
   Activity,
   Shield,
@@ -30,6 +34,8 @@ import {
   Sun,
   Zap,
   Microscope,
+  Users,
+  Search,
 } from "lucide-react";
 
 export default function Home() {
@@ -47,6 +53,13 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [darkMode, setDarkMode] = useState(true);
   const [view, setView] = useState<"overview" | "lab">("overview");
+
+  // Squad sync state
+  const [mode, setMode] = useState<"browse" | "squad">("browse");
+  const [fplSquad, setFplSquad] = useState<FPLSquadSync | null>(null);
+  const [squadLoading, setSquadLoading] = useState(false);
+  const [squadError, setSquadError] = useState<string | null>(null);
+  const [lastSyncedId, setLastSyncedId] = useState<string | null>(null);
 
   // Load teams, FPL data, and badges on mount
   useEffect(() => {
@@ -104,12 +117,43 @@ export default function Home() {
       .finally(() => setLoading(false));
   }, [selectedPlayer]);
 
+  // Squad sync handler
+  const handleSquadSync = (teamId: string) => {
+    setSquadLoading(true);
+    setSquadError(null);
+    getFPLSquad(teamId)
+      .then((data) => {
+        setFplSquad(data);
+        setLastSyncedId(teamId);
+        setSelectedPlayer(null);
+        setPlayerRisk(null);
+      })
+      .catch((err) => {
+        const msg = err.message?.includes("404")
+          ? "FPL team not found. Check your Team ID."
+          : err.message?.includes("503")
+            ? "FPL servers are currently unavailable. Try again shortly."
+            : "Failed to sync squad. Try again.";
+        setSquadError(msg);
+      })
+      .finally(() => setSquadLoading(false));
+  };
+
+  const handleModeSwitch = (newMode: "browse" | "squad") => {
+    setMode(newMode);
+    setSelectedPlayer(null);
+    setPlayerRisk(null);
+    setError(null);
+  };
+
   const bgClass = darkMode ? "bg-[#0a0a0a]" : "bg-gray-50";
   const textClass = darkMode ? "text-white" : "text-gray-900";
   const mutedClass = darkMode ? "text-gray-500" : "text-gray-500";
   const cardClass = darkMode
     ? "bg-[#141414] border-[#1f1f1f]"
     : "bg-white border-gray-200";
+
+  const hasContent = mode === "browse" ? !!teamOverview : !!fplSquad;
 
   return (
     <div
@@ -199,18 +243,64 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Team Selector */}
+        {/* Mode Toggle + Input */}
         <div className="mb-4 sm:mb-6">
-          <label className={`block text-sm font-medium mb-2 ${mutedClass}`}>
-            Select Team
-          </label>
-          <TeamSelector
-            teams={teams}
-            selectedTeam={selectedTeam}
-            onSelectTeam={setSelectedTeam}
-            darkMode={darkMode}
-            teamBadges={teamBadges}
-          />
+          {/* Mode tabs */}
+          <div className="flex gap-1 mb-3">
+            <button
+              onClick={() => handleModeSwitch("squad")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-colors ${
+                mode === "squad"
+                  ? darkMode
+                    ? "bg-[#86efac]/15 text-[#86efac] border border-[#86efac]/30"
+                    : "bg-emerald-50 text-emerald-700 border border-emerald-300"
+                  : darkMode
+                    ? "text-gray-500 hover:text-gray-300"
+                    : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              <Users size={13} />
+              My FPL Squad
+            </button>
+            <button
+              onClick={() => handleModeSwitch("browse")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-colors ${
+                mode === "browse"
+                  ? darkMode
+                    ? "bg-[#86efac]/15 text-[#86efac] border border-[#86efac]/30"
+                    : "bg-emerald-50 text-emerald-700 border border-emerald-300"
+                  : darkMode
+                    ? "text-gray-500 hover:text-gray-300"
+                    : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              <Search size={13} />
+              Browse Teams
+            </button>
+          </div>
+
+          {/* Conditional input */}
+          {mode === "squad" ? (
+            <FPLSquadInput
+              onSync={handleSquadSync}
+              loading={squadLoading}
+              error={squadError}
+              darkMode={darkMode}
+            />
+          ) : (
+            <>
+              <label className={`block text-sm font-medium mb-2 ${mutedClass}`}>
+                Select Team
+              </label>
+              <TeamSelector
+                teams={teams}
+                selectedTeam={selectedTeam}
+                onSelectTeam={setSelectedTeam}
+                darkMode={darkMode}
+                teamBadges={teamBadges}
+              />
+            </>
+          )}
         </div>
 
         {/* Error State */}
@@ -230,51 +320,63 @@ export default function Home() {
         )}
 
         {/* Content Grid */}
-        {teamOverview && !loading && (
+        {hasContent && !loading && (
           <div className="grid lg:grid-cols-3 gap-4 sm:gap-6">
-            {/* Left Column - Team Overview & Player List */}
+            {/* Left Column */}
             <div
               className={`lg:col-span-1 min-w-0 space-y-4 sm:space-y-6 ${playerRisk ? "order-2 lg:order-1" : ""}`}
             >
-              <TeamOverview team={teamOverview} darkMode={darkMode} />
-
-              {standings && (
-                <StandingsCards
-                  standings={standings}
-                  darkMode={darkMode}
-                  teamBadges={teamBadges}
-                />
-              )}
-
-              {fplInsights && (
-                <FPLInsights
-                  insights={fplInsights}
-                  selectedTeam={selectedTeam}
+              {mode === "squad" && fplSquad ? (
+                <FPLSquadView
+                  squad={fplSquad}
+                  onSelectPlayer={setSelectedPlayer}
+                  selectedPlayer={selectedPlayer || undefined}
+                  onRefresh={() => lastSyncedId && handleSquadSync(lastSyncedId)}
                   darkMode={darkMode}
                 />
-              )}
+              ) : teamOverview ? (
+                <>
+                  <TeamOverview team={teamOverview} darkMode={darkMode} />
 
-              <div
-                className={`holo-panel ${cardClass} border rounded-xl p-3 sm:p-4`}
-              >
-                <h3
-                  className={`font-semibold mb-3 flex items-center gap-2 text-sm sm:text-base ${textClass}`}
-                >
-                  <Shield
-                    size={16}
-                    className={darkMode ? "text-[#86efac]" : "text-emerald-600"}
-                  />
-                  Squad
-                </h3>
-                <div className="max-h-[50vh] sm:max-h-96 overflow-y-auto">
-                  <PlayerList
-                    players={teamOverview.players}
-                    onSelectPlayer={setSelectedPlayer}
-                    selectedPlayer={selectedPlayer || undefined}
-                    darkMode={darkMode}
-                  />
-                </div>
-              </div>
+                  {standings && (
+                    <StandingsCards
+                      standings={standings}
+                      darkMode={darkMode}
+                      teamBadges={teamBadges}
+                    />
+                  )}
+
+                  {fplInsights && (
+                    <FPLInsights
+                      insights={fplInsights}
+                      selectedTeam={selectedTeam}
+                      darkMode={darkMode}
+                    />
+                  )}
+
+                  <div
+                    className={`holo-panel ${cardClass} border rounded-xl p-3 sm:p-4`}
+                  >
+                    <h3
+                      className={`font-semibold mb-3 flex items-center gap-2 text-sm sm:text-base ${textClass}`}
+                    >
+                      <Shield
+                        size={16}
+                        className={darkMode ? "text-[#86efac]" : "text-emerald-600"}
+                      />
+                      Squad
+                    </h3>
+                    <div className="max-h-[50vh] sm:max-h-96 overflow-y-auto">
+                      <PlayerList
+                        players={teamOverview.players}
+                        onSelectPlayer={setSelectedPlayer}
+                        selectedPlayer={selectedPlayer || undefined}
+                        darkMode={darkMode}
+                      />
+                    </div>
+                  </div>
+                </>
+              ) : null}
             </div>
 
             {/* Right Column - Player Card / Lab Notes */}
@@ -350,7 +452,7 @@ export default function Home() {
         )}
 
         {/* Empty State */}
-        {!selectedTeam && !loading && (
+        {!hasContent && !loading && (
           <div className="text-center py-10 sm:py-16">
             <div className="relative inline-block mb-4 sm:mb-6">
               <Activity
@@ -368,8 +470,9 @@ export default function Home() {
               Welcome to YaraSports
             </h2>
             <p className={`text-sm max-w-md mx-auto ${mutedClass}`}>
-              Select a Premier League team to view squad injury risk analysis
-              and player predictions.
+              {mode === "squad"
+                ? "Enter your FPL Team ID above to see injury risk for your squad."
+                : "Select a Premier League team to view squad injury risk analysis and player predictions."}
             </p>
           </div>
         )}
