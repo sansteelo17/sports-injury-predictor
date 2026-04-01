@@ -1181,6 +1181,57 @@ def show_comparison():
         )
     print()
 
+# ─── FEATURE ANNOUNCEMENTS ───────────────────────────────────────────────────
+
+def build_squad_sync_announcement(gw: int) -> dict:
+    """One-off post announcing the FPL Squad Sync feature."""
+
+    twitter = (
+        "🆕 NEW: FPL Squad Sync is live on yaraspeaks.com\n\n"
+        "Enter your FPL Team ID and Yara runs injury risk on your actual squad. "
+        "15 players. Formation view. Risk-coloured rings on every face.\n\n"
+        "No more scrolling team by team. Your squad, your risks, 10 seconds.\n\n"
+        "yaraspeaks.com\n"
+        "#FPL #FantasyPL #PremierLeague #GW32"
+    )
+
+    reddit_title = "New Feature: FPL Squad Sync — Yara now runs injury risk on your actual FPL squad"
+    reddit_body = (
+        "Been building this for a bit and it's now live at **yaraspeaks.com**.\n\n"
+        "**What it does:**\n\n"
+        "Enter your FPL Team ID and Yara pulls your 15-player squad from the FPL API, "
+        "then runs her ensemble model (CatBoost + XGBoost + LightGBM) on each player. "
+        "You get a formation pitch view with risk-coloured rings around every player photo, "
+        "plus a numbered list view.\n\n"
+        "**Details:**\n\n"
+        "- Auto-detects your starting XI and bench from the latest gameweek\n"
+        "- Applies auto-subs so your lineup matches what you actually saw\n"
+        "- Captain and vice-captain badges\n"
+        "- Injured players show as OUT instead of a risk score\n"
+        "- Your Team ID is saved locally so you don't re-enter it each time\n"
+        "- Click any player for the full Yara breakdown (narrative, FPL insight, injury map)\n\n"
+        "**How to find your Team ID:**\n\n"
+        "Go to fantasy.premierleague.com, click My Team, check the URL. "
+        "The number after /entry/ is your ID.\n\n"
+        "Built this because browsing team-by-team was slow when all you want is "
+        "risk on your own 15. Now it takes about 10 seconds.\n\n"
+        "Would appreciate any feedback. Still iterating.\n\n"
+        "*Model is educational/portfolio work, not medical or betting advice.*"
+    )
+
+    return {"twitter": twitter, "reddit_title": reddit_title, "reddit_body": reddit_body}
+
+
+def job_squad_sync_announcement():
+    """Post the FPL Squad Sync feature announcement."""
+    gw = get_current_gameweek()
+    content = build_squad_sync_announcement(gw)
+    post_twitter(content["twitter"])
+    post_reddit(content["reddit_title"], content["reddit_body"],
+                subreddits=["FantasyPL"])
+    log.info("Squad sync announcement posted")
+
+
 # ─── SCHEDULER ───────────────────────────────────────────────────────────────
 
 def run_scheduler():
@@ -1254,6 +1305,8 @@ if __name__ == "__main__":
             job_break_recovery()
         elif cmd == "recap":
             job_accuracy_recap()
+        elif cmd == "squad-sync":
+            job_squad_sync_announcement()
         elif cmd == "show":
             if len(sys.argv) < 3:
                 print("Usage: python yara_autoposter.py show <team>")
@@ -1275,5 +1328,8 @@ if __name__ == "__main__":
             print("  return-preview    — risk heading into the return GW")
             print("  recovery          — who benefits from the rest")
             print("  recap             — model accuracy recap")
+            print()
+            print("Feature:")
+            print("  squad-sync        — announce FPL Squad Sync feature")
     else:
         run_scheduler()

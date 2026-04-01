@@ -65,6 +65,18 @@ class FPLClient:
                 return event
         return None
 
+    def get_entry(self, team_id: int) -> Dict:
+        """Get FPL manager entry info (team name, manager name, points)."""
+        return self._fetch(f"entry/{team_id}/")
+
+    def get_picks(self, team_id: int, gameweek: int) -> Dict:
+        """Get a manager's squad picks for a specific gameweek."""
+        return self._fetch(f"entry/{team_id}/event/{gameweek}/picks/")
+
+    def get_transfers(self, team_id: int) -> List[Dict]:
+        """Get all transfers made by a manager (sorted most recent first)."""
+        return self._fetch(f"entry/{team_id}/transfers/") or []
+
     def get_fixtures(self, gameweek: Optional[int] = None) -> List[Dict]:
         """
         Get fixtures, optionally filtered by gameweek.

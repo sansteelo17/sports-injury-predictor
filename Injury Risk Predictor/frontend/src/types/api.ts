@@ -304,3 +304,30 @@ export interface StandingsSummary {
   safety_points: number;
   selected_team?: TeamStanding;
 }
+
+// FPL Squad Sync
+export interface FPLSquadPlayer extends PlayerSummary {
+  is_captain: boolean;
+  is_vice_captain: boolean;
+  squad_position: number;
+  multiplier: number;
+}
+
+export interface FPLSquadEntry {
+  team_name: string;
+  manager_name: string;
+  total_points: number;
+  gameweek: number;
+  gameweek_points: number;
+}
+
+export interface FPLSquadSync {
+  entry: FPLSquadEntry;
+  players: FPLSquadPlayer[];
+  unmatched: string[];
+  high_risk_count: number;
+  medium_risk_count: number;
+  low_risk_count: number;
+  avg_risk: number;
+  is_gw_finished: boolean;
+}
