@@ -27,6 +27,19 @@ npm run dev
 
 Open http://localhost:3000
 
+## Optional analytics
+
+To send lightweight pageview and product-usage events to Sygna, set:
+
+```bash
+NEXT_PUBLIC_SYGNA_API_URL=http://localhost:4000
+NEXT_PUBLIC_SYGNA_INGEST_KEY=
+```
+
+If that variable is not set, the frontend keeps working normally and analytics stays disabled.
+
+`NEXT_PUBLIC_SYGNA_INGEST_KEY` is only needed when Sygna is configured with `SYGNA_INGEST_SECRET`. OpenAI keys are not needed in the Yara frontend. They only belong on the Sygna server when optional AI summary polishing is enabled.
+
 ## Project Structure
 
 ```

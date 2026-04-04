@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import { SygnaPageView } from '@/components/SygnaPageView';
 
 export const viewport: Viewport = {
   width: 'device-width',
@@ -24,7 +25,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="antialiased">{children}</body>
+      <body className="antialiased">
+        <SygnaPageView />
+        {children}
+      </body>
     </html>
   );
 }

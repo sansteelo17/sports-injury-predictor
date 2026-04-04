@@ -3465,6 +3465,17 @@ def player_row_to_risk(row) -> PlayerRisk:
 # API Endpoints
 # ============================================================
 
+@app.get("/api/model-metrics")
+async def get_model_metrics():
+    """Return model performance metrics from the saved model card."""
+    import json as _json
+    card_path = Path("models/model_card.json")
+    if not card_path.exists():
+        raise HTTPException(status_code=404, detail="Model card not found. Run retrain_model.py to generate it.")
+    with open(card_path) as f:
+        return _json.load(f)
+
+
 @app.get("/api/health", response_model=HealthCheck)
 async def health_check():
     """Check API health and model status."""
