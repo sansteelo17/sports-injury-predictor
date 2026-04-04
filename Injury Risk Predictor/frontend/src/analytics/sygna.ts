@@ -87,23 +87,26 @@ function send(type: "pageview" | "event", name: string, payload: EventPayload = 
     payload
   });
 
-  try {
-    if (!SYGNA_INGEST_KEY && typeof navigator.sendBeacon === "function") {
-      const queued = navigator.sendBeacon(resolveIngestUrl(), new Blob([body], { type: "application/json" }));
-      if (queued) {
-        return;
-      }
+  const sendBeaconFallback = (): boolean => {
+    if (SYGNA_INGEST_KEY || typeof navigator.sendBeacon !== "function") {
+      return false;
     }
 
+    return navigator.sendBeacon(resolveIngestUrl(), new Blob([body], { type: "application/json" }));
+  };
+
+  try {
     void fetch(resolveIngestUrl(), {
       method: "POST",
       headers: buildHeaders(),
       body,
       keepalive: true,
       credentials: "omit"
+    }).catch(() => {
+      sendBeaconFallback();
     });
   } catch {
-    // Ignore analytics failures.
+    sendBeaconFallback();
   }
 }
 
