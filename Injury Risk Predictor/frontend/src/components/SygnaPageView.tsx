@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
-import { trackYaraPageView } from "@/lib/sygna";
+import { trackYaraPageView } from "@/analytics/sygna";
 
 export function SygnaPageView() {
   const pathname = usePathname();

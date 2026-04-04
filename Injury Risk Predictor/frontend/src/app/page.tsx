@@ -31,7 +31,7 @@ import {
   trackYaraLabNotesOpened,
   trackYaraPlayerSelected,
   trackYaraTeamSelected,
-} from "@/lib/sygna";
+} from "@/analytics/sygna";
 import {
   Activity,
   Shield,
