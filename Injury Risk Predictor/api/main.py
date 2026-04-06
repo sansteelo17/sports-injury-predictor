@@ -147,8 +147,10 @@ refresh_state_lock = threading.Lock()
 # TTL caches for expensive per-request external API calls
 _pl_standings_cache: Dict[str, Any] = {"data": None, "expires": None}  # football-data.org PL standings
 _fpl_insights_cache: Dict[str, Any] = {"data": None, "expires": None}  # FPL insights (standings + fixtures + gw)
+_player_risk_cache: Dict[str, Dict[str, Any]] = {}  # player name (lower) -> {"data": ..., "expires": ...}
 _PL_STANDINGS_TTL = timedelta(hours=6)   # team list barely changes mid-season
 _FPL_INSIGHTS_TTL = timedelta(minutes=15)  # GW fixture data refreshes each round
+_PLAYER_RISK_TTL = timedelta(minutes=10)  # odds + FPL data; stale-ish is fine for repeated views
 
 
 def _utc_now_iso() -> str:
@@ -219,9 +221,10 @@ def _load_models_blocking():
     global artifacts, inference_df, fpl_stats_cache, fpl_team_ids, fpl_team_name_to_id
     global fpl_team_names_by_id, fpl_team_meta, fpl_team_recent_defense
     global fpl_player_codes, fpl_players_by_team, fpl_element_lookup, historical_matches_df, fixture_history_cache, odds_client
-    global shirt_numbers_by_team, shirt_number_lookup_attempted, _startup_complete
+    global shirt_numbers_by_team, shirt_number_lookup_attempted, _startup_complete, _player_risk_cache
     _startup_complete = False
     # Reset caches so manual/cron refreshes don't accumulate stale keys.
+    _player_risk_cache = {}
     fpl_stats_cache = {}
     fpl_team_ids = {}
     fpl_team_name_to_id = {}
@@ -4080,6 +4083,12 @@ def get_player_risk(player_name: str):
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
+    cache_key = player_name.lower()
+    now = datetime.utcnow()
+    cached = _player_risk_cache.get(cache_key)
+    if cached and cached["expires"] > now:
+        return cached["data"]
+
     matches = inference_df[
         inference_df["name"].str.lower() == player_name.lower()
     ]
@@ -4091,7 +4100,9 @@ def get_player_risk(player_name: str):
         raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found")
 
     row = matches.iloc[0].to_dict()
-    return player_row_to_risk(row)
+    result = player_row_to_risk(row)
+    _player_risk_cache[cache_key] = {"data": result, "expires": now + _PLAYER_RISK_TTL}
+    return result
 
 
 @app.get("/api/teams", response_model=List[str])
