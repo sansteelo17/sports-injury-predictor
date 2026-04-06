@@ -143,6 +143,12 @@ refresh_state = {
 }
 refresh_state_lock = threading.Lock()
 
+# TTL caches for expensive per-request external API calls
+_pl_standings_cache: Dict[str, Any] = {"data": None, "expires": None}  # football-data.org PL standings
+_fpl_insights_cache: Dict[str, Any] = {"data": None, "expires": None}  # FPL insights (standings + fixtures + gw)
+_PL_STANDINGS_TTL = timedelta(hours=6)   # team list barely changes mid-season
+_FPL_INSIGHTS_TTL = timedelta(minutes=15)  # GW fixture data refreshes each round
+
 
 def _utc_now_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
@@ -4103,8 +4109,16 @@ async def list_teams(league: Optional[str] = None):
         return sorted(our_teams)
 
     try:
-        client = FootballDataClient()
-        standings = client.get_standings()
+        now = datetime.utcnow()
+        if _pl_standings_cache["data"] is None or (
+            _pl_standings_cache["expires"] and now > _pl_standings_cache["expires"]
+        ):
+            client = FootballDataClient()
+            standings = client.get_standings()
+            _pl_standings_cache["data"] = standings
+            _pl_standings_cache["expires"] = now + _PL_STANDINGS_TTL
+        else:
+            standings = _pl_standings_cache["data"]
         current_pl_teams = {t["name"].lower() for t in standings}
         current_pl_short = {t["short_name"].lower() for t in standings}
 
@@ -4242,10 +4256,24 @@ async def list_archetypes():
 async def get_fpl_insights_endpoint():
     """Get FPL insights including standings, fixtures, and double gameweeks."""
     try:
-        client = FPLClient()
-        standings = client.get_standings()
-        upcoming = client.get_upcoming_fixtures_summary(3)
-        current_gw = client.get_current_gameweek()
+        now = datetime.utcnow()
+        if _fpl_insights_cache["data"] is None or (
+            _fpl_insights_cache["expires"] and now > _fpl_insights_cache["expires"]
+        ):
+            client = FPLClient()
+            standings = client.get_standings()
+            upcoming = client.get_upcoming_fixtures_summary(3)
+            current_gw = client.get_current_gameweek()
+            _fpl_insights_cache["data"] = {
+                "standings": standings,
+                "upcoming": upcoming,
+                "current_gw": current_gw,
+            }
+            _fpl_insights_cache["expires"] = now + _FPL_INSIGHTS_TTL
+        else:
+            standings = _fpl_insights_cache["data"]["standings"]
+            upcoming = _fpl_insights_cache["data"]["upcoming"]
+            current_gw = _fpl_insights_cache["data"]["current_gw"]
 
         return FPLInsights(
             current_gameweek=current_gw.get("id") if current_gw else None,
