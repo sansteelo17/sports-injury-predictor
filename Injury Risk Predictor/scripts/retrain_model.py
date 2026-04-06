@@ -171,8 +171,20 @@ def main():
     ).select_dtypes(include=["category"]).columns.tolist()
     print(f"  Categorical features: {cat_feature_names}")
 
+    # Walk-forward CV must stay within the period covered by both classes.
+    # Negative samples come from the match CSV which ends before the most recent
+    # injuries — recent test windows (2025-2026) end up 100% positive and
+    # ROC-AUC is undefined. Cap the CV dataset at the latest negative date.
+    neg_dates = injury_risk_df[injury_risk_df["injury_label"] == 0]["event_date"]
+    cv_cutoff = pd.to_datetime(neg_dates.max())
+    cv_df = injury_risk_df[injury_risk_df["event_date"] <= cv_cutoff].copy()
+    n_pos_cv = cv_df["injury_label"].sum()
+    n_neg_cv = (cv_df["injury_label"] == 0).sum()
+    print(f"  CV dataset: {len(cv_df)} samples up to {cv_cutoff.date()}"
+          f" ({n_pos_cv} positive, {n_neg_cv} negative, {cv_df['injury_label'].mean():.1%} positive rate)")
+
     wf_splits = walk_forward_validation(
-        injury_risk_df,
+        cv_df,
         date_column="event_date",
         target_column="injury_label",
         n_splits=5,
@@ -303,9 +315,16 @@ def main():
     print("=" * 60)
 
     from src.feature_engineering.archetype import build_player_archetype_features
+    from src.feature_engineering.severity import build_injury_features
 
     try:
-        df_clusters = build_player_archetype_features(severity_df)
+        # Archetype builder needs body_area and injury_type columns which are
+        # produced by build_injury_features (not called earlier in the pipeline)
+        archetype_input = severity_df.copy()
+        if "body_area" not in archetype_input.columns or "injury_type" not in archetype_input.columns:
+            if "injury" in archetype_input.columns:
+                archetype_input = build_injury_features(archetype_input)
+        df_clusters = build_player_archetype_features(archetype_input)
         print(f"  Archetype assignments: {len(df_clusters)}")
         if "archetype" in df_clusters.columns:
             print(f"  Distribution: {df_clusters['archetype'].value_counts().to_dict()}")
