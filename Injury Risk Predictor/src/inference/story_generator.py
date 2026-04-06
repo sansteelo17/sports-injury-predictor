@@ -394,7 +394,8 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
     goals = _safe_int(player_data.get("goals", 0), 0)
     assists = _safe_int(player_data.get("assists", 0), 0)
     avg_days = days_lost / prev_injuries if prev_injuries > 0 else 0
-    risk_pct = round(prob * 100)
+    # Use the normalized percentile score (same as frontend) if available, else fall back to raw prob
+    risk_pct = int(player_data["risk_score_pct"]) if player_data.get("risk_score_pct") is not None else round(prob * 100)
 
     extra_context = extra_context or {}
     player_importance = _extract_player_importance(extra_context)
@@ -1000,7 +1001,7 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
     goals_per_90 = _safe_float(player_data.get("goals_per_90", 0.0), 0.0)
     assists_per_90 = _safe_float(player_data.get("assists_per_90", 0.0), 0.0)
     output_per_90 = goals_per_90 + assists_per_90
-    risk_pct = round(injury_prob * 100)
+    risk_pct = int(player_data["risk_score_pct"]) if player_data.get("risk_score_pct") is not None else round(injury_prob * 100)
 
     extra_context = extra_context or {}
     player_importance = _extract_player_importance(extra_context)
@@ -1421,7 +1422,7 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
     elif tier == "Avoid" and is_key_player and val_has_form and val_has_good_fixture and not low_output:
         tier, emoji = "Rotation", "rotate-cw"
 
-    risk_pct = round(injury_prob * 100)
+    risk_pct = int(player_data["risk_score_pct"]) if player_data.get("risk_score_pct") is not None else round(injury_prob * 100)
 
     if tier == "Avoid":
         if low_output and high_risk:
