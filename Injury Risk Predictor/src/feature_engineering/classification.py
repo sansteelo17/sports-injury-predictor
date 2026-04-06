@@ -160,10 +160,25 @@ def build_classification_dataset(final_df: pd.DataFrame,
         if team_matches.empty:
             continue
 
-        # Sample up to 3 negatives per player (~25% base rate gives meaningful
-        # probability spread; 10:1 compressed all probs below 30%)
-        n_sample = min(3, len(team_matches))
-        sampled = team_matches.sample(n=n_sample, random_state=hash(name) % 2**31)
+        # Sample up to 20 negatives per player, stratified by year so recent
+        # seasons get proportional coverage. Without year-stratification,
+        # random sampling over 34 years leaves recent windows with zero negatives
+        # and walk-forward CV test sets end up 100% positive (unusable).
+        n_sample = min(20, len(team_matches))
+        if len(team_matches) > n_sample:
+            team_matches = team_matches.copy()
+            team_matches["_year"] = team_matches["match_date_dt"].dt.year
+            years = sorted(team_matches["_year"].unique())
+            per_year = max(1, n_sample // len(years))
+            parts = []
+            for yr in years:
+                yr_rows = team_matches[team_matches["_year"] == yr]
+                take = min(per_year, len(yr_rows))
+                parts.append(yr_rows.sample(n=take, random_state=hash(name) % 2**31))
+            sampled = pd.concat(parts).head(n_sample).drop(columns=["_year"])
+            team_matches = team_matches.drop(columns=["_year"])
+        else:
+            sampled = team_matches
 
         # Assign this player's real info to their negatives
         for col in player_info_cols:
