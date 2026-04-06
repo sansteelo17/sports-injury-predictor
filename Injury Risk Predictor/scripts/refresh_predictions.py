@@ -583,17 +583,40 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
     else:
         snapshot_date = now
 
-    def _build_player_rows(squad_df, match_df, league_name, snapshot_dt, minutes_lkp):
+    def _build_player_rows(squad_df, match_df, league_name, snapshot_dt, minutes_lkp, ref_now=None):
         """Build workload snapshot rows for all players in a squad."""
+        if ref_now is None:
+            ref_now = datetime.now()
         team_workload_cache = {}
         team_form_cache = {}
+        team_snapshot_cache = {}
         rows = []
         matched = 0
         for _, player in squad_df.iterrows():
             team = player["team"]
             if team not in team_workload_cache:
-                team_workload_cache[team] = compute_team_workload(match_df, team, snapshot_dt)
-                team_form_cache[team] = compute_team_form(match_df, team, snapshot_dt)
+                # Per-team snapshot: if this team's last match was >5 days ago
+                # (e.g. they played earlier in the GW), use day after their last
+                # match instead of the global snapshot to avoid acute_load collapse.
+                if team not in team_snapshot_cache:
+                    team_norm = _normalize_match_team(team)
+                    team_dates = match_df[
+                        ((match_df["Home"] == team_norm) | (match_df["Away"] == team_norm)) &
+                        (match_df["Date"] < ref_now)
+                    ]["Date"]
+                    if len(team_dates) > 0:
+                        last_team_match = team_dates.max()
+                        if hasattr(last_team_match, "to_pydatetime"):
+                            last_team_match = last_team_match.to_pydatetime()
+                        days_gap = (ref_now - last_team_match).days
+                        team_snapshot_cache[team] = (
+                            last_team_match + timedelta(days=1) if days_gap > 5 else snapshot_dt
+                        )
+                    else:
+                        team_snapshot_cache[team] = snapshot_dt
+                team_snap = team_snapshot_cache[team]
+                team_workload_cache[team] = compute_team_workload(match_df, team, team_snap)
+                team_form_cache[team] = compute_team_form(match_df, team, team_snap)
 
             team_workload = team_workload_cache[team]
             team_form = team_form_cache[team]
@@ -639,6 +662,7 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
                 matched += 1
 
             rest_days = team_form["rest_days_before_injury"]
+            team_snap = team_snapshot_cache.get(team, snapshot_dt)
             rows.append({
                 "name": player_name,
                 "player_team": player["team"],
@@ -646,8 +670,8 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
                 "position": player.get("position", "Unknown"),
                 "age": player.get("age", 25),
                 "league": league_name,
-                "injury_datetime": snapshot_dt,
-                "snapshot_date": snapshot_dt.strftime("%Y-%m-%d"),
+                "injury_datetime": team_snap,
+                "snapshot_date": team_snap.strftime("%Y-%m-%d"),
                 "playing_time_ratio": play_ratio,
                 "days_since_last_match": rest_days,
                 **scaled_workload,
@@ -657,7 +681,7 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
         return rows
 
     # --- Premier League ---
-    epl_rows = _build_player_rows(players, matches, "Premier League", snapshot_date, minutes_lookup)
+    epl_rows = _build_player_rows(players, matches, "Premier League", snapshot_date, minutes_lookup, ref_now=now)
 
     # --- La Liga (+ UCL for La Liga teams) ---
     print("\n   Fetching La Liga squads and matches...")
@@ -688,7 +712,7 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
             print(f"   Warning: UCL fetch failed ({cl_e}), using La Liga only")
 
         # La Liga players have no FPL minutes data; all default to 0.5
-        la_liga_rows = _build_player_rows(la_liga_players, la_liga_matches, "La Liga", snapshot_date, {})
+        la_liga_rows = _build_player_rows(la_liga_players, la_liga_matches, "La Liga", snapshot_date, {}, ref_now=now)
     except Exception as e:
         print(f"   Warning: could not fetch La Liga data ({e}). Skipping.")
         la_liga_rows = []

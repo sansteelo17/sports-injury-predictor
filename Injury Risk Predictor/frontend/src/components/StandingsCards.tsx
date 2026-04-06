@@ -30,7 +30,7 @@ function SmallBadge({ name, badges }: { name: string; badges?: Record<string, st
 
 export function StandingsCards({ standings, darkMode = true, teamBadges }: StandingsCardsProps) {
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3">
+    <div className="grid grid-cols-3 gap-2">
       {/* League Leaders */}
       <div className={`rounded-xl p-2.5 sm:p-3 ${
         darkMode ? 'bg-[#141414] border border-[#1f1f1f]' : 'bg-white shadow-sm border border-gray-100'

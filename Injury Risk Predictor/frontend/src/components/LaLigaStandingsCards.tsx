@@ -53,7 +53,7 @@ export function LaLigaStandingsCards({ standings, selectedTeam, darkMode = true 
     : null;
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3">
+    <div className="grid grid-cols-3 gap-2">
       {/* Leader */}
       <div className={`rounded-xl p-2.5 sm:p-3 ${cardBase}`}>
         <div className="flex items-center gap-1.5 mb-2">
