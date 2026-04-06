@@ -5,6 +5,18 @@ const API_BASE = rawApiUrl
   ? (rawApiUrl.endsWith('/api') ? rawApiUrl : `${rawApiUrl}/api`)
   : '/api';
 
+/**
+ * Converts a relative /api/... path to an absolute URL using the configured API origin.
+ * In production the player photo proxy lives on api.yaraspeaks.com, not yaraspeaks.com,
+ * so relative paths in <img src> would resolve to the wrong domain.
+ */
+export function toAbsoluteApiUrl(path: string): string {
+  if (!path) return path;
+  if (path.startsWith('http')) return path;
+  if (path.startsWith('/api/') && rawApiUrl) return `${rawApiUrl}${path}`;
+  return path;
+}
+
 async function fetchAPI<T>(endpoint: string): Promise<T> {
   const res = await fetch(`${API_BASE}${endpoint}`);
   if (!res.ok) {

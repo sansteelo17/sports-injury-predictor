@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { PlayerSummary } from '@/types/api';
 import { RiskBadge } from './RiskBadge';
 import { User, Cross } from 'lucide-react';
+import { toAbsoluteApiUrl } from '@/lib/api';
 
 interface PlayerListProps {
   players: PlayerSummary[];
@@ -27,7 +28,7 @@ function PlayerImage({ url, name, darkMode }: { url: string | null; name: string
 
   return (
     <img
-      src={url}
+      src={toAbsoluteApiUrl(url)}
       alt={name}
       className="w-8 h-8 rounded-full object-cover flex-shrink-0"
       onError={() => setErrored(true)}
