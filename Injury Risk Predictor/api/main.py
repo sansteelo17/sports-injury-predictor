@@ -125,6 +125,7 @@ fpl_player_team = {}  # Player name -> team name (for photo disambiguation)
 fpl_players_by_team = {}  # Team name -> set of FPL player names (for filtering)
 fpl_element_lookup: Dict[int, Dict] = {}  # FPL element ID -> player stats dict
 _tm_photo_map: Dict[str, str] = {}  # Normalised player name -> Transfermarkt photo URL
+_tm_photo_bytes_cache: Dict[str, bytes] = {}  # photo URL -> raw image bytes (in-memory, avoids repeat fetches)
 shirt_numbers_by_team: Dict[str, Dict[str, int]] = {}  # Normalized team -> normalized player name -> shirt number
 shirt_number_lookup_attempted: Set[str] = set()  # Teams we already tried loading for shirt numbers
 _startup_complete: bool = False  # Set True after load_models finishes; suppresses API calls during startup
@@ -3527,6 +3528,8 @@ def player_row_to_risk(row) -> PlayerRisk:
     # but story generators read "previous_injuries" so we map it
     enriched_row = dict(row)
     enriched_row["previous_injuries"] = prev_injuries
+    # Inject normalized percentile score so story generators use the same % the frontend shows
+    enriched_row["risk_score_pct"] = round(normalize_risk_score(prob, row.get("league")))
     # Use total_days_lost from scraped data if available, otherwise estimate
     total_days_from_scrape = _safe_int(row.get("total_days_lost", 0))
     if total_days_from_scrape > 0:
@@ -4350,12 +4353,16 @@ def proxy_tm_player_photo(name: str):
     if not photo_url:
         raise HTTPException(status_code=404, detail="No photo found for this player")
 
+    if photo_url in _tm_photo_bytes_cache:
+        return Response(content=_tm_photo_bytes_cache[photo_url], media_type="image/jpeg")
+
     try:
         from src.data_loaders.transfermarkt_scraper import TransfermarktScraper
         scraper = TransfermarktScraper(cache_hours=168)
         resp = scraper.session.get(photo_url, timeout=8)
         if resp.status_code != 200:
             raise HTTPException(status_code=404, detail="Photo unavailable")
+        _tm_photo_bytes_cache[photo_url] = resp.content
         return Response(content=resp.content, media_type="image/jpeg")
     except HTTPException:
         raise
