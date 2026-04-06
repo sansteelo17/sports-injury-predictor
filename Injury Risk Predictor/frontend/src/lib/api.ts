@@ -1,4 +1,4 @@
-import { PlayerSummary, PlayerRisk, TeamOverview, FPLInsights, LeagueStanding, StandingsSummary, WhatIfProjection, FPLSquadSync } from '@/types/api';
+import { PlayerSummary, PlayerRisk, TeamOverview, FPLInsights, LeagueStanding, StandingsSummary, WhatIfProjection, FPLSquadSync, LaLigaStandingRow } from '@/types/api';
 
 const rawApiUrl = process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/+$/, '');
 const API_BASE = rawApiUrl
@@ -26,8 +26,9 @@ export async function getPlayerRisk(playerName: string): Promise<PlayerRisk> {
   return fetchAPI<PlayerRisk>(`/players/${encodeURIComponent(playerName)}/risk`);
 }
 
-export async function getTeams(): Promise<string[]> {
-  return fetchAPI<string[]>('/teams');
+export async function getTeams(league?: string): Promise<string[]> {
+  const q = league ? `?league=${encodeURIComponent(league)}` : '';
+  return fetchAPI<string[]>(`/teams${q}`);
 }
 
 export async function getTeamOverview(teamName: string): Promise<TeamOverview> {
@@ -67,4 +68,8 @@ export async function getWhatIf(playerName: string, scenario: 'rest_next' | 'pla
 
 export async function getFPLSquad(teamId: string): Promise<FPLSquadSync> {
   return fetchAPI<FPLSquadSync>(`/fpl/squad/${encodeURIComponent(teamId)}`);
+}
+
+export async function getLaLigaStandings(): Promise<LaLigaStandingRow[]> {
+  return fetchAPI<LaLigaStandingRow[]>('/la-liga/standings');
 }

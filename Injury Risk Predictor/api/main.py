@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any, Set
 import sys
 import os
+import json
 from datetime import datetime, timedelta
 import asyncio
 import subprocess
@@ -123,8 +124,10 @@ fpl_player_codes = {}  # Player name -> FPL code (for photos)
 fpl_player_team = {}  # Player name -> team name (for photo disambiguation)
 fpl_players_by_team = {}  # Team name -> set of FPL player names (for filtering)
 fpl_element_lookup: Dict[int, Dict] = {}  # FPL element ID -> player stats dict
+_tm_photo_map: Dict[str, str] = {}  # Normalised player name -> Transfermarkt photo URL
 shirt_numbers_by_team: Dict[str, Dict[str, int]] = {}  # Normalized team -> normalized player name -> shirt number
 shirt_number_lookup_attempted: Set[str] = set()  # Teams we already tried loading for shirt numbers
+_startup_complete: bool = False  # Set True after load_models finishes; suppresses API calls during startup
 historical_matches_df = None  # Local historical PL fixtures from csv
 fixture_history_cache = {}  # (team, opponent, years) -> summary
 odds_client = None
@@ -203,7 +206,8 @@ async def load_models():
     global artifacts, inference_df, fpl_stats_cache, fpl_team_ids, fpl_team_name_to_id
     global fpl_team_names_by_id, fpl_team_meta, fpl_team_recent_defense
     global fpl_player_codes, fpl_players_by_team, fpl_element_lookup, historical_matches_df, fixture_history_cache, odds_client
-    global shirt_numbers_by_team, shirt_number_lookup_attempted
+    global shirt_numbers_by_team, shirt_number_lookup_attempted, _startup_complete
+    _startup_complete = False
     # Reset caches so manual/cron refreshes don't accumulate stale keys.
     fpl_stats_cache = {}
     fpl_team_ids = {}
@@ -366,22 +370,32 @@ async def load_models():
         else:
             print("No cached/live or local fixture history — context stays limited until backfill completes")
         # Kick off API refresh/backfill in a background thread (may take 60s+ due to rate limits)
-        backfill_thread = threading.Thread(
-            target=_backfill_fixture_history_async,
-            daemon=True,
-            name="fixture-history-backfill",
-        )
-        backfill_thread.start()
+        # Skip entirely if backfill is disabled — avoids 3-retry × 60s startup delay.
+        if _env_flag("FIXTURE_HISTORY_ENABLE_API_BACKFILL", default=True):
+            backfill_thread = threading.Thread(
+                target=_backfill_fixture_history_async,
+                daemon=True,
+                name="fixture-history-backfill",
+            )
+            backfill_thread.start()
+        else:
+            print("Fixture history API backfill disabled (FIXTURE_HISTORY_ENABLE_API_BACKFILL=false)")
     except Exception as e:
         print(f"WARNING: Failed to load historical fixture data: {e}")
 
-    # Filter inference_df: validate against FPL and correct team assignments.
+    # Filter inference_df: validate EPL players against FPL and correct team assignments.
     # FPL updates weekly (gameweek-level) so it reflects January transfers etc.
     # football-data.org squads can be stale.
+    # La Liga players are not in FPL — keep them unconditionally.
     if inference_df is not None and fpl_stats_cache:
         pre_count = len(inference_df)
         valid_rows = []
         for idx, row in inference_df.iterrows():
+            row_league = row.get("league", "Premier League")
+            if row_league != "Premier League":
+                # Non-EPL leagues: no FPL validation, keep as-is
+                valid_rows.append(idx)
+                continue
             fpl = get_fpl_stats_for_player(row["name"], team_hint=row.get("team", ""))
             if fpl:
                 valid_rows.append(idx)
@@ -394,40 +408,107 @@ async def load_models():
         # Deduplicate: keep highest-risk entry per name+team
         inference_df = inference_df.sort_values("ensemble_prob", ascending=False)
         inference_df = inference_df.drop_duplicates(subset=["name", "team"], keep="first")
-        print(f"Filtered players: {pre_count} -> {len(inference_df)} (matched to FPL squads)")
+        print(f"Filtered players: {pre_count} -> {len(inference_df)} (EPL validated via FPL, La Liga kept)")
 
     # Enrich inference_df with scraped injury history from player_history.pkl
+    # Also merges laliga_player_history.pkl for La Liga players.
     if inference_df is not None:
         try:
             import pandas as pd
             history_path = os.path.join(PROJECT_ROOT, "models", "player_history.pkl")
+            laliga_history_path = os.path.join(PROJECT_ROOT, "models", "laliga_player_history.pkl")
             if os.path.exists(history_path):
                 ph = pd.read_pickle(history_path)
-                # Merge enriched injury columns into inference_df
-                merge_cols = ["name"]
+                # Merge La Liga history (richer — has total_days_lost, days_since_last_injury)
+                if os.path.exists(laliga_history_path):
+                    try:
+                        ll_ph = pd.read_pickle(laliga_history_path)
+                        # Apply known name aliases before merging.
+                        # Transfermarkt records players by their full legal name;
+                        # football-data.org uses the commonly known name.
+                        TM_NAME_ALIASES = {
+                            "daniel carvajal": "dani carvajal",
+                            "jose ignacio fernandez iglesias": "nacho",
+                            "jose maria gimenez de vargas": "jose gimenez",
+                            "vinicius jose passador de oliveira": "vinicius junior",
+                            "vinicius jr": "vinicius junior",
+                            "vinicius junior": "vinicius junior",
+                            # Gavi: TM uses "Gavi", football-data.org uses "Pablo Gavira"
+                            "gavi": "pablo gavira",
+                            "pablo martín páez gavira": "pablo gavira",
+                            "pablo martin paez gavira": "pablo gavira",
+                        }
+                        ll_ph["name"] = ll_ph["name"].apply(
+                            lambda n: TM_NAME_ALIASES.get(n.lower(), n) if isinstance(n, str) else n
+                        )
+                        # La Liga history takes precedence for La Liga players; EPL history wins for EPL
+                        ph = pd.concat([ph, ll_ph], ignore_index=True)
+                        # Keep highest injury count per player (most complete record)
+                        ph = ph.sort_values("player_injury_count", ascending=False)
+                        ph = ph.drop_duplicates(subset=["name"], keep="first")
+                        print(f"Merged La Liga history: {len(ph)} players total")
+                    except Exception as ll_e:
+                        logger.warning(f"Failed to load La Liga player history: {ll_e}")
+                # Merge enriched injury columns into inference_df.
+                # Transfermarkt capitalises all name words ("Frenkie De Jong") while
+                # football-data.org uses natural case ("Frenkie de Jong").
+                # Build a lowercase lookup so we match case-insensitively.
                 enrich_cols = ["total_days_lost", "days_since_last_injury", "last_injury_date"]
                 available = [c for c in enrich_cols if c in ph.columns]
-                if available:
-                    ph_subset = ph[["name"] + available].drop_duplicates(subset=["name"], keep="last")
-                    # Also update player_injury_count and player_avg_severity from fresh scrape
-                    for col in ["player_injury_count", "player_avg_severity", "player_worst_injury", "is_injury_prone"]:
-                        if col in ph.columns:
-                            available.append(col)
-                    ph_subset = ph[["name"] + available].drop_duplicates(subset=["name"], keep="last")
+                for col in ["player_injury_count", "player_avg_severity", "player_worst_injury", "is_injury_prone"]:
+                    if col in ph.columns:
+                        available.append(col)
 
-                    pre_cols = set(inference_df.columns)
-                    # Drop old columns that will be replaced
+                if available:
+                    ph_subset = ph[["name"] + available].copy()
+                    ph_subset = ph_subset.sort_values("player_injury_count", ascending=False)
+                    ph_subset = ph_subset.drop_duplicates(subset=["name"], keep="first")
+                    # Build normalised key: lowercase + accent-stripped for case- and accent-insensitive join
+                    # Transfermarkt: "Fran Garcia", football-data.org: "Fran García" — need to match these
+                    ph_subset["_name_lower"] = ph_subset["name"].apply(lambda n: _strip_accents(n.lower()) if isinstance(n, str) else "")
+                    ph_subset = ph_subset.drop_duplicates(subset=["_name_lower"], keep="first")
+
+                    inference_df["_name_lower"] = inference_df["name"].apply(lambda n: _strip_accents(n.lower()) if isinstance(n, str) else "")
+
+                    # Stash original values before dropping — used as fallback for players
+                    # not covered by player_history.pkl (e.g. EPL players not in Transfermarkt pkl)
+                    fallback_cols = ["total_days_lost", "days_since_last_injury"]
+                    _fallback = {}
+                    for col in fallback_cols:
+                        if col in inference_df.columns:
+                            _fallback[col] = inference_df.set_index("_name_lower")[col].to_dict()
+
+                    # Drop old columns before merge
                     for col in available:
                         if col in inference_df.columns:
                             inference_df = inference_df.drop(columns=[col])
-                    inference_df = inference_df.merge(ph_subset, on="name", how="left")
+
+                    ph_join = ph_subset.drop(columns=["name"]).rename(columns={"_name_lower": "_name_lower"})
+                    inference_df = inference_df.merge(ph_join, on="_name_lower", how="left")
+                    inference_df = inference_df.drop(columns=["_name_lower"])
+
                     # Fill NaN for players not in history
                     inference_df["player_injury_count"] = inference_df["player_injury_count"].fillna(0)
                     inference_df["player_avg_severity"] = inference_df["player_avg_severity"].fillna(0)
                     inference_df["player_worst_injury"] = inference_df["player_worst_injury"].fillna(0)
                     inference_df["is_injury_prone"] = inference_df["is_injury_prone"].fillna(0)
-                    inference_df["total_days_lost"] = inference_df["total_days_lost"].fillna(0)
-                    inference_df["days_since_last_injury"] = inference_df["days_since_last_injury"].fillna(365)
+                    # Restore original values for players not found in player_history.pkl
+                    inference_df["_name_lower_tmp"] = inference_df["name"].apply(lambda n: _strip_accents(n.lower()) if isinstance(n, str) else "")
+                    if "total_days_lost" in inference_df.columns:
+                        if "total_days_lost" in _fallback:
+                            mask = inference_df["total_days_lost"].isna()
+                            inference_df.loc[mask, "total_days_lost"] = inference_df.loc[mask, "_name_lower_tmp"].map(_fallback["total_days_lost"])
+                        inference_df["total_days_lost"] = inference_df["total_days_lost"].fillna(0)
+                    else:
+                        inference_df["total_days_lost"] = inference_df["_name_lower_tmp"].map(_fallback.get("total_days_lost", {})).fillna(0)
+                    if "days_since_last_injury" in inference_df.columns:
+                        if "days_since_last_injury" in _fallback:
+                            mask = inference_df["days_since_last_injury"].isna()
+                            inference_df.loc[mask, "days_since_last_injury"] = inference_df.loc[mask, "_name_lower_tmp"].map(_fallback["days_since_last_injury"])
+                        inference_df["days_since_last_injury"] = inference_df["days_since_last_injury"].fillna(365)
+                    else:
+                        inference_df["days_since_last_injury"] = inference_df["_name_lower_tmp"].map(_fallback.get("days_since_last_injury", {})).fillna(365)
+                    inference_df = inference_df.drop(columns=["_name_lower_tmp"])
                     has_data = (inference_df["player_injury_count"] > 0).sum()
                     print(f"Enriched injury history: {has_data}/{len(inference_df)} players have injury records")
         except Exception as e:
@@ -444,11 +525,26 @@ async def load_models():
     except Exception as e:
         print(f"WARNING: Failed to load injury detail: {e}")
 
+    # Load Transfermarkt player photo map (covers La Liga + recently-transferred EPL players)
+    global _tm_photo_map
+    try:
+        photo_map_path = os.path.join(PROJECT_ROOT, "models", "player_photo_map.json")
+        if os.path.exists(photo_map_path):
+            with open(photo_map_path, "r", encoding="utf-8") as _f:
+                _tm_photo_map = json.load(_f)
+            print(f"Loaded TM photo map: {len(_tm_photo_map)} entries")
+        else:
+            print("INFO: player_photo_map.json not found — run scripts/build_player_photo_map.py to generate")
+    except Exception as e:
+        print(f"WARNING: Failed to load TM photo map: {e}")
+
     # Re-assign archetypes: KMeans for players with per-injury detail, rule-based fallback
     if inference_df is not None:
         inference_df = assign_hybrid_archetypes(inference_df)
         archetype_counts = inference_df["archetype"].value_counts().to_dict()
         print(f"Hybrid archetypes: {archetype_counts}")
+
+    _startup_complete = True
 
 
 def assign_rule_based_archetypes(df):
@@ -680,8 +776,11 @@ def assign_hybrid_archetypes(df):
             if days_since < 60 and current not in ("Fragile",):
                 df.at[idx, "archetype"] = "Currently Vulnerable"
                 overrides += 1
-            # Long injury-free + low severity → Durable (not Injury Prone)
-            elif days_since > 365 and avg_sev < 25 and current in ("Injury Prone", "Recurring Issues"):
+            # Long injury-free + low severity → Durable.
+            # Includes "Fragile" when avg_sev < 25: avg_sev that low means the cluster
+            # mislabeled the player (HDBSCAN noise + KMeans mis-assignment).
+            # Genuinely Fragile players have avg_sev >> 25 so this guard is narrow.
+            elif days_since > 365 and avg_sev < 25 and current in ("Injury Prone", "Recurring Issues", "Fragile"):
                 df.at[idx, "archetype"] = "Durable"
                 overrides += 1
             # Small-sample guardrail: 1-2 injuries can be skewed by one severe event.
@@ -958,6 +1057,7 @@ class PlayerRisk(BaseModel):
     name: str
     team: str
     position: str
+    league: str = "Premier League"
     shirt_number: Optional[int] = None
     age: int
     risk_level: str
@@ -1185,18 +1285,36 @@ TEAM_BADGE_ALIASES = {
 }
 
 
-def get_risk_level(prob: float, row=None) -> str:
-    """Classify 2-week injury risk using percentile-based ranking.
+def _league_prob_series(league: Optional[str] = None):
+    """Return the ensemble_prob series for percentile calculation.
 
-    The model's raw probabilities are calibrated to the training base rate
-    (~10% with 10:1 negative sampling), so absolute thresholds don't work.
-    Instead, rank players relative to each other:
-    - High: top 20% of risk (80th percentile and above)
+    Normalises within the player's own league so that EPL and La Liga
+    each have a meaningful high/medium/low distribution rather than
+    La Liga players all sitting in the bottom half of a combined ranking.
+    Falls back to all players if league is unknown or inference_df has no
+    league column.
+    """
+    if inference_df is None or "ensemble_prob" not in inference_df.columns:
+        return None
+    if league and "league" in inference_df.columns:
+        sub = inference_df[inference_df["league"].str.lower() == league.lower()]
+        if len(sub) >= 10:
+            return sub["ensemble_prob"]
+    return inference_df["ensemble_prob"]
+
+
+def get_risk_level(prob: float, row=None) -> str:
+    """Classify 2-week injury risk using within-league percentile ranking.
+
+    Ranks player relative to others in the same league:
+    - High: top 20% (80th percentile and above)
     - Medium: 40th-80th percentile
     - Low: bottom 40%
     """
-    if inference_df is not None and "ensemble_prob" in inference_df.columns:
-        percentile = float((inference_df["ensemble_prob"] <= prob).mean())
+    league = row.get("league") if isinstance(row, dict) else (getattr(row, "get", lambda k, d=None: d)("league") if row is not None else None)
+    series = _league_prob_series(league)
+    if series is not None:
+        percentile = float((series <= prob).mean())
         if percentile >= 0.80:
             return "High"
         elif percentile >= 0.40:
@@ -1204,7 +1322,6 @@ def get_risk_level(prob: float, row=None) -> str:
         else:
             return "Low"
     else:
-        # Fallback without inference_df context
         if prob >= 0.20:
             return "High"
         elif prob >= 0.10:
@@ -1213,23 +1330,52 @@ def get_risk_level(prob: float, row=None) -> str:
             return "Low"
 
 
-def normalize_risk_score(prob: float) -> float:
-    """Convert raw model probability to a 0-100 score based on percentile rank.
+def normalize_risk_score(prob: float, league: Optional[str] = None) -> float:
+    """Convert raw model probability to a 0-100 score based on within-league percentile rank.
 
-    The raw ensemble_prob is not calibrated (range ~0.04-0.92, median ~0.77),
-    so showing it directly confuses users. Instead, show where the player
-    ranks relative to all others: 50 = average risk, 90 = top 10%.
+    Normalises within the player's own league so La Liga and EPL each span 0-100.
+    50 = average risk for that league, 90 = top 10% in that league.
     """
-    if inference_df is not None and "ensemble_prob" in inference_df.columns:
-        percentile = float((inference_df["ensemble_prob"] <= prob).mean())
-        return round(percentile * 100, 1)
-    # Fallback: min-max normalize assuming typical range
-    return round(max(0, min(100, (prob - 0.04) / (0.92 - 0.04) * 100)), 1)
+    series = _league_prob_series(league)
+    if series is not None:
+        percentile = float((series <= prob).mean())
+        return round(min(99.0, percentile * 100), 1)
+    return round(max(0, min(99, (prob - 0.04) / (0.92 - 0.04) * 100)), 1)
+
+
+# La Liga team badge URLs from football-data.org crests (static — IDs are stable)
+LA_LIGA_BADGE_MAP: Dict[str, str] = {
+    "athletic club": "https://crests.football-data.org/77.png",
+    "atletico madrid": "https://crests.football-data.org/78.png",
+    "osasuna": "https://crests.football-data.org/79.png",
+    "espanyol": "https://crests.football-data.org/80.png",
+    "barcelona": "https://crests.football-data.org/81.png",
+    "getafe": "https://crests.football-data.org/82.png",
+    "real madrid": "https://crests.football-data.org/86.png",
+    "rayo vallecano": "https://crests.football-data.org/87.png",
+    "mallorca": "https://crests.football-data.org/89.png",
+    "real betis": "https://crests.football-data.org/90.png",
+    "real sociedad": "https://crests.football-data.org/92.png",
+    "villarreal": "https://crests.football-data.org/94.png",
+    "valencia": "https://crests.football-data.org/95.png",
+    "valladolid": "https://crests.football-data.org/250.png",
+    "alaves": "https://crests.football-data.org/263.png",
+    "las palmas": "https://crests.football-data.org/275.png",
+    "girona": "https://crests.football-data.org/298.png",
+    "celta vigo": "https://crests.football-data.org/558.png",
+    "sevilla": "https://crests.football-data.org/559.png",
+    "leganes": "https://crests.football-data.org/745.png",
+}
 
 
 def get_team_badge_url(team_name: str) -> Optional[str]:
-    """Get Premier League badge URL for a team."""
+    """Get badge URL for a team (EPL via FPL CDN, La Liga via football-data.org crests)."""
     team_lower = team_name.lower().strip()
+
+    # La Liga — check static map first (no API dependency)
+    if team_lower in LA_LIGA_BADGE_MAP:
+        return LA_LIGA_BADGE_MAP[team_lower]
+
     search = TEAM_BADGE_ALIASES.get(team_lower, team_lower)
 
     # Exact match
@@ -1413,6 +1559,9 @@ def _ensure_team_shirt_numbers_loaded(team_name: Optional[str]) -> None:
     """Lazy-load squad numbers from football-data.org for one team."""
     if not team_name:
         return
+    # Skip API lookups during startup — avoids rate-limit hits from the FPL validation loop.
+    if not _startup_complete:
+        return
 
     key = TEAM_BADGE_ALIASES.get(str(team_name).lower().strip(), str(team_name).lower().strip())
     if not key:
@@ -1505,9 +1654,17 @@ def _resolve_shirt_number(player_name: str, fpl_stats: Optional[Dict], team_hint
 
 
 def get_player_image_url(player_name: str, team_name: Optional[str] = None) -> Optional[str]:
-    """Get Premier League player photo URL."""
+    """Get player photo URL. Checks Transfermarkt map first (covers La Liga + transferred EPL players),
+    then falls back to the FPL CDN."""
     _photo_url = lambda code: f"https://resources.premierleague.com/premierleague/photos/players/110x140/p{code}.png"
     name_lower = player_name.lower()
+
+    # TM map: covers La Liga players and EPL players whose FPL photo is stale post-transfer
+    if _tm_photo_map:
+        name_stripped = _strip_accents(name_lower)
+        tm_url = _tm_photo_map.get(name_lower) or _tm_photo_map.get(name_stripped)
+        if tm_url:
+            return f"/api/player-photo/tm?name={player_name}"
 
     # Try exact match first
     if name_lower in fpl_player_codes:
@@ -1569,6 +1726,9 @@ POPULAR_NAME_OVERRIDES = {
     "alexander isak": "Isak",
     "martin odegaard": "Odegaard",
     "martin ødegaard": "Odegaard",
+    # La Liga popular names
+    "pablo gavira": "Gavi",
+    "gavi": "Gavi",
 }
 
 
@@ -2691,6 +2851,55 @@ def get_upcoming_fixtures(team_name: str, count: int = 5) -> List[Dict]:
         return []
 
 
+def get_upcoming_fixtures_la_liga(team_name: str, count: int = 5) -> List[Dict]:
+    """Get the next N La Liga fixtures for a team from football-data.org.
+
+    Returns same structure as get_upcoming_fixtures() so the frontend can
+    render them identically. Uses season=2025 (2025-26) and filters upcoming
+    in code since dateFrom param is not supported on the free tier.
+    """
+    try:
+        from src.data_loaders.api_client import FootballDataClient as MatchClient, LA_LIGA_ID
+        from datetime import datetime, timezone
+        client = MatchClient()
+        today = str(datetime.now(timezone.utc).date())
+        # Free tier doesn't support dateFrom — fetch full season and filter in code
+        season = datetime.now().year if datetime.now().month >= 8 else datetime.now().year - 1
+        data = client._get(f"competitions/{LA_LIGA_ID}/matches", {"season": season})
+        matches = data.get("matches", [])
+
+        team_norm = team_name.lower()
+
+        upcoming = []
+        for m in sorted(matches, key=lambda x: x.get("utcDate", "")):
+            if len(upcoming) >= count:
+                break
+            if m.get("status") not in ("SCHEDULED", "TIMED"):
+                continue
+            if (m.get("utcDate") or "") < today:
+                continue
+            home = client._normalize_la_liga_team(m.get("homeTeam", {}).get("shortName", m.get("homeTeam", {}).get("name", "")))
+            away = client._normalize_la_liga_team(m.get("awayTeam", {}).get("shortName", m.get("awayTeam", {}).get("name", "")))
+            if home.lower() == team_norm:
+                upcoming.append({
+                    "opponent": away,
+                    "is_home": True,
+                    "difficulty": 3,
+                    "match_time": m.get("utcDate"),
+                })
+            elif away.lower() == team_norm:
+                upcoming.append({
+                    "opponent": home,
+                    "is_home": False,
+                    "difficulty": 3,
+                    "match_time": m.get("utcDate"),
+                })
+        return upcoming
+    except Exception as e:
+        logger.warning(f"Failed to get La Liga upcoming fixtures for {team_name}: {e}")
+        return []
+
+
 def _is_defensive_position(position: str) -> bool:
     pos_lower = (position or "").lower()
     return any(p in pos_lower for p in ["def", "gk", "goalkeeper", "back"])
@@ -3270,8 +3479,10 @@ def player_row_to_risk(row) -> PlayerRisk:
     days_since = _safe_int(row.get("days_since_last_injury", 365), 365)
     enriched_row["days_since_last_injury"] = days_since
 
-    # Enrich with FPL stats
-    fpl_stats = get_fpl_stats_for_player(player_name, team_hint=team)
+    # Enrich with FPL stats — La Liga players are not in FPL so skip to avoid
+    # matching La Liga players to wrong EPL entries (e.g. Fermín López → "H.Bueno")
+    player_league_check = row.get("league", "Premier League")
+    fpl_stats = get_fpl_stats_for_player(player_name, team_hint=team) if player_league_check != "La Liga" else None
     enriched_row["story_name"] = get_popular_player_name(player_name, fpl_stats)
     if fpl_stats:
         enriched_row.update({
@@ -3289,13 +3500,32 @@ def player_row_to_risk(row) -> PlayerRisk:
     if _safe_int(enriched_row.get("shirt_number"), 0) <= 0:
         enriched_row["shirt_number"] = _lookup_shirt_number(player_name, team_hint=team)
 
-    # Compute risk percentile for context (e.g. "higher risk than 92% of players")
+    # Compute within-league risk percentile for context (e.g. "higher risk than 92% of players")
     risk_percentile = None
-    if inference_df is not None:
-        risk_percentile = round(float((inference_df["ensemble_prob"] <= prob).mean()), 3)
+    player_league = enriched_row.get("league")
+    _pctile_series = _league_prob_series(player_league)
+    if _pctile_series is not None:
+        risk_percentile = round(float((_pctile_series <= prob).mean()), 3)
     enriched_row["risk_percentile"] = risk_percentile
 
-    next_fixture_data = get_next_fixture_for_team(team, prob)
+    player_league = enriched_row.get("league", "Premier League")
+    if player_league == "La Liga":
+        _ll_upcoming = get_upcoming_fixtures_la_liga(team, count=1)
+        if _ll_upcoming:
+            _ll_ml = odds_client.get_la_liga_moneyline_1x2(team) if odds_client else None
+            next_fixture_data = {
+                "opponent": _ll_upcoming[0]["opponent"],
+                "is_home": _ll_upcoming[0]["is_home"],
+                "match_time": _ll_upcoming[0]["match_time"],
+                "clean_sheet_odds": None,
+                "win_probability": None,
+                "fixture_insight": None,
+                "moneyline_1x2": _ll_ml["books"] if _ll_ml and _ll_ml.get("books") else None,
+            }
+        else:
+            next_fixture_data = None
+    else:
+        next_fixture_data = get_next_fixture_for_team(team, prob)
     fixture_history_data = get_fixture_history_context(
         team_name=team,
         opponent_name=next_fixture_data.get("opponent") if next_fixture_data else None,
@@ -3341,6 +3571,16 @@ def player_row_to_risk(row) -> PlayerRisk:
                     "games_missed": int(irow.get("games_missed", 0)),
                 })
 
+    # If player_injury_count was missing from player_history.pkl (filled to 0),
+    # derive the count and total days from injury_records (actual injury data).
+    if prev_injuries == 0 and injury_records:
+        prev_injuries = len(injury_records)
+        computed_days = sum(r.get("severity_days", 0) for r in injury_records)
+        if total_days == 0 and computed_days > 0:
+            total_days = computed_days
+        enriched_row["previous_injuries"] = prev_injuries
+        enriched_row["total_days_lost"] = total_days
+
     narrative_context = {
         "next_fixture": next_fixture_data,
         "fixture_history": fixture_history_data,
@@ -3350,7 +3590,9 @@ def player_row_to_risk(row) -> PlayerRisk:
         "player_importance": importance_data,
     }
     scoring_odds_data = calculate_scoring_odds(enriched_row, extra_context=narrative_context)
-    fpl_value_data = get_fpl_value_assessment(enriched_row, extra_context=narrative_context)
+    # La Liga players are not in FPL — skip value assessment entirely
+    _player_league_for_fpl = enriched_row.get("league", "Premier League")
+    fpl_value_data = get_fpl_value_assessment(enriched_row, extra_context=narrative_context) if _player_league_for_fpl != "La Liga" else None
 
     # Use enriched_row for ALL generators so they see corrected injury history.
     # Story receives fixture + market context through the lightweight retrieval layer.
@@ -3410,7 +3652,7 @@ def player_row_to_risk(row) -> PlayerRisk:
         shirt_number=_safe_int(enriched_row.get("shirt_number"), 0) or None,
         age=int(enriched_row.get("age", 25)),
         risk_level=get_risk_level(prob, enriched_row),
-        risk_probability=round(prob, 3),
+        risk_probability=round(normalize_risk_score(prob, enriched_row.get("league")) / 100, 3),
         archetype=enriched_row.get("archetype", "Unknown"),
         archetype_description=ARCHETYPE_DESCRIPTIONS.get(
             enriched_row.get("archetype", ""), "Unknown injury profile"
@@ -3443,13 +3685,17 @@ def player_row_to_risk(row) -> PlayerRisk:
             key_drivers=[LabDriver(**d) for d in lab_notes_data["key_drivers"]],
             technical=TechnicalDetails(**lab_notes_data["technical"]),
         ) if lab_notes_data else None,
+        league=enriched_row.get("league", "Premier League"),
         risk_percentile=risk_percentile,
         player_image_url=get_player_image_url(player_name, team),
         team_badge_url=get_team_badge_url(team),
         is_currently_injured=fpl_stats.get("status", "a") in ("i", "u") if fpl_stats else False,
         injury_news=fpl_stats.get("news") or None if fpl_stats else None,
         chance_of_playing=fpl_stats.get("chance_of_playing") if fpl_stats else None,
-        upcoming_fixtures=[UpcomingFixture(**uf) for uf in get_upcoming_fixtures(team, count=5)] or None,
+        upcoming_fixtures=[UpcomingFixture(**uf) for uf in (
+            get_upcoming_fixtures_la_liga(team, count=5) if player_league == "La Liga"
+            else get_upcoming_fixtures(team, count=5)
+        )] or None,
         injury_records=[InjuryRecord(**ir) for ir in injury_records],
         acwr=round(float(enriched_row.get("acwr", 0)), 2) if enriched_row.get("acwr") is not None else None,
         acute_load=round(float(enriched_row.get("acute_load", 0)), 1) if enriched_row.get("acute_load") is not None else None,
@@ -3583,13 +3829,15 @@ async def list_players(team: Optional[str] = None, risk_level: Optional[str] = N
         fpl = get_fpl_stats_for_player(name)
         minutes = fpl.get("minutes", 0) if fpl else 0
         fpl_status = fpl.get("status", "a") if fpl else "a"
+        row_league = row.get("league")
+        display_prob = round(normalize_risk_score(prob, row_league) / 100, 3)
         players.append(PlayerSummary(
             name=name,
             team=row.get("team", "Unknown"),
             position=row.get("position", "Unknown"),
             shirt_number=_resolve_shirt_number(name, fpl, row.get("team", "Unknown")),
             risk_level=get_risk_level(prob, row),
-            risk_probability=round(prob, 3),
+            risk_probability=display_prob,
             archetype=row.get("archetype", "Unknown"),
             minutes_played=minutes,
             is_starter=minutes >= 900,
@@ -3787,12 +4035,21 @@ async def get_player_risk(player_name: str):
 
 
 @app.get("/api/teams", response_model=List[str])
-async def list_teams():
-    """List all available teams (filtered to current Premier League)."""
+async def list_teams(league: Optional[str] = None):
+    """List all available teams, optionally filtered by league."""
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
-    our_teams = inference_df["team"].unique().tolist()
+    if league and "league" in inference_df.columns:
+        league_df = inference_df[inference_df["league"].str.lower() == league.lower()]
+        our_teams = league_df["team"].unique().tolist()
+    else:
+        our_teams = inference_df["team"].unique().tolist()
+
+    # For non-EPL leagues, skip PL standings validation — return all teams directly
+    is_epl = not league or league.lower() in ("premier league", "epl")
+    if not is_epl:
+        return sorted(our_teams)
 
     try:
         client = FootballDataClient()
@@ -3864,13 +4121,15 @@ async def get_team_overview(team_name: str):
         fpl = get_fpl_stats_for_player(name)
         minutes = fpl.get("minutes", 0) if fpl else 0
         fpl_status = fpl.get("status", "a") if fpl else "a"
+        row_league = row.get("league")
+        display_prob = round(normalize_risk_score(prob, row_league) / 100, 3)
         players.append(PlayerSummary(
             name=name,
             team=row.get("team", "Unknown"),
             position=row.get("position", "Unknown"),
             shirt_number=_resolve_shirt_number(name, fpl, row.get("team", "Unknown")),
             risk_level=get_risk_level(prob, row),
-            risk_probability=round(prob, 3),
+            risk_probability=display_prob,
             archetype=row.get("archetype", "Unknown"),
             minutes_played=minutes,
             is_starter=minutes >= 900,
@@ -3884,7 +4143,30 @@ async def get_team_overview(team_name: str):
     actual_team = team_df.iloc[0]["team"]
 
     # Get next fixture for the team
-    next_fixture_data = get_next_fixture_for_team(actual_team, team_df["ensemble_prob"].mean())
+    team_league = team_df.iloc[0].get("league", "Premier League")
+    if team_league == "La Liga":
+        # Build a minimal next_fixture from upcoming La Liga fixtures
+        _upcoming_ll = get_upcoming_fixtures_la_liga(actual_team, count=1)
+        if _upcoming_ll:
+            # Try to add moneyline from odds client using La Liga sport key
+            _ml_data = None
+            if odds_client:
+                _ml_result = odds_client.get_la_liga_moneyline_1x2(actual_team)
+                if _ml_result and _ml_result.get("books"):
+                    _ml_data = _ml_result["books"]
+            next_fixture_data = {
+                "opponent": _upcoming_ll[0]["opponent"],
+                "is_home": _upcoming_ll[0]["is_home"],
+                "match_time": _upcoming_ll[0]["match_time"],
+                "clean_sheet_odds": None,
+                "win_probability": None,
+                "fixture_insight": None,
+                "moneyline_1x2": _ml_data,
+            }
+        else:
+            next_fixture_data = None
+    else:
+        next_fixture_data = get_next_fixture_for_team(actual_team, team_df["ensemble_prob"].mean())
 
     return TeamOverview(
         team=actual_team,
@@ -3892,7 +4174,7 @@ async def get_team_overview(team_name: str):
         high_risk_count=high_risk,
         medium_risk_count=medium_risk,
         low_risk_count=low_risk,
-        avg_risk=round(team_df["ensemble_prob"].mean(), 3),
+        avg_risk=round(normalize_risk_score(team_df["ensemble_prob"].mean(), team_league) / 100, 3),
         players=players,
         team_badge_url=get_team_badge_url(actual_team),
         next_fixture=next_fixture_data,
@@ -3933,6 +4215,73 @@ async def get_league_standings():
         return [LeagueStanding(**s) for s in standings]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"FPL API error: {str(e)}")
+
+
+@app.get("/api/la-liga/standings")
+async def get_la_liga_standings():
+    """Get current La Liga standings from football-data.org."""
+    try:
+        from src.data_loaders.api_client import FootballDataClient as MatchHistoryApiClient, LA_LIGA_ID
+        client = MatchHistoryApiClient()
+        data = client._get(f"competitions/{LA_LIGA_ID}/standings")
+        table = data.get("standings", [{}])[0].get("table", [])
+        rows = []
+        for row in table:
+            team = row.get("team", {})
+            rows.append({
+                "position": row.get("position"),
+                "name": client._normalize_la_liga_team(team.get("shortName", team.get("name", ""))),
+                "full_name": team.get("name", ""),
+                "badge_url": LA_LIGA_BADGE_MAP.get(
+                    client._normalize_la_liga_team(team.get("shortName", "")).lower()
+                ),
+                "played": row.get("playedGames", 0),
+                "won": row.get("won", 0),
+                "draw": row.get("draw", 0),
+                "lost": row.get("lost", 0),
+                "goals_for": row.get("goalsFor", 0),
+                "goals_against": row.get("goalsAgainst", 0),
+                "goal_difference": row.get("goalDifference", 0),
+                "points": row.get("points", 0),
+                "form": row.get("form"),
+            })
+        return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"La Liga standings unavailable: {str(e)}")
+
+
+@app.get("/api/player-photo/tm")
+async def proxy_tm_player_photo(name: str):
+    """Proxy a Transfermarkt player photo by player name.
+
+    Looks up the pre-built photo map, then fetches the image server-side
+    (required because img.a.transfermarkt.technology blocks browser requests).
+    Returns the image as image/jpeg.
+    """
+    from fastapi.responses import Response
+    import unicodedata
+
+    name_lower = name.lower().strip()
+    stripped = "".join(
+        c for c in unicodedata.normalize("NFD", name_lower)
+        if unicodedata.category(c) != "Mn"
+    )
+
+    photo_url = _tm_photo_map.get(name_lower) or _tm_photo_map.get(stripped)
+    if not photo_url:
+        raise HTTPException(status_code=404, detail="No photo found for this player")
+
+    try:
+        from src.data_loaders.transfermarkt_scraper import TransfermarktScraper
+        scraper = TransfermarktScraper(cache_hours=168)
+        resp = scraper.session.get(photo_url, timeout=8)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=404, detail="Photo unavailable")
+        return Response(content=resp.content, media_type="image/jpeg")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Photo fetch failed: {str(e)}")
 
 
 @app.get("/api/standings/summary")
@@ -4072,7 +4421,7 @@ async def get_fpl_squad(team_id: int):
                 position=display_pos,
                 shirt_number=_resolve_shirt_number(name, fpl, row.get("team", "Unknown")),
                 risk_level=get_risk_level(prob, row),
-                risk_probability=round(prob, 3),
+                risk_probability=round(normalize_risk_score(prob, row.get("league")) / 100, 3),
                 archetype=row.get("archetype", "Unknown"),
                 minutes_played=minutes,
                 is_starter=minutes >= 900,

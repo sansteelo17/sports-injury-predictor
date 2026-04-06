@@ -63,6 +63,10 @@ def build_severity_dataset(injury_df: pd.DataFrame,
         left_team = df[df["player_team"] == team].copy()
         right_team = team_matches[team_matches["team"] == team].copy()
 
+        # Drop columns from right side that already exist on left to avoid merge conflicts
+        overlap = [c for c in right_team.columns if c in left_team.columns and c not in ("team", "match_date")]
+        right_team = right_team.drop(columns=overlap, errors="ignore")
+
         merged = pd.merge_asof(
             left_team.sort_values("injury_datetime"),
             right_team.sort_values("match_date"),

@@ -67,7 +67,7 @@ def build_classification_dataset(final_df: pd.DataFrame,
 
     feature_cols = [
     # Player + static info
-    "player_team", "position", "age", "fifa_rating",
+    "player_team", "position", "age", "fifa_rating", "league",
 
     # Match workload + congestion
     "matches_last_7", "matches_last_14", "matches_last_30",

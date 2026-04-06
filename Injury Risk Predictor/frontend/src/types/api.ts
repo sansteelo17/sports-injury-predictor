@@ -175,6 +175,7 @@ export interface PlayerRisk {
   name: string;
   team: string;
   position: string;
+  league: string;
   shirt_number: number | null;
   age: number;
   risk_level: 'High' | 'Medium' | 'Low';
@@ -303,6 +304,23 @@ export interface StandingsSummary {
   gap_to_second: number;
   safety_points: number;
   selected_team?: TeamStanding;
+}
+
+// La Liga Standings
+export interface LaLigaStandingRow {
+  position: number;
+  name: string;
+  full_name: string;
+  badge_url: string | null;
+  played: number;
+  won: number;
+  draw: number;
+  lost: number;
+  goals_for: number;
+  goals_against: number;
+  goal_difference: number;
+  points: number;
+  form: string | null;
 }
 
 // FPL Squad Sync

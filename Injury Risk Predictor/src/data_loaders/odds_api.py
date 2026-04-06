@@ -47,6 +47,7 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 # Premier League sport key
 SPORT_KEY = "soccer_epl"
+SPORT_KEY_LA_LIGA = "soccer_spain_la_liga"
 
 # Market types we care about
 MARKETS = {
@@ -865,6 +866,62 @@ class OddsClient:
             return None
 
         self._cache[cache_key] = result
+        return result
+
+    def get_la_liga_moneyline_1x2(self, team_name: str) -> Optional[Dict]:
+        """Get 1X2 moneyline for a La Liga team's next match via The Odds API."""
+        if not self.api_key:
+            return None
+        cache_key = f"moneyline_laliga_{team_name.lower()}"
+        if cache_key in self._cache:
+            cached = self._cache[cache_key]
+            if cached is not None and not any(
+                "Mock" in b.get("source", "") for b in cached.get("books", [])
+            ):
+                return cached
+        try:
+            response = self.session.get(
+                f"{ODDS_API_URL}/sports/{SPORT_KEY_LA_LIGA}/odds",
+                params={
+                    "apiKey": self.api_key,
+                    "regions": "uk,us,eu",
+                    "markets": "h2h",
+                    "oddsFormat": "american",
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+            matches = response.json()
+        except Exception as e:
+            logger.error(f"Failed to fetch La Liga odds: {e}")
+            return None
+
+        team_lower = team_name.lower()
+        la_liga_aliases = {
+            "atletico madrid": "atletico",
+            "athletic club": "athletic",
+            "rayo vallecano": "rayo",
+            "celta vigo": "celta",
+            "real betis": "betis",
+            "real sociedad": "sociedad",
+            "real madrid": "real madrid",
+        }
+        search_term = la_liga_aliases.get(team_lower, team_lower)
+        matched = None
+        for m in matches:
+            home = m.get("home_team", "").lower()
+            away = m.get("away_team", "").lower()
+            if search_term in home or search_term in away or team_lower in home or team_lower in away:
+                matched = m
+                break
+        if not matched:
+            self._cache[cache_key] = None
+            return None
+
+        result = self._build_moneyline_result_from_match(team_name, matched)
+        self._cache[cache_key] = result
+        if result:
+            self._save_cache()
         return result
 
     def _api_football_request(self, endpoint: str, params: Dict) -> Optional[Dict]:
