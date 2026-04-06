@@ -155,48 +155,84 @@ def main():
     print(f"  Final feature count: {len(injury_risk_df.columns)}")
 
     # ================================================================
-    # STEP 5: Temporal splits
+    # STEP 5: Walk-forward cross-validation
     # ================================================================
     print("\n" + "=" * 60)
-    print("STEP 5: Temporal train/val/test split")
+    print("STEP 5: Walk-forward cross-validation (5 folds, 6-month test windows)")
     print("=" * 60)
 
-    from src.models.classification import get_temporal_splits
+    from src.models.temporal_validation import walk_forward_validation
+    from src.models.stacking_ensemble import StackingEnsemble
+    import numpy as np
 
-    X_train, X_val, X_test, y_train, y_val, y_test = get_temporal_splits(
-        injury_risk_df, train_ratio=0.6, val_ratio=0.2
-    )
-
-    print(f"  Train: {len(X_train)} samples ({y_train.mean():.1%} positive)")
-    print(f"  Val:   {len(X_val)} samples ({y_val.mean():.1%} positive)")
-    print(f"  Test:  {len(X_test)} samples ({y_test.mean():.1%} positive)")
-
-    # Identify categorical features for the ensemble
-    cat_feature_names = X_train.select_dtypes(include=["category"]).columns.tolist()
+    # Determine categorical features from the full dataset before splitting
+    cat_feature_names = injury_risk_df.drop(
+        columns=["injury_label", "event_date"], errors="ignore"
+    ).select_dtypes(include=["category"]).columns.tolist()
     print(f"  Categorical features: {cat_feature_names}")
 
+    wf_splits = walk_forward_validation(
+        injury_risk_df,
+        date_column="event_date",
+        target_column="injury_label",
+        n_splits=5,
+        test_size_months=6,
+        gap_months=0,
+    )
+
+    fold_metrics = []
+    for fold_idx, (X_tr, X_te, y_tr, y_te) in enumerate(wf_splits):
+        # event_date was not in the target-dropped X from walk_forward_validation
+        # but it may still be present if it wasn't the target column — drop it
+        X_tr = X_tr.drop(columns=["event_date"], errors="ignore")
+        X_te = X_te.drop(columns=["event_date"], errors="ignore")
+
+        fold_cat_cols = [c for c in cat_feature_names if c in X_tr.columns]
+
+        print(f"\n  --- Fold {fold_idx + 1}/{len(wf_splits)} ---")
+        print(f"  Train: {len(X_tr)} samples ({y_tr.mean():.1%} positive)")
+        print(f"  Test:  {len(X_te)} samples ({y_te.mean():.1%} positive)")
+
+        fold_ensemble = StackingEnsemble(n_folds=5, meta_learner="logistic")
+        fold_ensemble.fit(X_tr, y_tr, cat_features=fold_cat_cols)
+        m = fold_ensemble.evaluate(X_te, y_te)
+        fold_metrics.append(m)
+
+        print(f"  ROC-AUC: {m['roc_auc']:.4f}  Precision: {m['precision']:.4f}"
+              f"  Recall: {m['recall']:.4f}  F1: {m['f1']:.4f}")
+
+    print("\n  Walk-forward CV summary:")
+    for metric in ("roc_auc", "precision", "recall", "f1"):
+        vals = [m[metric] for m in fold_metrics]
+        print(f"  {metric:12s}: {np.mean(vals):.4f} ± {np.std(vals):.4f}"
+              f"  (min {np.min(vals):.4f}, max {np.max(vals):.4f})")
+
+    wf_mean_metrics = {k: float(np.mean([m[k] for m in fold_metrics])) for k in fold_metrics[0]}
+    wf_std_metrics  = {k: float(np.std([m[k]  for m in fold_metrics])) for k in fold_metrics[0]}
+
     # ================================================================
-    # STEP 6: Train StackingEnsemble
+    # STEP 6: Train final StackingEnsemble on ALL data
     # ================================================================
     print("\n" + "=" * 60)
-    print("STEP 6: Training StackingEnsemble")
+    print("STEP 6: Training final StackingEnsemble on all data")
     print("=" * 60)
+    print("  (Walk-forward CV gave honest estimates; final model uses full dataset)")
 
-    from src.models.stacking_ensemble import StackingEnsemble
+    X_all = injury_risk_df.drop(columns=["injury_label", "event_date"], errors="ignore")
+    y_all = injury_risk_df["injury_label"]
+
+    final_cat_cols = [c for c in cat_feature_names if c in X_all.columns]
 
     ensemble = StackingEnsemble(n_folds=5, meta_learner="logistic")
-    ensemble.fit(X_train, y_train, cat_features=cat_feature_names)
+    ensemble.fit(X_all, y_all, cat_features=final_cat_cols)
 
-    # Evaluate on test set
-    test_metrics = ensemble.evaluate(X_test, y_test)
+    # Use walk-forward metrics as the reported test_metrics
+    test_metrics = wf_mean_metrics
 
-    print(f"\n  Stacking Ensemble Results (Temporal Validation):")
-    print(f"  ROC-AUC:   {test_metrics['roc_auc']:.4f}")
-    print(f"  Precision: {test_metrics['precision']:.4f}")
-    print(f"  Recall:    {test_metrics['recall']:.4f}")
-    print(f"  F1:        {test_metrics['f1']:.4f}")
-    print(f"  Features:  {len(ensemble.feature_names_)}")
-    print(f"  Feature names: {ensemble.feature_names_}")
+    print(f"\n  Final model trained on {len(X_all)} samples")
+    print(f"  Features: {len(ensemble.feature_names_)}")
+    print(f"  Walk-forward CV ROC-AUC (mean): {test_metrics['roc_auc']:.4f}")
+    print(f"  Walk-forward CV F1     (mean): {test_metrics['f1']:.4f}")
 
     # Check injury history features are present
     injury_features = ["player_injury_count", "player_avg_severity", "player_worst_injury",
@@ -297,6 +333,7 @@ def main():
         print("  [DRY RUN] Skipping save")
     else:
         from src.utils.model_io import save_artifacts
+        import json
 
         save_artifacts(
             ensemble=ensemble,
@@ -307,6 +344,51 @@ def main():
         )
         print("  Artifacts saved successfully")
 
+        # Write model card with walk-forward CV metrics
+        model_card = {
+            "model": "StackingEnsemble",
+            "description": "Binary injury risk classifier for EPL + La Liga players over a 2-week horizon.",
+            "version": "3.0",
+            "leagues": ["Premier League", "La Liga"],
+            "trained_on": "All available data. Walk-forward CV (5 folds, 6-month test windows) used for honest evaluation.",
+            "evaluation": {
+                "method": "walk_forward_cv",
+                "n_folds": len(fold_metrics),
+                "test_window_months": 6,
+                "evaluated_at": pd.Timestamp.now().strftime("%Y-%m-%d"),
+                "roc_auc":        round(wf_mean_metrics["roc_auc"], 4),
+                "roc_auc_std":    round(wf_std_metrics["roc_auc"], 4),
+                "precision":      round(wf_mean_metrics["precision"], 4),
+                "precision_std":  round(wf_std_metrics["precision"], 4),
+                "recall":         round(wf_mean_metrics["recall"], 4),
+                "recall_std":     round(wf_std_metrics["recall"], 4),
+                "f1":             round(wf_mean_metrics["f1"], 4),
+                "f1_std":         round(wf_std_metrics["f1"], 4),
+                "per_fold": [
+                    {k: round(v, 4) for k, v in m.items()}
+                    for m in fold_metrics
+                ],
+                "positive_rate":  round(float(y_all.mean()), 4),
+                "train_size":     int(len(X_all)),
+                "leagues": ["Premier League", "La Liga"],
+            },
+            "severity_model": {
+                "model": "CatBoost",
+                "accuracy": round(sev_results["accuracy"], 4),
+                "adjacent_accuracy": round(sev_results["adjacent_accuracy"], 4),
+            },
+            "notes": [
+                "league is a categorical feature — model sees EPL vs La Liga.",
+                "ROC-AUC is the most reliable metric given class imbalance.",
+                "Walk-forward CV trains on past data and tests on future windows — no temporal leakage.",
+                "Final model trained on all available data after CV evaluation.",
+            ],
+        }
+        card_path = ROOT / "models" / "model_card.json"
+        with open(card_path, "w") as _f:
+            json.dump(model_card, _f, indent=2)
+        print(f"  Model card written to {card_path}")
+
     # ================================================================
     # Summary
     # ================================================================
@@ -314,13 +396,15 @@ def main():
     print("\n" + "=" * 60)
     print("RETRAINING COMPLETE")
     print("=" * 60)
-    print(f"  Duration: {duration:.1f}s ({duration/60:.1f} min)")
-    print(f"  Model features: {len(ensemble.feature_names_)}")
-    print(f"  ROC-AUC: {test_metrics['roc_auc']:.4f}")
-    print(f"  F1: {test_metrics['f1']:.4f}")
-    print(f"  Severity accuracy: {sev_results['accuracy']:.1%}")
-    print(f"  Player history: {len(player_history)} players")
-    print(f"  Archetypes: {len(df_clusters)} assignments")
+    print(f"  Duration:           {duration:.1f}s ({duration/60:.1f} min)")
+    print(f"  Model features:     {len(ensemble.feature_names_)}")
+    print(f"  Walk-forward folds: {len(fold_metrics)}")
+    print(f"  ROC-AUC (mean±std): {wf_mean_metrics['roc_auc']:.4f} ± {wf_std_metrics['roc_auc']:.4f}")
+    print(f"  Recall   (mean±std): {wf_mean_metrics['recall']:.4f} ± {wf_std_metrics['recall']:.4f}")
+    print(f"  F1       (mean±std): {wf_mean_metrics['f1']:.4f} ± {wf_std_metrics['f1']:.4f}")
+    print(f"  Severity accuracy:  {sev_results['accuracy']:.1%}")
+    print(f"  Player history:     {len(player_history)} players")
+    print(f"  Archetypes:         {len(df_clusters)} assignments")
 
     if not args.dry_run:
         print("\n  Next step: Run 'python scripts/refresh_predictions.py' to generate inference_df")
