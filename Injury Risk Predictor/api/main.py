@@ -4222,13 +4222,18 @@ def get_team_overview(team_name: str):
                 _ml_result = odds_client.get_la_liga_moneyline_1x2(actual_team)
                 if _ml_result and _ml_result.get("books"):
                     _ml_data = _ml_result["books"]
+            _opponent = _upcoming_ll[0]["opponent"]
+            _is_home = _upcoming_ll[0]["is_home"]
+            _fixture_insight = _build_team_market_insight(
+                actual_team, _opponent, _is_home, moneyline_rows=_ml_data
+            ) if _ml_data else None
             next_fixture_data = {
-                "opponent": _upcoming_ll[0]["opponent"],
-                "is_home": _upcoming_ll[0]["is_home"],
+                "opponent": _opponent,
+                "is_home": _is_home,
                 "match_time": _upcoming_ll[0]["match_time"],
                 "clean_sheet_odds": None,
                 "win_probability": None,
-                "fixture_insight": None,
+                "fixture_insight": _fixture_insight,
                 "moneyline_1x2": _ml_data,
             }
         else:

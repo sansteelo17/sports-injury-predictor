@@ -24,6 +24,7 @@ import {
   Share2,
 } from "lucide-react";
 import { ShareCard } from "./ShareCard";
+import { toAbsoluteApiUrl } from "@/lib/api";
 
 interface PlayerCardProps {
   player: PlayerRisk;
@@ -144,7 +145,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
           {/* Player Image */}
           {player.player_image_url && (
             <img
-              src={player.player_image_url}
+              src={toAbsoluteApiUrl(player.player_image_url)}
               alt={player.name}
               className="w-14 h-14 sm:w-16 sm:h-16 rounded-full object-cover object-top border-2 border-white/20 flex-shrink-0"
               onError={(e) => {
