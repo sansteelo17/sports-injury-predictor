@@ -608,6 +608,40 @@ def assign_rule_based_archetypes(df):
     return df
 
 
+def _apply_archetype_overrides(df):
+    """Recency-based post-processing applied after both cluster and cache paths."""
+    import math
+    overrides = 0
+    for idx, row in df.iterrows():
+        try:
+            days_since = float(row.get("days_since_last_injury", 9999))
+        except (TypeError, ValueError):
+            days_since = 9999.0
+        try:
+            prev_inj = int(float(row.get("previous_injuries", row.get("player_injury_count", 0)) or 0))
+        except (TypeError, ValueError):
+            prev_inj = 0
+        try:
+            total_days = float(row.get("total_days_lost", 0) or 0)
+        except (TypeError, ValueError):
+            total_days = 0.0
+        avg_sev = total_days / prev_inj if prev_inj > 0 else 0
+        current = df.at[idx, "archetype"]
+
+        if days_since < 60 and current not in ("Fragile",):
+            df.at[idx, "archetype"] = "Currently Vulnerable"
+            overrides += 1
+        elif days_since > 365 and avg_sev < 25 and current in ("Injury Prone", "Recurring Issues", "Fragile"):
+            df.at[idx, "archetype"] = "Durable"
+            overrides += 1
+        elif prev_inj <= 2 and days_since > 365 and current in ("Fragile", "Injury Prone"):
+            df.at[idx, "archetype"] = "Moderate Risk" if avg_sev >= 45 else "Durable"
+            overrides += 1
+    if overrides:
+        print(f"Archetype recency overrides applied: {overrides}")
+    return df
+
+
 def assign_hybrid_archetypes(df):
     """Hybrid archetype assignment: HDBSCAN primary, KMeans fallback, rule-based last resort.
 
@@ -616,8 +650,13 @@ def assign_hybrid_archetypes(df):
     3. KMeans on noise points to assign them to nearest cluster
     4. Label clusters by inspecting centroids (avg_severity, total_injuries, etc.)
     5. Rule-based fallback for players not in detail pkl (no per-injury data)
+
+    Results are cached to models/archetype_cache.pkl keyed on the mtime of
+    player_injuries_detail.pkl. On subsequent startups the cache is loaded
+    directly, skipping HDBSCAN entirely (~20-30s saved on cold start).
     """
     import os
+    import pickle
     import pandas as pd
     import hdbscan
     from sklearn.cluster import KMeans
@@ -626,10 +665,37 @@ def assign_hybrid_archetypes(df):
 
     detail_path = os.path.join(os.path.dirname(__file__), "..", "models", "player_injuries_detail.pkl")
     detail_path = os.path.abspath(detail_path)
+    cache_path = os.path.join(os.path.dirname(detail_path), "archetype_cache.pkl")
 
     if not os.path.exists(detail_path):
         print("No player_injuries_detail.pkl found — falling back to rule-based archetypes")
         return assign_rule_based_archetypes(df)
+
+    # --- Cache check ---
+    # Skip HDBSCAN if we have a fresh cache keyed on the detail pkl's mtime.
+    try:
+        detail_mtime = os.path.getmtime(detail_path)
+        if os.path.exists(cache_path):
+            with open(cache_path, "rb") as _cf:
+                _cached = pickle.load(_cf)
+            if _cached.get("detail_mtime") == detail_mtime:
+                archetype_lookup = _cached["archetype_lookup"]
+                sparse_names = _cached.get("sparse_names", set())
+                matched = 0
+                for idx, row in df.iterrows():
+                    name = row.get("name", "")
+                    if name in archetype_lookup:
+                        df.at[idx, "archetype"] = archetype_lookup[name]
+                        matched += 1
+                unmatched_mask = ~df["name"].isin(archetype_lookup) | df["name"].isin(sparse_names)
+                if unmatched_mask.sum() > 0:
+                    unmatched_df = assign_rule_based_archetypes(df.loc[unmatched_mask].copy())
+                    df.loc[unmatched_mask, "archetype"] = unmatched_df["archetype"].values
+                print(f"Archetypes loaded from cache ({matched} matched, {unmatched_mask.sum()} rule-based)")
+                # Still apply recency overrides
+                return _apply_archetype_overrides(df)
+    except Exception as _ce:
+        print(f"Archetype cache miss or corrupt — recomputing: {_ce}")
 
     try:
         detail_df = pd.read_pickle(detail_path)
@@ -744,6 +810,19 @@ def assign_hybrid_archetypes(df):
 
         # Map back to inference_df by player name
         archetype_lookup = dict(zip(clustered_feat_df["name"], clustered_feat_df["archetype"]))
+
+        # Persist cache so next startup skips HDBSCAN
+        try:
+            with open(cache_path, "wb") as _cf:
+                pickle.dump({
+                    "detail_mtime": detail_mtime,
+                    "archetype_lookup": archetype_lookup,
+                    "sparse_names": set(sparse_feat_df["name"].tolist()),
+                }, _cf)
+            print(f"Archetype cache saved ({len(archetype_lookup)} players)")
+        except Exception as _ce:
+            print(f"Could not save archetype cache: {_ce}")
+
         matched = 0
         for idx, row in df.iterrows():
             name = row.get("name", "")
@@ -760,42 +839,7 @@ def assign_hybrid_archetypes(df):
             unmatched_df = assign_rule_based_archetypes(df.loc[unmatched_mask].copy())
             df.loc[unmatched_mask, "archetype"] = unmatched_df["archetype"].values
 
-        # Recency-based overrides: clustering ignores time since last injury
-        overrides = 0
-        for idx, row in df.iterrows():
-            try:
-                days_since = float(row.get("days_since_last_injury", 9999))
-            except (TypeError, ValueError):
-                days_since = 9999.0
-            try:
-                prev_inj = int(float(row.get("previous_injuries", row.get("player_injury_count", 0)) or 0))
-            except (TypeError, ValueError):
-                prev_inj = 0
-            try:
-                total_days = float(row.get("total_days_lost", 0) or 0)
-            except (TypeError, ValueError):
-                total_days = 0.0
-            avg_sev = total_days / prev_inj if prev_inj > 0 else 0
-            current = df.at[idx, "archetype"]
-
-            # Recently injured/returning → Currently Vulnerable
-            if days_since < 60 and current not in ("Fragile",):
-                df.at[idx, "archetype"] = "Currently Vulnerable"
-                overrides += 1
-            # Long injury-free + low severity → Durable.
-            # Includes "Fragile" when avg_sev < 25: avg_sev that low means the cluster
-            # mislabeled the player (HDBSCAN noise + KMeans mis-assignment).
-            # Genuinely Fragile players have avg_sev >> 25 so this guard is narrow.
-            elif days_since > 365 and avg_sev < 25 and current in ("Injury Prone", "Recurring Issues", "Fragile"):
-                df.at[idx, "archetype"] = "Durable"
-                overrides += 1
-            # Small-sample guardrail: 1-2 injuries can be skewed by one severe event.
-            elif prev_inj <= 2 and days_since > 365 and current in ("Fragile", "Injury Prone"):
-                if avg_sev >= 45:
-                    df.at[idx, "archetype"] = "Moderate Risk"
-                else:
-                    df.at[idx, "archetype"] = "Durable"
-                overrides += 1
+        df = _apply_archetype_overrides(df)
 
         # Collapse guard: if one archetype dominates unnaturally, fallback to
         # rule-based assignment to preserve interpretability.
@@ -857,7 +901,8 @@ def assign_hybrid_archetypes(df):
             df["archetype"] = tmp["archetype"].values
             counts = df["archetype"].value_counts().to_dict()
 
-        print(f"Hybrid archetypes: {matched} clustered, {unmatched_count} rule-based, {overrides} recency overrides")
+        counts = df["archetype"].value_counts().to_dict()
+        print(f"Hybrid archetypes: {matched} clustered, {unmatched_count} rule-based")
         print(f"  Distribution: {counts}")
         return df
 
