@@ -203,6 +203,12 @@ def _run_refresh_job(mode: str = "api") -> None:
 
 @app.on_event("startup")
 async def load_models():
+    """Startup event — offloads blocking work to a thread so the event loop stays
+    responsive to health checks while models are loading."""
+    await asyncio.to_thread(_load_models_blocking)
+
+
+def _load_models_blocking():
     global artifacts, inference_df, fpl_stats_cache, fpl_team_ids, fpl_team_name_to_id
     global fpl_team_names_by_id, fpl_team_meta, fpl_team_recent_defense
     global fpl_player_codes, fpl_players_by_team, fpl_element_lookup, historical_matches_df, fixture_history_cache, odds_client
