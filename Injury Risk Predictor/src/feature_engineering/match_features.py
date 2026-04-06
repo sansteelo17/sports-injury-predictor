@@ -12,11 +12,15 @@ def build_team_match_frame(match_df: pd.DataFrame) -> pd.DataFrame:
     df = match_df.copy()
     df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
 
+    # Carry league column if present
+    has_league = "league" in df.columns
+    league_col = ["league"] if has_league else []
+
     # Home rows
     home_df = df[[
         "match_date", "season_year",
         "home_team", "away_team", "homegoals", "awaygoals"
-    ]].rename(columns={
+    ] + league_col].rename(columns={
         "home_team": "team",
         "away_team": "opp_team",
         "homegoals": "goals_for",
@@ -28,7 +32,7 @@ def build_team_match_frame(match_df: pd.DataFrame) -> pd.DataFrame:
     away_df = df[[
         "match_date", "season_year",
         "away_team", "home_team", "awaygoals", "homegoals"
-    ]].rename(columns={
+    ] + league_col].rename(columns={
         "away_team": "team",
         "home_team": "opp_team",
         "awaygoals": "goals_for",

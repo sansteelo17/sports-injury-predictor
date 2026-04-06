@@ -26,6 +26,7 @@ logger = get_logger(__name__)
 # API Configuration
 BASE_URL = "https://api.football-data.org/v4"
 PREMIER_LEAGUE_ID = "PL"
+LA_LIGA_ID = "PD"
 CHAMPIONS_LEAGUE_ID = "CL"
 RATE_LIMIT_DELAY = 6.5  # seconds between requests (free tier: 10/min)
 
@@ -158,6 +159,191 @@ class FootballDataClient:
 
         logger.info(f"Processed {len(df)} finished matches")
         return df
+
+    def get_la_liga_matches(
+        self,
+        season: int = 2024,
+        status: str = "FINISHED",
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Fetch La Liga matches.
+
+        Args:
+            season: Season year (e.g., 2024 for 2024-25 season)
+            status: Match status filter
+
+        Returns:
+            DataFrame with columns matching pipeline format:
+            Season_End_Year, Wk, Date, Home, Away, HomeGoals, AwayGoals, FTR, league
+        """
+        params = {"season": season}
+        if status:
+            params["status"] = status
+        if date_from:
+            params["dateFrom"] = date_from
+        if date_to:
+            params["dateTo"] = date_to
+
+        data = self._get(f"competitions/{LA_LIGA_ID}/matches", params)
+        matches = data.get("matches", [])
+
+        logger.info(f"Fetched {len(matches)} La Liga matches from API")
+
+        if not matches:
+            return pd.DataFrame()
+
+        rows = []
+        for m in matches:
+            if m["status"] != "FINISHED":
+                continue
+
+            home_goals = m["score"]["fullTime"]["home"]
+            away_goals = m["score"]["fullTime"]["away"]
+
+            if home_goals is None or away_goals is None:
+                continue
+
+            if home_goals > away_goals:
+                ftr = "H"
+            elif away_goals > home_goals:
+                ftr = "A"
+            else:
+                ftr = "D"
+
+            rows.append({
+                "Season_End_Year": season + 1,
+                "Wk": m.get("matchday", 0),
+                "Date": m["utcDate"][:10],
+                "Home": self._normalize_la_liga_team(m["homeTeam"]["shortName"]),
+                "Away": self._normalize_la_liga_team(m["awayTeam"]["shortName"]),
+                "HomeGoals": home_goals,
+                "AwayGoals": away_goals,
+                "FTR": ftr,
+                "league": "La Liga",
+            })
+
+        df = pd.DataFrame(rows)
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date").reset_index(drop=True)
+
+        logger.info(f"Processed {len(df)} finished La Liga matches")
+        return df
+
+    def get_la_liga_teams(self, season: int = 2024) -> List[Dict]:
+        """Return list of La Liga team dicts for the given season."""
+        data = self._get(f"competitions/{LA_LIGA_ID}/teams", {"season": season})
+        return data.get("teams", [])
+
+    def get_all_la_liga_squads(self, season: int = 2024) -> pd.DataFrame:
+        """
+        Fetch squads for all La Liga teams.
+
+        Returns:
+            DataFrame with all players: name, team, position, age
+        """
+        teams = self.get_la_liga_teams(season=season)
+
+        all_players = []
+        for team in teams:
+            logger.info(f"Fetching La Liga squad for {team['shortName']}...")
+            try:
+                team_data = self._get(f"teams/{team['id']}")
+                squad = team_data.get("squad", [])
+                team_name = self._normalize_la_liga_team(team["shortName"])
+
+                for p in squad:
+                    dob = p.get("dateOfBirth")
+                    age = None
+                    if dob:
+                        try:
+                            birth_date = datetime.strptime(dob, "%Y-%m-%d")
+                            age = (datetime.now() - birth_date).days // 365
+                        except ValueError:
+                            pass
+
+                    all_players.append({
+                        "name": p["name"],
+                        "team": team_name,
+                        "position": p.get("position", "Unknown"),
+                        "shirt_number": p.get("shirtNumber"),
+                        "age": age,
+                        "nationality": p.get("nationality"),
+                    })
+            except Exception as e:
+                logger.warning(f"Failed to fetch La Liga squad for {team.get('shortName', '?')}: {e}")
+
+        df = pd.DataFrame(all_players)
+        logger.info(f"Fetched {len(df)} La Liga players from {len(teams)} teams")
+        return df
+
+    def _normalize_la_liga_team(self, name: str) -> str:
+        """Normalize football-data.org La Liga team names to match FBref stats CSV."""
+        name_map = {
+            # Full names
+            "Real Madrid CF": "Real Madrid",
+            "FC Barcelona": "Barcelona",
+            "Atlético de Madrid": "Atletico Madrid",
+            "Club Atlético de Madrid": "Atletico Madrid",
+            "Sevilla FC": "Sevilla",
+            "Valencia CF": "Valencia",
+            "Villarreal CF": "Villarreal",
+            "Athletic Club": "Athletic Club",
+            "Athletic Club de Bilbao": "Athletic Club",
+            "Real Sociedad de Fútbol": "Real Sociedad",
+            "Real Betis Balompié": "Real Betis",
+            "CA Osasuna": "Osasuna",
+            "RC Celta de Vigo": "Celta Vigo",
+            "Getafe CF": "Getafe",
+            "UD Las Palmas": "Las Palmas",
+            "Girona FC": "Girona",
+            "RCD Mallorca": "Mallorca",
+            "CD Leganés": "Leganes",
+            "Deportivo Alavés": "Alaves",
+            "Rayo Vallecano de Madrid": "Rayo Vallecano",
+            "RCD Espanyol de Barcelona": "Espanyol",
+            "Real Valladolid CF": "Valladolid",
+            "Granada CF": "Granada",
+            "UD Almería": "Almeria",
+            "Cádiz CF": "Cadiz",
+            # Short names (API shortName field)
+            "Real Madrid": "Real Madrid",
+            "Barcelona": "Barcelona",
+            "Barça": "Barcelona",
+            "Atlético": "Atletico Madrid",
+            "Atleti": "Atletico Madrid",
+            "Atletico": "Atletico Madrid",
+            "Sevilla": "Sevilla",
+            "Sevilla FC": "Sevilla",
+            "Valencia": "Valencia",
+            "Villarreal": "Villarreal",
+            "Athletic": "Athletic Club",
+            "Real Sociedad": "Real Sociedad",
+            "Betis": "Real Betis",
+            "Real Betis": "Real Betis",
+            "Osasuna": "Osasuna",
+            "Celta": "Celta Vigo",
+            "Celta Vigo": "Celta Vigo",
+            "Getafe": "Getafe",
+            "Las Palmas": "Las Palmas",
+            "Girona": "Girona",
+            "Mallorca": "Mallorca",
+            "Leganés": "Leganes",
+            "Leganes": "Leganes",
+            "Alavés": "Alaves",
+            "Alaves": "Alaves",
+            "Rayo Vallecano": "Rayo Vallecano",
+            "Espanyol": "Espanyol",
+            "Valladolid": "Valladolid",
+            "Granada": "Granada",
+            "Almería": "Almeria",
+            "Almeria": "Almeria",
+            "Cádiz CF": "Cadiz",
+            "Cádiz": "Cadiz",
+            "Cadiz": "Cadiz",
+        }
+        return name_map.get(name, name)
 
     def get_team_squad(self, team_name: str) -> pd.DataFrame:
         """

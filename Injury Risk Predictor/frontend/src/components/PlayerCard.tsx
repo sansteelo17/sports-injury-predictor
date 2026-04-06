@@ -113,10 +113,13 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
       null);
 
   const storyLines = player.story ? formatStoryLines(player.story) : [];
+  const isLaLiga = player.league === "La Liga";
 
   const tabs = [
     { id: "overview" as const, label: "Risk", icon: <BarChart3 size={14} /> },
-    { id: "fpl" as const, label: "FPL", icon: <Star size={14} /> },
+    ...(isLaLiga
+      ? [{ id: "fpl" as const, label: "Fantasy", icon: <Star size={14} /> }]
+      : [{ id: "fpl" as const, label: "FPL", icon: <Star size={14} /> }]),
     { id: "market" as const, label: "Odds", icon: <Coins size={14} /> },
   ];
   type TabId = (typeof tabs)[number]["id"];
@@ -493,8 +496,8 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
             </ul>
           </div>
 
-          {/* Fixture Difficulty */}
-          {player.upcoming_fixtures && player.upcoming_fixtures.length > 0 && (
+          {/* Fixture Difficulty (EPL only — FDR from FPL) */}
+          {!isLaLiga && player.upcoming_fixtures && player.upcoming_fixtures.length > 0 && (
             <div className={`px-4 sm:px-6 py-4 ${darkMode ? "border-t border-[#1f1f1f]" : "border-t border-gray-100"}`}>
               <div className="flex items-center gap-2 mb-3">
                 <Calendar className={darkMode ? "text-cyan-400" : "text-cyan-600"} size={18} />
@@ -527,6 +530,15 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
               </div>
             </div>
           )}
+          {/* La Liga: fixture difficulty coming */}
+          {isLaLiga && (
+            <div className={`px-4 sm:px-6 py-3 ${darkMode ? "border-t border-[#1f1f1f]" : "border-t border-gray-100"}`}>
+              <div className={`flex items-center gap-2 text-xs ${darkMode ? "text-gray-500" : "text-gray-400"}`}>
+                <Calendar size={13} />
+                <span>Fixture difficulty ratings for La Liga coming soon.</span>
+              </div>
+            </div>
+          )}
 
           {/* Injury Heatmap */}
           {player.factors.previous_injuries > 0 && (
@@ -536,11 +548,25 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
         </>
       )}
 
-      {/* ── FPL TAB ── */}
+      {/* ── FPL / FANTASY TAB ── */}
       {activeTab === "fpl" && (
         <>
-          {/* Expected Points Hero Card */}
-          {player.fpl_points_projection && (
+          {/* La Liga Fantasy note */}
+          {isLaLiga && (
+            <div className={`px-4 sm:px-6 py-4 ${darkMode ? "border-b border-[#1f1f1f]" : "border-b border-gray-100"}`}>
+              <div className={`rounded-xl p-4 ${darkMode ? "bg-[#1a1a1a] border border-[#2a2a2a]" : "bg-gray-50 border border-gray-200"}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  <Star size={14} className={darkMode ? "text-[#86efac]" : "text-emerald-600"} />
+                  <span className={`text-sm font-medium ${darkMode ? "text-white" : "text-gray-900"}`}>La Liga Fantasy</span>
+                </div>
+                <p className={`text-xs leading-relaxed ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
+                  La Liga has an official fantasy game at <span className={darkMode ? "text-[#86efac]" : "text-emerald-600"}>laligafantasy.com</span>. FPL-style projections for La Liga players are coming — injury risk already factors in when deciding who to captain or hold.
+                </p>
+              </div>
+            </div>
+          )}
+          {/* Expected Points Hero Card — EPL only */}
+          {player.fpl_points_projection && !isLaLiga && (
             <div className={`px-4 sm:px-6 py-4 ${darkMode ? "border-b border-[#1f1f1f]" : "border-b border-gray-100"}`}>
               <div className={`rounded-xl p-4 ${
                 darkMode
@@ -618,8 +644,8 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
             </div>
           )}
 
-          {/* FPL Insight */}
-          {player.fpl_insight && (
+          {/* FPL Insight — EPL only; La Liga equivalent pending */}
+          {player.fpl_insight && !isLaLiga && (
             <div
               className={`px-4 sm:px-6 py-4 ${darkMode ? "border-b border-[#1f1f1f]" : "border-b border-gray-100"}`}
             >
@@ -640,7 +666,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                       <span
                         className={`font-semibold ${darkMode ? "text-purple-300" : "text-purple-800"}`}
                       >
-                        FPL Insight
+                        {isLaLiga ? "La Liga Insight" : "FPL Insight"}
                       </span>
                       <span
                         className={`text-xs px-2 py-0.5 rounded-full ${
@@ -649,7 +675,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                             : "bg-purple-200 text-purple-700"
                         }`}
                       >
-                        Manager Tip
+                        {isLaLiga ? "Fantasy Tip" : "Manager Tip"}
                       </span>
                     </div>
                     <p
@@ -664,7 +690,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
           )}
 
           {/* FPL Value Assessment */}
-          {player.fpl_value && (
+          {player.fpl_value && !isLaLiga && (
             <div
               className={`px-4 sm:px-6 py-4 ${darkMode ? "border-b border-[#1f1f1f]" : "border-b border-gray-100"}`}
             >
@@ -705,7 +731,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                       <span
                         className={`font-semibold ${darkMode ? "text-white" : "text-gray-900"}`}
                       >
-                        FPL Value: {player.fpl_value.tier}
+                        {isLaLiga ? "Fantasy Value" : "FPL Value"}: {player.fpl_value.tier}
                       </span>
                       <span
                         className={`text-xs px-2 py-0.5 rounded-full ${

@@ -9,6 +9,7 @@ import {
   getStandingsSummary,
   getTeamBadges,
   getFPLSquad,
+  getLaLigaStandings,
 } from "@/lib/api";
 import {
   TeamOverview as TeamOverviewType,
@@ -16,6 +17,7 @@ import {
   FPLInsights as FPLInsightsType,
   StandingsSummary,
   FPLSquadSync,
+  LaLigaStandingRow,
 } from "@/types/api";
 import { TeamSelector } from "@/components/TeamSelector";
 import { TeamOverview } from "@/components/TeamOverview";
@@ -24,6 +26,7 @@ import { PlayerCard } from "@/components/PlayerCard";
 import { LabNotes } from "@/components/LabNotes";
 import { FPLInsights } from "@/components/FPLInsights";
 import { StandingsCards } from "@/components/StandingsCards";
+import { LaLigaStandingsCards } from "@/components/LaLigaStandingsCards";
 import { FPLSquadInput } from "@/components/FPLSquadInput";
 import { FPLSquadView } from "@/components/FPLSquadView";
 import {
@@ -54,11 +57,15 @@ export default function Home() {
   const [playerRisk, setPlayerRisk] = useState<PlayerRisk | null>(null);
   const [fplInsights, setFplInsights] = useState<FPLInsightsType | null>(null);
   const [standings, setStandings] = useState<StandingsSummary | null>(null);
+  const [laLigaStandings, setLaLigaStandings] = useState<LaLigaStandingRow[]>([]);
   const [teamBadges, setTeamBadges] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [darkMode, setDarkMode] = useState(true);
   const [view, setView] = useState<"overview" | "lab">("overview");
+
+  // League
+  const [league, setLeague] = useState<"Premier League" | "La Liga">("Premier League");
 
   // Squad sync state
   const [mode, setMode] = useState<"browse" | "squad">("browse");
@@ -67,11 +74,19 @@ export default function Home() {
   const [squadError, setSquadError] = useState<string | null>(null);
   const [lastSyncedId, setLastSyncedId] = useState<string | null>(null);
 
-  // Load teams, FPL data, and badges on mount
+  // Reload teams when league changes
   useEffect(() => {
-    getTeams()
+    setSelectedTeam("");
+    setTeamOverview(null);
+    setSelectedPlayer(null);
+    setPlayerRisk(null);
+    getTeams(league)
       .then(setTeams)
       .catch(() => setError("Failed to load teams. Is the API running?"));
+  }, [league]);
+
+  // Load FPL data and badges on mount
+  useEffect(() => {
 
     getFPLInsights()
       .then(setFplInsights)
@@ -81,6 +96,14 @@ export default function Home() {
       .then(setTeamBadges)
       .catch(() => console.log("Team badges unavailable"));
   }, []);
+
+  const handleLeagueSwitch = (l: "Premier League" | "La Liga") => {
+    if (l !== league) {
+      setLeague(l);
+      // FPL squad mode is EPL-only; switch to browse when moving to La Liga
+      if (l === "La Liga" && mode === "squad") setMode("browse");
+    }
+  };
 
   // Load team overview when team selected
   useEffect(() => {
@@ -94,13 +117,22 @@ export default function Home() {
     setLoading(true);
     setError(null);
 
-    Promise.all([
-      getTeamOverview(selectedTeam),
-      getStandingsSummary(selectedTeam).catch(() => null),
-    ])
+    const isLaLiga = league === "La Liga";
+
+    const standingsPromise = isLaLiga
+      ? getLaLigaStandings().catch(() => null)
+      : getStandingsSummary(selectedTeam).catch(() => null);
+
+    Promise.all([getTeamOverview(selectedTeam), standingsPromise])
       .then(([teamData, standingsData]) => {
         setTeamOverview(teamData);
-        setStandings(standingsData);
+        if (isLaLiga) {
+          setLaLigaStandings((standingsData as LaLigaStandingRow[] | null) ?? []);
+          setStandings(null);
+        } else {
+          setStandings(standingsData as StandingsSummary | null);
+          setLaLigaStandings([]);
+        }
         setSelectedPlayer(null);
         setPlayerRisk(null);
       })
@@ -246,9 +278,9 @@ export default function Home() {
               <strong
                 className={darkMode ? "text-[#86efac]" : "text-emerald-600"}
               >
-                Premier League coverage is now live
+                Premier League and La Liga are now live
               </strong>{" "}
-              with more leagues coming soon.{" "}
+              — more leagues coming.{" "}
               <span className="hidden sm:inline">
                 Yara explains why a player might get injured in the next 2 weeks
                 by blending injury history, workload patterns, and fixture
@@ -263,25 +295,31 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Mode Toggle + Input */}
+        {/* League Switcher + Mode Toggle + Input */}
         <div className="mb-4 sm:mb-6">
-          {/* Mode tabs */}
+          {/* League switcher — always visible first */}
           <div className="flex gap-1 mb-3">
-            <button
-              onClick={() => handleModeSwitch("squad")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-colors ${
-                mode === "squad"
-                  ? darkMode
-                    ? "bg-[#86efac]/15 text-[#86efac] border border-[#86efac]/30"
-                    : "bg-emerald-50 text-emerald-700 border border-emerald-300"
-                  : darkMode
-                    ? "text-gray-500 hover:text-gray-300"
-                    : "text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              <Users size={13} />
-              My FPL Squad
-            </button>
+            {(["Premier League", "La Liga"] as const).map((l) => (
+              <button
+                key={l}
+                onClick={() => handleLeagueSwitch(l)}
+                className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${
+                  league === l
+                    ? darkMode
+                      ? "bg-[#86efac]/15 text-[#86efac] border border-[#86efac]/30"
+                      : "bg-emerald-50 text-emerald-700 border border-emerald-300"
+                    : darkMode
+                      ? "text-gray-500 hover:text-gray-300 border border-transparent"
+                      : "text-gray-500 hover:text-gray-700 border border-transparent"
+                }`}
+              >
+                {l === "Premier League" ? "🏴󠁧󠁢󠁥󠁮󠁧󠁿 EPL" : "🇪🇸 La Liga"}
+              </button>
+            ))}
+          </div>
+
+          {/* Mode tabs — Browse Teams always; My FPL Squad only for EPL */}
+          <div className="flex gap-1 mb-3">
             <button
               onClick={() => handleModeSwitch("browse")}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-colors ${
@@ -297,10 +335,27 @@ export default function Home() {
               <Search size={13} />
               Browse Teams
             </button>
+            {league === "Premier League" && (
+              <button
+                onClick={() => handleModeSwitch("squad")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-colors ${
+                  mode === "squad"
+                    ? darkMode
+                      ? "bg-[#86efac]/15 text-[#86efac] border border-[#86efac]/30"
+                      : "bg-emerald-50 text-emerald-700 border border-emerald-300"
+                    : darkMode
+                      ? "text-gray-500 hover:text-gray-300"
+                      : "text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                <Users size={13} />
+                My FPL Squad
+              </button>
+            )}
           </div>
 
           {/* Conditional input */}
-          {mode === "squad" ? (
+          {mode === "squad" && league === "Premier League" ? (
             <FPLSquadInput
               onSync={handleSquadSync}
               loading={squadLoading}
@@ -358,7 +413,7 @@ export default function Home() {
                 <>
                   <TeamOverview team={teamOverview} darkMode={darkMode} />
 
-                  {standings && (
+                  {standings && league === "Premier League" && (
                     <StandingsCards
                       standings={standings}
                       darkMode={darkMode}
@@ -366,7 +421,15 @@ export default function Home() {
                     />
                   )}
 
-                  {fplInsights && (
+                  {laLigaStandings.length > 0 && league === "La Liga" && (
+                    <LaLigaStandingsCards
+                      standings={laLigaStandings}
+                      selectedTeam={selectedTeam}
+                      darkMode={darkMode}
+                    />
+                  )}
+
+                  {fplInsights && league === "Premier League" && (
                     <FPLInsights
                       insights={fplInsights}
                       selectedTeam={selectedTeam}

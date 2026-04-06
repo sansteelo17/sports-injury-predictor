@@ -601,11 +601,13 @@ def evaluate_severity_classifier(model, X_test, y_test):
     print("\n📊 Severity Classification Results:")
     print(f"Accuracy: {accuracy:.1%}")
     print("\nClassification Report:")
-    print(classification_report(y_test, y_pred, target_names=SEVERITY_LABELS))
+    # Use le.classes_ (alphabetical order) so labels match the encoded integers
+    print(classification_report(y_test, y_pred, labels=list(le.classes_)))
 
     print("\nConfusion Matrix:")
     cm = confusion_matrix(y_test_enc, y_pred_enc)
-    cm_df = pd.DataFrame(cm, index=SEVERITY_LABELS, columns=SEVERITY_LABELS)
+    # le.classes_ is the correct label order for the encoded integers
+    cm_df = pd.DataFrame(cm, index=list(le.classes_), columns=list(le.classes_))
     print(cm_df)
 
     # Adjacent accuracy (within one category)

@@ -1,4 +1,13 @@
+import unicodedata
 import pandas as pd
+
+
+def _strip_accents(s: str) -> str:
+    return ''.join(
+        c for c in unicodedata.normalize('NFD', s)
+        if unicodedata.category(c) != 'Mn'
+    )
+
 
 # ------------------------------------------------------------------
 # TEAM NAME NORMALIZATION MAPPING
@@ -20,6 +29,33 @@ TEAM_MAPPING = {
     # Spurs formatting cases
     "tottenham hotspur": "tottenham",
     "spurs": "tottenham",
+
+    # La Liga — accent variants map to the form used by football-data.org normaliser
+    "atletico madrid": "atletico madrid",
+    "atletico": "atletico madrid",
+    "atleti": "atletico madrid",
+    "real betis balompie": "real betis",
+    "betis": "real betis",
+    "rc celta": "celta vigo",
+    "celta": "celta vigo",
+    "ca osasuna": "osasuna",
+    "rcd mallorca": "mallorca",
+    "rcd espanyol": "espanyol",
+    "ud almeria": "almeria",
+    "ud las palmas": "las palmas",
+    "cd leganes": "leganes",
+    "deportivo alaves": "alaves",
+    "real valladolid": "valladolid",
+    "granada cf": "granada",
+    "cadiz cf": "cadiz",
+    "rayo vallecano de madrid": "rayo vallecano",
+    "athletic bilbao": "athletic club",
+    "athletic": "athletic club",
+    "sevilla fc": "sevilla",
+    "valencia cf": "valencia",
+    "villarreal cf": "villarreal",
+    "real sociedad de futbol": "real sociedad",
+    "girona fc": "girona",
 }
 
 
@@ -40,6 +76,7 @@ def normalize_team_column(df: pd.DataFrame, column: str) -> pd.DataFrame:
         .astype(str)
         .str.lower()
         .str.strip()
+        .apply(_strip_accents)
         .replace(TEAM_MAPPING)
     )
     return df

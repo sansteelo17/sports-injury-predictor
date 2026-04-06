@@ -1,29 +1,34 @@
 {
   "model": "StackingEnsemble",
-  "description": "Binary injury risk classifier for Premier League players over a 2-week horizon. Stacked ensemble of CatBoost, LightGBM, and XGBoost base learners with a Logistic Regression meta-learner.",
-  "version": "1.0",
-  "trained_on": "Historical player stats, injury records, and match data (1992-2024). Temporal train/val/test split (60/20/20) to prevent leakage.",
+  "description": "Binary injury risk classifier for EPL + La Liga players over a 2-week horizon.",
+  "version": "2.0",
+  "leagues": [
+    "Premier League",
+    "La Liga"
+  ],
+  "trained_on": "Historical player stats, injury records, and match data. Temporal train/val/test split (60/20/20).",
   "evaluation": {
-    "evaluated_at": "2026-04-01",
-    "test_size": 171,
-    "positive_rate": 0.9298,
+    "evaluated_at": "2026-04-05",
+    "roc_auc": 0.8529,
+    "avg_precision": 0.9496,
+    "precision": 0.9814,
+    "recall": 0.3794,
+    "f1": 0.5472,
     "threshold": 0.5,
-    "roc_auc": 0.8244,
-    "avg_precision": 0.9834,
-    "precision": 0.9758,
-    "recall": 0.761,
-    "f1": 0.8551
+    "test_size": 1088,
+    "positive_rate": 0.7656,
+    "leagues": [
+      "Premier League",
+      "La Liga"
+    ]
   },
   "severity_model": {
     "model": "CatBoost",
-    "description": "Predicts injury duration tier: short (<7 days), medium (7-28 days), long (>28 days).",
-    "accuracy": 0.62,
-    "adjacent_accuracy": 0.94
+    "accuracy": 0.5983,
+    "adjacent_accuracy": 0.9362
   },
   "notes": [
-    "Test set is 93% positive (injury events) due to temporal split — later seasons have more coverage. Precision/recall reflect this distribution.",
-    "ROC-AUC of 0.82 is the most dataset-independent metric.",
-    "Model is re-evaluated each time retrain_model.py runs. This card is overwritten with fresh metrics.",
-    "For educational and portfolio use only. Not for medical or betting decisions."
+    "league is a categorical feature \u2014 model sees EPL vs La Liga.",
+    "ROC-AUC is the most reliable metric given class imbalance."
   ]
 }

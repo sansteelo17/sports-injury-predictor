@@ -583,101 +583,119 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
     else:
         snapshot_date = now
 
-    rows = []
+    def _build_player_rows(squad_df, match_df, league_name, snapshot_dt, minutes_lkp):
+        """Build workload snapshot rows for all players in a squad."""
+        team_workload_cache = {}
+        team_form_cache = {}
+        rows = []
+        matched = 0
+        for _, player in squad_df.iterrows():
+            team = player["team"]
+            if team not in team_workload_cache:
+                team_workload_cache[team] = compute_team_workload(match_df, team, snapshot_dt)
+                team_form_cache[team] = compute_team_form(match_df, team, snapshot_dt)
 
-    # Cache team-level computations (same for all players on a team)
-    team_workload_cache = {}
-    team_form_cache = {}
+            team_workload = team_workload_cache[team]
+            team_form = team_form_cache[team]
 
-    players_with_ratio = 0
-    for _, player in players.iterrows():
-        team = player["team"]
+            player_name = player["name"]
+            play_ratio = minutes_lkp.get(player_name)
+            if play_ratio is None and " " in player_name:
+                play_ratio = minutes_lkp.get(player_name.split()[-1])
+            if play_ratio is None:
+                play_ratio = 0.5
 
-        # Get team-level workload (cached per team)
-        if team not in team_workload_cache:
-            team_workload_cache[team] = compute_team_workload(matches, team, snapshot_date)
-            team_form_cache[team] = compute_team_form(matches, team, snapshot_date)
+            player_acute = team_workload["acute_load"]
+            player_chronic = team_workload["chronic_load"]
+            team_acwr = team_workload["acwr"]
 
-        team_workload = team_workload_cache[team]
-        team_form = team_form_cache[team]
-
-        # Get player's playing time ratio (0-1), default to 0.5 if unknown
-        player_name = player["name"]
-        play_ratio = minutes_lookup.get(player_name)
-        # Try last name if full name didn't match
-        if play_ratio is None and " " in player_name:
-            last_name = player_name.split()[-1]
-            play_ratio = minutes_lookup.get(last_name)
-        if play_ratio is None:
-            play_ratio = 0.5
-
-        # Use team-level acute/chronic loads (integer match counts)
-        # Model was trained on integer rolling match counts, not scaled fractions
-        player_acute = team_workload["acute_load"]
-        player_chronic = team_workload["chronic_load"]
-
-        # Compute player-level ACWR with workload variation
-        # ACWR was designed for active players. For bench/youth players who
-        # rarely play, use neutral values to avoid false extremes.
-        team_acwr = team_workload["acwr"]
-        if play_ratio >= 0.15:
-            # Active players: modulate team ACWR by play pattern
-            # High-minute starters have stable ACWR (~team level)
-            # Rotation players (0.3-0.7) have slightly spikier loads
-            if play_ratio >= 0.6:
-                player_acwr = team_acwr  # Starter: matches team schedule
+            if play_ratio >= 0.15:
+                if play_ratio >= 0.6:
+                    player_acwr = team_acwr
+                else:
+                    spike_factor = 1.0 + 0.15 * (1.0 - abs(2 * play_ratio - 0.8))
+                    player_acwr = team_acwr * max(1.0, spike_factor)
             else:
-                # Rotation: slight spike factor (max 1.15x at play_ratio=0.4)
-                spike_factor = 1.0 + 0.15 * (1.0 - abs(2 * play_ratio - 0.8))
-                player_acwr = team_acwr * max(1.0, spike_factor)
-        else:
-            # Bench/youth player: neutral ACWR (not enough data for real calc)
-            player_acwr = 0.9
+                player_acwr = 0.9
 
-        player_acwr = max(0.5, min(2.5, player_acwr))
+            player_acwr = max(0.5, min(2.5, player_acwr))
+            player_fatigue = player_acute - player_chronic
 
-        # Fatigue: acute - chronic (uses integer match counts, same as training)
-        player_fatigue = player_acute - player_chronic
+            scaled_workload = {
+                "acute_load": round(player_acute, 2),
+                "chronic_load": round(player_chronic, 2),
+                "acwr": round(player_acwr, 3),
+                "monotony": team_workload["monotony"],
+                "strain": team_workload["strain"],
+                "fatigue_index": round(player_fatigue, 2),
+                "workload_slope": team_workload["workload_slope"],
+                "spike_flag": 1 if player_acwr > 1.8 else 0,
+                "matches_last_7": team_workload["matches_last_7"],
+                "matches_last_14": team_workload["matches_last_14"],
+                "matches_last_30": team_workload["matches_last_30"],
+            }
 
-        scaled_workload = {
-            # Workload metrics: scale by play_ratio for player-level estimate
-            "acute_load": round(player_acute, 2),
-            "chronic_load": round(player_chronic, 2),
-            "acwr": round(player_acwr, 3),
-            "monotony": team_workload["monotony"],
-            "strain": team_workload["strain"],
-            "fatigue_index": round(player_fatigue, 2),
-            "workload_slope": team_workload["workload_slope"],
-            "spike_flag": 1 if player_acwr > 1.8 else 0,
-            # Match counts: keep as integers (model trained on integer counts)
-            "matches_last_7": team_workload["matches_last_7"],
-            "matches_last_14": team_workload["matches_last_14"],
-            "matches_last_30": team_workload["matches_last_30"],
-        }
+            if player_name in minutes_lkp:
+                matched += 1
 
-        if player_name in minutes_lookup:
-            players_with_ratio += 1
+            rest_days = team_form["rest_days_before_injury"]
+            rows.append({
+                "name": player_name,
+                "player_team": player["team"],
+                "team": player["team"],
+                "position": player.get("position", "Unknown"),
+                "age": player.get("age", 25),
+                "league": league_name,
+                "injury_datetime": snapshot_dt,
+                "snapshot_date": snapshot_dt.strftime("%Y-%m-%d"),
+                "playing_time_ratio": play_ratio,
+                "days_since_last_match": rest_days,
+                **scaled_workload,
+                **team_form,
+            })
+        print(f"   {matched}/{len(squad_df)} {league_name} players matched with playing time data")
+        return rows
 
-        # Pre-set days_since_last_match from real team schedule
-        # (prevents temporal feature engineering from computing 0 via date diff)
-        rest_days = team_form["rest_days_before_injury"]
+    # --- Premier League ---
+    epl_rows = _build_player_rows(players, matches, "Premier League", snapshot_date, minutes_lookup)
 
-        rows.append({
-            "name": player_name,
-            "player_team": player["team"],
-            "team": player["team"],
-            "position": player.get("position", "Unknown"),
-            "age": player.get("age", 25),
-            "injury_datetime": snapshot_date,
-            "snapshot_date": snapshot_date.strftime("%Y-%m-%d"),
-            "playing_time_ratio": play_ratio,
-            "days_since_last_match": rest_days,
-            **scaled_workload,
-            **team_form,
-        })
+    # --- La Liga (+ UCL for La Liga teams) ---
+    print("\n   Fetching La Liga squads and matches...")
+    try:
+        la_liga_players = client.get_all_la_liga_squads(season=season)
+        la_liga_matches = client.get_la_liga_matches(season=season, status="FINISHED")
+        print(f"   La Liga: {len(la_liga_players)} players, {len(la_liga_matches)} La Liga matches")
 
-    print(f"   {players_with_ratio}/{len(players)} players matched with playing time data")
-    snapshots_df = pd.DataFrame(rows)
+        # Add UCL matches for La Liga teams (same API call we already do for EPL)
+        try:
+            cl_all = client.get_champions_league_matches(season=season)
+            if len(cl_all) > 0:
+                la_liga_teams = set(la_liga_matches["Home"].unique()) | set(la_liga_matches["Away"].unique())
+                # UCL uses same name normalisation as La Liga via _normalize_la_liga_team in get_la_liga_matches
+                # CL uses _normalize_team_name (EPL normaliser) — map CL names to La Liga format
+                cl_la = cl_all[
+                    cl_all["Home"].isin(la_liga_teams) | cl_all["Away"].isin(la_liga_teams)
+                ].copy()
+                if len(cl_la) > 0:
+                    if "league" not in cl_la.columns:
+                        cl_la["league"] = "La Liga"
+                    la_liga_matches = pd.concat([la_liga_matches, cl_la], ignore_index=True)
+                    la_liga_matches = la_liga_matches.drop_duplicates(
+                        subset=["Date", "Home", "Away"], keep="first"
+                    )
+                    print(f"   + {len(cl_la)} UCL matches → {len(la_liga_matches)} total La Liga workload matches")
+        except Exception as cl_e:
+            print(f"   Warning: UCL fetch failed ({cl_e}), using La Liga only")
+
+        # La Liga players have no FPL minutes data; all default to 0.5
+        la_liga_rows = _build_player_rows(la_liga_players, la_liga_matches, "La Liga", snapshot_date, {})
+    except Exception as e:
+        print(f"   Warning: could not fetch La Liga data ({e}). Skipping.")
+        la_liga_rows = []
+
+    all_rows = epl_rows + la_liga_rows
+    snapshots_df = pd.DataFrame(all_rows)
+    print(f"\n   Total: {len(epl_rows)} EPL + {len(la_liga_rows)} La Liga = {len(snapshots_df)} players")
     return snapshots_df
 
 
