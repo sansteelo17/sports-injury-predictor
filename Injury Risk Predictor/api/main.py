@@ -3769,7 +3769,7 @@ def player_row_to_risk(row) -> PlayerRisk:
 # ============================================================
 
 @app.get("/api/model-metrics")
-async def get_model_metrics():
+def get_model_metrics():
     """Return model performance metrics from the saved model card."""
     import json as _json
     card_path = Path("models/model_card.json")
@@ -3790,7 +3790,7 @@ async def health_check():
 
 
 @app.post("/api/admin/refresh-predictions")
-async def trigger_prediction_refresh(
+def trigger_prediction_refresh(
     mode: str = "api",
     x_refresh_token: Optional[str] = Header(default=None, alias="X-Refresh-Token"),
 ):
@@ -3832,7 +3832,7 @@ async def trigger_prediction_refresh(
 
 
 @app.get("/api/admin/refresh-status")
-async def get_prediction_refresh_status(
+def get_prediction_refresh_status(
     x_refresh_token: Optional[str] = Header(default=None, alias="X-Refresh-Token"),
 ):
     """Check status of the last/active prediction refresh run."""
@@ -3842,7 +3842,7 @@ async def get_prediction_refresh_status(
 
 
 @app.get("/api/odds/status")
-async def odds_status(team: str = "Arsenal", player: str = "Bukayo Saka"):
+def odds_status(team: str = "Arsenal", player: str = "Bukayo Saka"):
     """Inspect odds provider mode and direct market availability."""
     if odds_client is None:
         raise HTTPException(status_code=503, detail="Odds client not initialized")
@@ -3864,7 +3864,7 @@ async def odds_status(team: str = "Arsenal", player: str = "Bukayo Saka"):
 
 
 @app.get("/api/players", response_model=List[PlayerSummary])
-async def list_players(team: Optional[str] = None, risk_level: Optional[str] = None):
+def list_players(team: Optional[str] = None, risk_level: Optional[str] = None):
     """List all players with summary info."""
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
@@ -3993,7 +3993,7 @@ def _build_odds_movement(row: dict, fpl: Optional[dict]) -> str:
 
 
 @app.get("/api/predictions")
-async def get_predictions(team: str):
+def get_predictions(team: str):
     """Get injury risk predictions for an entire squad. Used by the auto-poster."""
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
@@ -4072,7 +4072,7 @@ async def get_predictions(team: str):
 
 
 @app.get("/api/players/{player_name}/risk", response_model=PlayerRisk)
-async def get_player_risk(player_name: str):
+def get_player_risk(player_name: str):
     """Get detailed risk prediction for a specific player."""
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
@@ -4092,7 +4092,7 @@ async def get_player_risk(player_name: str):
 
 
 @app.get("/api/teams", response_model=List[str])
-async def list_teams(league: Optional[str] = None):
+def list_teams(league: Optional[str] = None):
     """List all available teams, optionally filtered by league."""
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
@@ -4145,7 +4145,7 @@ async def list_teams(league: Optional[str] = None):
 
 
 @app.get("/api/teams/badges")
-async def get_team_badges():
+def get_team_badges():
     """Get badge URLs for all teams."""
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
@@ -4159,7 +4159,7 @@ async def get_team_badges():
 
 
 @app.get("/api/teams/{team_name}/overview", response_model=TeamOverview)
-async def get_team_overview(team_name: str):
+def get_team_overview(team_name: str):
     """Get risk overview for an entire team."""
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
@@ -4247,13 +4247,13 @@ async def get_team_overview(team_name: str):
 
 
 @app.get("/api/archetypes")
-async def list_archetypes():
+def list_archetypes():
     """List all player archetypes with descriptions."""
     return ARCHETYPE_DESCRIPTIONS
 
 
 @app.get("/api/fpl/insights", response_model=FPLInsights)
-async def get_fpl_insights_endpoint():
+def get_fpl_insights_endpoint():
     """Get FPL insights including standings, fixtures, and double gameweeks."""
     try:
         now = datetime.utcnow()
@@ -4286,7 +4286,7 @@ async def get_fpl_insights_endpoint():
 
 
 @app.get("/api/fpl/standings", response_model=List[LeagueStanding])
-async def get_league_standings():
+def get_league_standings():
     """Get current Premier League standings."""
     try:
         client = FPLClient()
@@ -4297,7 +4297,7 @@ async def get_league_standings():
 
 
 @app.get("/api/la-liga/standings")
-async def get_la_liga_standings():
+def get_la_liga_standings():
     """Get current La Liga standings from football-data.org."""
     try:
         from src.data_loaders.api_client import FootballDataClient as MatchHistoryApiClient, LA_LIGA_ID
@@ -4330,7 +4330,7 @@ async def get_la_liga_standings():
 
 
 @app.get("/api/player-photo/tm")
-async def proxy_tm_player_photo(name: str):
+def proxy_tm_player_photo(name: str):
     """Proxy a Transfermarkt player photo by player name.
 
     Looks up the pre-built photo map, then fetches the image server-side
@@ -4364,7 +4364,7 @@ async def proxy_tm_player_photo(name: str):
 
 
 @app.get("/api/standings/summary")
-async def get_standings_summary_endpoint(team: Optional[str] = None):
+def get_standings_summary_endpoint(team: Optional[str] = None):
     """Get Premier League standings summary."""
     try:
         summary = get_standings_summary(team)
@@ -4386,7 +4386,7 @@ async def get_standings_summary_endpoint(team: Optional[str] = None):
 
 
 @app.get("/api/fpl/double-gameweeks")
-async def get_double_gameweeks():
+def get_double_gameweeks():
     """Get teams with upcoming double gameweeks."""
     try:
         client = FPLClient()
@@ -4403,7 +4403,7 @@ async def get_double_gameweeks():
 
 
 @app.get("/api/fpl/squad/{team_id}", response_model=FPLSquadSync)
-async def get_fpl_squad(team_id: int):
+def get_fpl_squad(team_id: int):
     """Sync an FPL manager's squad and return Yara risk data for each player."""
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
@@ -4556,7 +4556,7 @@ async def get_fpl_squad(team_id: int):
 
 
 @app.get("/api/players/{player_name}/what-if", response_model=WhatIfProjection)
-async def what_if_projection(player_name: str, rest_next: bool = False, play_all: bool = False):
+def what_if_projection(player_name: str, rest_next: bool = False, play_all: bool = False):
     """Project how resting or playing all matches affects a player's injury risk."""
     if inference_df is None or artifacts is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
