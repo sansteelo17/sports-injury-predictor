@@ -104,7 +104,7 @@ class TransfermarktScraper:
             logger.warning(f"Failed to fetch {url}: {e}")
             raise
 
-    def search_player(self, name: str) -> Optional[Dict]:
+    def search_player(self, name: str, team_hint: Optional[str] = None) -> Optional[Dict]:
         """
         Search for a player by name.
 
@@ -117,39 +117,50 @@ class TransfermarktScraper:
             html = self._fetch(search_url)
             soup = BeautifulSoup(html, "html.parser")
 
-            # Find first player result
-            player_row = soup.select_one("table.items tbody tr")
-            if not player_row:
+            rows = soup.select("table.items tbody tr")
+            if not rows:
                 return None
 
-            # Extract player link
-            link = player_row.select_one("td.hauptlink a")
-            if not link:
-                return None
+            normalized_hint = re.sub(r"[^a-z0-9]+", " ", (team_hint or "").lower()).strip()
+            best_match = None
 
-            href = link.get("href", "")
-            # Format: /player-name/profil/spieler/12345
-            match = re.search(r"/([^/]+)/profil/spieler/(\d+)", href)
-            if not match:
-                return None
+            for player_row in rows:
+                link = player_row.select_one("td.hauptlink a")
+                if not link:
+                    continue
 
-            slug, player_id = match.groups()
+                href = link.get("href", "")
+                match = re.search(r"/([^/]+)/profil/spieler/(\d+)", href)
+                if not match:
+                    continue
 
-            # Get team
-            team_cell = player_row.select("td.zentriert")
-            team = ""
-            for cell in team_cell:
-                img = cell.select_one("img[alt]")
-                if img and "title" in img.attrs:
-                    team = img["title"]
-                    break
+                slug, player_id = match.groups()
 
-            return {
-                "name": link.get_text(strip=True),
-                "slug": slug,
-                "player_id": player_id,
-                "team": team
-            }
+                team_cell = player_row.select("td.zentriert")
+                team = ""
+                for cell in team_cell:
+                    img = cell.select_one("img[alt]")
+                    if img and "title" in img.attrs:
+                        team = img["title"]
+                        break
+
+                candidate = {
+                    "name": link.get_text(strip=True),
+                    "slug": slug,
+                    "player_id": player_id,
+                    "team": team,
+                }
+
+                if not normalized_hint:
+                    return candidate
+
+                normalized_team = re.sub(r"[^a-z0-9]+", " ", (team or "").lower()).strip()
+                if normalized_hint and normalized_hint in normalized_team:
+                    return candidate
+                if best_match is None:
+                    best_match = candidate
+
+            return best_match
         except Exception as e:
             logger.warning(f"Search failed for '{name}': {e}")
             return None
@@ -234,6 +245,23 @@ class TransfermarktScraper:
                 continue
         return None
 
+    @staticmethod
+    def _parse_market_value_millions(text: str) -> Optional[float]:
+        """Parse Transfermarkt market value strings like €8.00m or €750k."""
+        if not text:
+            return None
+        cleaned = text.replace(",", ".").replace("\xa0", " ").strip()
+        match = re.search(r"€\s*([\d.]+)\s*([mk])", cleaned, flags=re.IGNORECASE)
+        if not match:
+            return None
+        amount = float(match.group(1))
+        unit = match.group(2).lower()
+        if unit == "m":
+            return round(amount, 2)
+        if unit == "k":
+            return round(amount / 1000.0, 3)
+        return None
+
     def get_player_stats(self, slug: str, player_id: str, season: str = "2024") -> Dict:
         """
         Get player's season statistics including minutes played.
@@ -264,18 +292,32 @@ class TransfermarktScraper:
             footer = soup.select_one("table.items tfoot tr")
             if footer:
                 cells = footer.select("td")
-                # Typical columns: Appearances, Goals, Assists, Yellow, Red, Minutes
-                for i, cell in enumerate(cells):
-                    text = cell.get_text(strip=True).replace(".", "").replace(",", "").replace("'", "")
+                # Common TM footer shape:
+                # [Competition, blank, Apps, Goals, Assists, Minutes/Goal, Minutes]
+                numeric_cells = [
+                    cell.get_text(strip=True).replace(".", "").replace(",", "").replace("'", "")
+                    for cell in cells
+                ]
+                if len(numeric_cells) >= 7:
+                    if numeric_cells[2].isdigit():
+                        stats["appearances"] = int(numeric_cells[2])
+                    if numeric_cells[3].isdigit():
+                        stats["goals"] = int(numeric_cells[3])
+                    if numeric_cells[4].isdigit():
+                        stats["assists"] = int(numeric_cells[4])
+                    if numeric_cells[-1].isdigit():
+                        stats["minutes_played"] = int(numeric_cells[-1])
 
-                    # Minutes is usually the last numeric column with high values
-                    if text.isdigit():
+                # Fallback scan if the table shape differs.
+                if stats["minutes_played"] == 0 or stats["appearances"] == 0:
+                    for i, text in enumerate(numeric_cells):
+                        if not text.isdigit():
+                            continue
                         val = int(text)
-                        if val > 100:  # Likely minutes
-                            stats["minutes_played"] = val
-                        elif val < 50 and i < 3:  # Early columns: appearances
-                            if stats["appearances"] == 0:
-                                stats["appearances"] = val
+                        if val > 100:
+                            stats["minutes_played"] = max(stats["minutes_played"], val)
+                        elif val < 70 and i < 4 and stats["appearances"] == 0:
+                            stats["appearances"] = val
 
             # Alternative: look for specific labeled rows
             info_items = soup.select("li.data-header__label")
@@ -311,6 +353,38 @@ class TransfermarktScraper:
                 "assists": 0,
                 "is_starter": False,
             }
+
+    def get_player_market_value(self, slug: str, player_id: str) -> Optional[float]:
+        """
+        Get player's current market value in millions of euros.
+
+        Returns:
+            Float value in millions (e.g. 8.0 for €8.00m) or None.
+        """
+        url = f"{BASE_URL}/{slug}/profil/spieler/{player_id}"
+
+        try:
+            html = self._fetch(url)
+            soup = BeautifulSoup(html, "html.parser")
+
+            # Preferred: header market value wrapper
+            wrapper = soup.select_one("a.data-header__market-value-wrapper")
+            if wrapper:
+                value = self._parse_market_value_millions(wrapper.get_text(" ", strip=True))
+                if value is not None:
+                    return value
+
+            # Fallback: meta description often includes `Market value: €8.00m`
+            meta = soup.select_one('meta[name="description"]')
+            if meta and meta.get("content"):
+                value = self._parse_market_value_millions(meta["content"])
+                if value is not None:
+                    return value
+
+            return None
+        except Exception as e:
+            logger.debug(f"Failed to get market value for {slug}: {e}")
+            return None
 
     def get_current_team(self, player_name: str) -> Optional[str]:
         """

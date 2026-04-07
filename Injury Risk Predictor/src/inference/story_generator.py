@@ -1568,7 +1568,7 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
     }
 
 
-def calculate_clean_sheet_odds(player_data: Dict) -> Optional[Dict]:
+def calculate_clean_sheet_odds(player_data: Dict, extra_context: Optional[Dict] = None) -> Optional[Dict]:
     """Calculate clean sheet odds for defenders and goalkeepers."""
     position = player_data.get("position", "")
     injury_prob = player_data.get("ensemble_prob", 0.5)
@@ -1577,7 +1577,12 @@ def calculate_clean_sheet_odds(player_data: Dict) -> Optional[Dict]:
     if not any(p in pos_lower for p in ["def", "gk", "goalkeeper", "back"]):
         return None
 
-    goals_conceded_per_game = 1.2  # PL average
+    goals_conceded_per_game = 1.2  # league-average fallback
+    fixture_history = (extra_context or {}).get("fixture_history") or {}
+    fh_samples = _safe_int(fixture_history.get("samples", 0), 0)
+    fh_goals_against = _safe_float(fixture_history.get("goals_against", 0), 0.0)
+    if fh_samples > 0 and fh_goals_against >= 0:
+        goals_conceded_per_game = max(0.4, min(2.4, fh_goals_against / max(1, fh_samples)))
     base_cs_prob = math.exp(-goals_conceded_per_game)
     availability = 1 - (injury_prob * 0.5)
     cs_prob = max(0.05, min(0.7, base_cs_prob * availability))

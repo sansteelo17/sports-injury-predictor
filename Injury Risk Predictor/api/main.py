@@ -17,6 +17,7 @@ import subprocess
 import threading
 import re
 import time
+import math
 
 import unicodedata
 from pathlib import Path
@@ -154,6 +155,8 @@ _la_liga_fixture_dataset_cache: Dict[str, Any] = {"season": None, "data": None, 
 _la_liga_team_fixtures_cache: Dict[str, Dict[str, Any]] = {}
 _la_liga_moneyline_cache: Dict[str, Dict[str, Any]] = {}
 _la_liga_team_context_cache: Dict[str, Dict[str, Any]] = {}
+_tm_player_profile_cache: Dict[str, Dict[str, Any]] = {}
+_tm_scraper_instance = None
 _PL_STANDINGS_TTL = timedelta(hours=6)   # team list barely changes mid-season
 _FPL_INSIGHTS_TTL = timedelta(minutes=15)  # GW fixture data refreshes each round
 _PLAYER_RISK_TTL = timedelta(minutes=10)  # odds + FPL data; stale-ish is fine for repeated views
@@ -162,6 +165,7 @@ _LA_LIGA_FIXTURE_DATASET_TTL = timedelta(minutes=12)
 _LA_LIGA_TEAM_FIXTURES_TTL = timedelta(minutes=10)
 _LA_LIGA_MONEYLINE_TTL = timedelta(minutes=7)
 _LA_LIGA_TEAM_CONTEXT_TTL = timedelta(minutes=5)
+_TM_PLAYER_PROFILE_TTL = timedelta(hours=24)
 
 
 def _utc_now_iso() -> str:
@@ -245,7 +249,7 @@ def _load_models_blocking():
     global fpl_player_codes, fpl_players_by_team, fpl_element_lookup, historical_matches_df, fixture_history_cache, odds_client
     global shirt_numbers_by_team, shirt_number_lookup_attempted, _startup_complete, _player_risk_cache
     global _la_liga_standings_cache, _la_liga_fixture_dataset_cache, _la_liga_team_fixtures_cache
-    global _la_liga_moneyline_cache, _la_liga_team_context_cache
+    global _la_liga_moneyline_cache, _la_liga_team_context_cache, _tm_player_profile_cache
     _startup_complete = False
     # Reset caches so manual/cron refreshes don't accumulate stale keys.
     _player_risk_cache = {}
@@ -254,6 +258,7 @@ def _load_models_blocking():
     _la_liga_team_fixtures_cache = {}
     _la_liga_moneyline_cache = {}
     _la_liga_team_context_cache = {}
+    _tm_player_profile_cache = {}
     fpl_stats_cache = {}
     fpl_team_ids = {}
     fpl_team_name_to_id = {}
@@ -1804,6 +1809,68 @@ def get_player_image_url(player_name: str, team_name: Optional[str] = None) -> O
         return _photo_url(best_code)
 
     return None
+
+
+def _market_value_to_fantasy_price(market_value_millions: float) -> float:
+    """Map TM market value into a fantasy-game-like price band for non-FPL leagues."""
+    if market_value_millions <= 0:
+        return 0.0
+    scaled = 4.0 + min(10.0, math.log1p(market_value_millions) * 2.0)
+    return round(min(max(scaled, 4.0), 14.0), 1)
+
+
+def _get_transfermarkt_scraper():
+    global _tm_scraper_instance
+    if _tm_scraper_instance is None:
+        from src.data_loaders.transfermarkt_scraper import TransfermarktScraper
+        _tm_scraper_instance = TransfermarktScraper(cache_hours=168)
+    return _tm_scraper_instance
+
+
+def _get_transfermarkt_player_profile_cached(player_name: str, team_hint: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Fetch and cache season-level TM stats for leagues without FPL coverage."""
+    global _tm_player_profile_cache
+    cache_key = f"{_normalize_cache_key(player_name)}|{_normalize_cache_key(team_hint)}|{_current_season_year()}"
+    cache_entry = _tm_player_profile_cache.get(cache_key)
+    if _cache_entry_is_fresh(cache_entry):
+        return cache_entry.get("data")
+
+    data = None
+    try:
+        scraper = _get_transfermarkt_scraper()
+        player = scraper.search_player(player_name, team_hint=team_hint)
+        if player:
+            stats = scraper.get_player_stats(
+                player["slug"],
+                player["player_id"],
+                season=str(_current_season_year()),
+            ) or {}
+            market_value = scraper.get_player_market_value(player["slug"], player["player_id"])
+            minutes_played = _safe_int(stats.get("minutes_played", 0), 0)
+            goals = _safe_int(stats.get("goals", 0), 0)
+            assists = _safe_int(stats.get("assists", 0), 0)
+            per_90 = minutes_played / 90 if minutes_played > 0 else 0
+
+            data = {
+                "team": player.get("team"),
+                "minutes_played": minutes_played,
+                "appearances": _safe_int(stats.get("appearances", 0), 0),
+                "goals": goals,
+                "assists": assists,
+                "goals_per_90": round(goals / per_90, 2) if per_90 > 0 else 0.0,
+                "assists_per_90": round(assists / per_90, 2) if per_90 > 0 else 0.0,
+                "market_value_m": market_value,
+                "fantasy_price": _market_value_to_fantasy_price(market_value or 0.0),
+                "is_starter": bool(stats.get("is_starter", False)),
+            }
+    except Exception as e:
+        logger.debug(f"TM season profile unavailable for {player_name}: {e}")
+
+    _tm_player_profile_cache[cache_key] = {
+        "data": data,
+        "expires": datetime.utcnow() + _TM_PLAYER_PROFILE_TTL,
+    }
+    return data
 
 
 POPULAR_NAME_OVERRIDES = {
@@ -3438,24 +3505,10 @@ def calculate_expected_points(
     fpl_stats: Optional[Dict],
     next_fixture: Optional[Dict],
     injury_prob: float,
+    scoring_odds_data: Optional[Dict] = None,
+    clean_sheet_data: Optional[Dict] = None,
 ) -> Optional[Dict]:
     """Calculate FPL expected points for next gameweek, discounted by injury risk."""
-    if not fpl_stats:
-        return None
-
-    status = str(fpl_stats.get("status", "a") or "a").lower()
-    chance = fpl_stats.get("chance_of_playing")
-    chance_int = _safe_int(chance, -1) if chance is not None else None
-    if status in {"i", "u"} or chance_int == 0:
-        return None
-
-    ppg = _safe_float(fpl_stats.get("points_per_game", 0))
-    form = _safe_float(fpl_stats.get("form", 0))
-    minutes = _safe_int(fpl_stats.get("minutes", 0))
-
-    if minutes < 270 or ppg == 0:
-        return None
-
     position = str(enriched_row.get("position", "")).lower()
     if any(t in position for t in ("midfield", "mid", "playmaker", "am", "cm", "dm")):
         pos_baseline = 3.6
@@ -3468,7 +3521,50 @@ def calculate_expected_points(
     else:
         pos_baseline = 3.5
 
-    base = ppg * 0.50 + form * 0.35 + pos_baseline * 0.15
+    if fpl_stats:
+        status = str(fpl_stats.get("status", "a") or "a").lower()
+        chance = fpl_stats.get("chance_of_playing")
+        chance_int = _safe_int(chance, -1) if chance is not None else None
+        if status in {"i", "u"} or chance_int == 0:
+            return None
+
+        ppg = _safe_float(fpl_stats.get("points_per_game", 0))
+        form = _safe_float(fpl_stats.get("form", 0))
+        minutes = _safe_int(fpl_stats.get("minutes", 0))
+
+        if minutes < 270 or ppg == 0:
+            return None
+
+        base = ppg * 0.50 + form * 0.35 + pos_baseline * 0.15
+        projection_source = "fpl"
+    else:
+        minutes = _safe_int(enriched_row.get("minutes", enriched_row.get("minutes_played", 0)), 0)
+        if minutes < 270:
+            return None
+
+        goals_per_90 = _safe_float(enriched_row.get("goals_per_90", 0), 0.0)
+        assists_per_90 = _safe_float(enriched_row.get("assists_per_90", 0), 0.0)
+        availability = max(0.35, 1 - (injury_prob * 0.45))
+        score_prob = _safe_float((scoring_odds_data or {}).get("score_probability", 0.0), 0.0)
+        clean_sheet_prob = _safe_float((clean_sheet_data or {}).get("clean_sheet_probability", 0.0), 0.0)
+
+        if any(t in position for t in ("def", "back", "goalkeeper", "gk")):
+            goal_points = 6.0
+            cs_points = 4.0
+        elif any(t in position for t in ("midfield", "mid", "playmaker", "am", "cm", "dm")):
+            goal_points = 5.0
+            cs_points = 1.0
+        else:
+            goal_points = 4.0
+            cs_points = 0.0
+
+        assist_points = assists_per_90 * 3.0 * availability
+        attacking_points = score_prob * goal_points + assist_points
+        defensive_points = clean_sheet_prob * cs_points
+        base = pos_baseline * 0.45 + attacking_points + defensive_points
+        ppg = base
+        form = goals_per_90 + assists_per_90 + clean_sheet_prob
+        projection_source = "model"
 
     fdr = int(next_fixture.get("difficulty", 3)) if next_fixture else 3
     fdr_map = {1: 1.15, 2: 1.05, 3: 1.0, 4: 0.90, 5: 0.80}
@@ -3481,7 +3577,7 @@ def calculate_expected_points(
 
     # Confidence should reflect sample quality + risk stability, not just "played enough".
     established_sample = minutes >= 1600
-    strong_output_signal = ppg >= 3.8 and form >= 3.5
+    strong_output_signal = ppg >= 3.8 and form >= 1.0 if projection_source == "model" else ppg >= 3.8 and form >= 3.5
     stable_availability = injury_prob < 0.30
     usable_sample = minutes >= 900 and ppg >= 2.2
 
@@ -3494,11 +3590,18 @@ def calculate_expected_points(
 
     opponent = next_fixture.get("opponent", "opponent") if next_fixture else "their next opponent"
     venue = "at home" if next_fixture and next_fixture.get("is_home") else "away"
-    breakdown = (
-        f"Base {base:.1f}pts (PPG {ppg:.1f}, form {form:.1f}). "
-        f"Fixture vs {opponent} ({venue}, FDR {fdr}) gives {fixture_multiplier:.2f}x. "
-        f"Injury risk {round(injury_prob * 100)}% applies {round(injury_discount * 100)}% discount."
-    )
+    if projection_source == "fpl":
+        breakdown = (
+            f"Base {base:.1f}pts (PPG {ppg:.1f}, form {form:.1f}). "
+            f"Fixture vs {opponent} ({venue}, FDR {fdr}) gives {fixture_multiplier:.2f}x. "
+            f"Injury risk {round(injury_prob * 100)}% applies {round(injury_discount * 100)}% discount."
+        )
+    else:
+        breakdown = (
+            f"Model baseline {base:.1f}pts from season output and role profile. "
+            f"Fixture vs {opponent} ({venue}) applies {fixture_multiplier:.2f}x. "
+            f"Injury risk {round(injury_prob * 100)}% applies {round(injury_discount * 100)}% discount."
+        )
 
     return {
         "expected_points": max(0.5, expected),
@@ -3765,6 +3868,7 @@ def player_row_to_risk(row) -> PlayerRisk:
     # Enrich with FPL stats — La Liga players are not in FPL so skip to avoid
     # matching La Liga players to wrong EPL entries (e.g. Fermín López → "H.Bueno")
     fpl_stats = get_fpl_stats_for_player(player_name, team_hint=team) if not is_la_liga else None
+    tm_profile = _get_transfermarkt_player_profile_cached(player_name, team_hint=team) if is_la_liga else None
     enriched_row["story_name"] = get_popular_player_name(player_name, fpl_stats)
     if fpl_stats:
         enriched_row.update({
@@ -3778,6 +3882,19 @@ def player_row_to_risk(row) -> PlayerRisk:
             "shirt_number": fpl_stats.get("shirt_number"),
             "display_name": fpl_stats.get("name", ""),
             "popular_name": get_popular_player_name(player_name, fpl_stats),
+        })
+    elif tm_profile:
+        enriched_row.update({
+            "goals": tm_profile.get("goals", 0),
+            "assists": tm_profile.get("assists", 0),
+            "goals_per_90": tm_profile.get("goals_per_90", 0),
+            "assists_per_90": tm_profile.get("assists_per_90", 0),
+            "price": tm_profile.get("fantasy_price", 0),
+            "market_value_m": tm_profile.get("market_value_m"),
+            "minutes": tm_profile.get("minutes_played", 0),
+            "minutes_played": tm_profile.get("minutes_played", 0),
+            "appearances": tm_profile.get("appearances", 0),
+            "popular_name": get_popular_player_name(player_name, None),
         })
     if not is_la_liga and _safe_int(enriched_row.get("shirt_number"), 0) <= 0:
         enriched_row["shirt_number"] = _lookup_shirt_number(player_name, team_hint=team)
@@ -3815,7 +3932,11 @@ def player_row_to_risk(row) -> PlayerRisk:
 
     scorer_market_snapshot = None
     if odds_client:
-        scorer_market_snapshot = odds_client.get_anytime_scorer_market_snapshot(team, player_name)
+        scorer_market_snapshot = odds_client.get_anytime_scorer_market_snapshot(
+            team,
+            player_name,
+            league=player_league,
+        )
 
     bookmaker_consensus_data = build_bookmaker_consensus(
         player_name=player_name,
@@ -3858,10 +3979,9 @@ def player_row_to_risk(row) -> PlayerRisk:
         "injury_records": injury_records,
         "player_importance": importance_data,
     }
+    clean_sheet_data = calculate_clean_sheet_odds(enriched_row, extra_context=narrative_context)
     scoring_odds_data = calculate_scoring_odds(enriched_row, extra_context=narrative_context)
-    # La Liga players are not in FPL — skip value assessment entirely
-    _player_league_for_fpl = enriched_row.get("league", "Premier League")
-    fpl_value_data = get_fpl_value_assessment(enriched_row, extra_context=narrative_context) if _player_league_for_fpl != "La Liga" else None
+    fpl_value_data = get_fpl_value_assessment(enriched_row, extra_context=narrative_context)
 
     # Use enriched_row for ALL generators so they see corrected injury history.
     # Story receives fixture + market context through the lightweight retrieval layer.
@@ -3881,7 +4001,7 @@ def player_row_to_risk(row) -> PlayerRisk:
             "is_home": bookmaker_consensus_data.get("is_home"),
         }
     elif odds_client:
-        market_odds_for_yara = odds_client.get_anytime_scorer_odds(team, player_name)
+        market_odds_for_yara = odds_client.get_anytime_scorer_odds(team, player_name, league=player_league)
 
     yara_data = enhance_yara_response(
         base_response=generate_yara_response(enriched_row, market_odds_for_yara),
@@ -3904,6 +4024,8 @@ def player_row_to_risk(row) -> PlayerRisk:
         fpl_stats=fpl_stats,
         next_fixture=next_fixture_data,
         injury_prob=prob,
+        scoring_odds_data=scoring_odds_data,
+        clean_sheet_data=clean_sheet_data,
     )
 
     # Risk Comparison vs squad/position

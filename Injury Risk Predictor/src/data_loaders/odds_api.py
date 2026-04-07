@@ -298,7 +298,7 @@ class OddsClient:
 
         return None
 
-    def get_anytime_scorer_odds(self, team_name: str, player_name: str) -> Optional[Dict]:
+    def get_anytime_scorer_odds(self, team_name: str, player_name: str, league: Optional[str] = None) -> Optional[Dict]:
         """
         Get anytime goal scorer odds for a player from The Odds API.
 
@@ -312,7 +312,7 @@ class OddsClient:
         Returns:
             Dict with bookmaker, decimal_odds, implied_probability, or None
         """
-        market_snapshot = self.get_anytime_scorer_market_snapshot(team_name, player_name)
+        market_snapshot = self.get_anytime_scorer_market_snapshot(team_name, player_name, league=league)
         if market_snapshot and market_snapshot.get("lines"):
             preferred_order = ["SkyBet", "Paddy Power", "Betway"]
             lines = market_snapshot["lines"]
@@ -337,13 +337,13 @@ class OddsClient:
             return None
 
         # Check cache
-        cache_key = f"scorer_{player_name.lower()}"
+        cache_key = f"scorer_{(league or 'epl').lower()}_{team_name.lower()}_{player_name.lower()}"
         if cache_key in self._cache:
             return self._cache[cache_key]
 
         try:
             response = self.session.get(
-                f"{ODDS_API_URL}/sports/{SPORT_KEY}/odds",
+                f"{ODDS_API_URL}/sports/{self._sport_key_for_league(league)}/odds",
                 params={
                     "apiKey": self.api_key,
                     "regions": "uk,us,eu",
@@ -364,7 +364,7 @@ class OddsClient:
                 home = match.get("home_team", "").lower()
                 away = match.get("away_team", "").lower()
 
-                if team_lower not in home and team_lower not in away:
+                if not self._team_match_for_market(team_name, home, league=league) and not self._team_match_for_market(team_name, away, league=league):
                     continue
 
                 # Search bookmakers for player odds
@@ -385,8 +385,8 @@ class OddsClient:
                                         "decimal_odds": decimal_odds,
                                         "implied_probability": implied_prob,
                                         "player_matched": outcome.get("name", ""),
-                                        "opponent": match.get("away_team") if team_lower in home else match.get("home_team"),
-                                        "is_home": team_lower in home,
+                                        "opponent": match.get("away_team") if self._team_match_for_market(team_name, home, league=league) else match.get("home_team"),
+                                        "is_home": self._team_match_for_market(team_name, home, league=league),
                                     }
                                     self._cache[cache_key] = result
                                     return result
@@ -419,7 +419,7 @@ class OddsClient:
                 return canonical
         return None
 
-    def get_anytime_scorer_market_snapshot(self, team_name: str, player_name: str) -> Optional[Dict]:
+    def get_anytime_scorer_market_snapshot(self, team_name: str, player_name: str, league: Optional[str] = None) -> Optional[Dict]:
         """
         Get normalized scorer market lines for target bookies.
 
@@ -432,7 +432,7 @@ class OddsClient:
         """
         cache_key = (
             f"scorer_market_snapshot_{self.odds_provider}_"
-            f"{team_name.lower()}_{player_name.lower()}"
+            f"{(league or 'epl').lower()}_{team_name.lower()}_{player_name.lower()}"
         )
         if cache_key in self._cache:
             cached = self._cache[cache_key]
@@ -446,7 +446,7 @@ class OddsClient:
 
         try:
             response = self.session.get(
-                f"{ODDS_API_URL}/sports/{SPORT_KEY}/odds",
+                f"{ODDS_API_URL}/sports/{self._sport_key_for_league(league)}/odds",
                 params={
                     "apiKey": self.api_key,
                     "regions": "uk,us,eu",
@@ -465,11 +465,11 @@ class OddsClient:
             for match in matches:
                 home = match.get("home_team", "").lower()
                 away = match.get("away_team", "").lower()
-                if team_lower not in home and team_lower not in away:
+                if not self._team_match_for_market(team_name, home, league=league) and not self._team_match_for_market(team_name, away, league=league):
                     continue
 
-                opponent = match.get("away_team") if team_lower in home else match.get("home_team")
-                is_home = team_lower in home
+                opponent = match.get("away_team") if self._team_match_for_market(team_name, home, league=league) else match.get("home_team")
+                is_home = self._team_match_for_market(team_name, home, league=league)
 
                 all_lines: Dict[str, Dict] = {}
 
@@ -788,6 +788,19 @@ class OddsClient:
         if not team_key or not text_key:
             return False
         return team_key == text_key or team_key in text_key or text_key in team_key
+
+    @staticmethod
+    def _sport_key_for_league(league: Optional[str]) -> str:
+        return SPORT_KEY_LA_LIGA if (league or "").strip().lower() == "la liga" else SPORT_KEY
+
+    def _team_match_for_market(self, team_name: str, candidate: str, league: Optional[str] = None) -> bool:
+        if (league or "").strip().lower() == "la liga":
+            return self._match_team_in_text(team_name, candidate)
+        team_lower = (team_name or "").lower()
+        candidate_lower = (candidate or "").lower()
+        if not team_lower or not candidate_lower:
+            return False
+        return team_lower in candidate_lower or candidate_lower in team_lower
 
     @staticmethod
     def _american_to_decimal_str(price) -> Optional[str]:

@@ -118,9 +118,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
 
   const tabs = [
     { id: "overview" as const, label: "Risk", icon: <BarChart3 size={14} /> },
-    ...(isLaLiga
-      ? [{ id: "fpl" as const, label: "Fantasy", icon: <Star size={14} /> }]
-      : [{ id: "fpl" as const, label: "FPL", icon: <Star size={14} /> }]),
+    { id: "fpl" as const, label: "Projected", icon: <Star size={14} /> },
     { id: "market" as const, label: "Odds", icon: <Coins size={14} /> },
   ];
   type TabId = (typeof tabs)[number]["id"];
@@ -552,22 +550,8 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
       {/* ── FPL / FANTASY TAB ── */}
       {activeTab === "fpl" && (
         <>
-          {/* La Liga Fantasy note */}
-          {isLaLiga && (
-            <div className={`px-4 sm:px-6 py-4 ${darkMode ? "border-b border-[#1f1f1f]" : "border-b border-gray-100"}`}>
-              <div className={`rounded-xl p-4 ${darkMode ? "bg-[#1a1a1a] border border-[#2a2a2a]" : "bg-gray-50 border border-gray-200"}`}>
-                <div className="flex items-center gap-2 mb-2">
-                  <Star size={14} className={darkMode ? "text-[#86efac]" : "text-emerald-600"} />
-                  <span className={`text-sm font-medium ${darkMode ? "text-white" : "text-gray-900"}`}>La Liga Fantasy</span>
-                </div>
-                <p className={`text-xs leading-relaxed ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
-                  La Liga has an official fantasy game at <span className={darkMode ? "text-[#86efac]" : "text-emerald-600"}>laligafantasy.com</span>. FPL-style projections for La Liga players are coming — injury risk already factors in when deciding who to captain or hold.
-                </p>
-              </div>
-            </div>
-          )}
-          {/* Expected Points Hero Card — EPL only */}
-          {player.fpl_points_projection && !isLaLiga && (
+          {/* Expected Points Hero Card */}
+          {player.fpl_points_projection && (
             <div className={`px-4 sm:px-6 py-4 ${darkMode ? "border-b border-[#1f1f1f]" : "border-b border-gray-100"}`}>
               <div className={`rounded-xl p-4 ${
                 darkMode
@@ -576,29 +560,41 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
               }`}>
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
-                    <div
-                      className={`h-6 px-1 rounded-full flex items-center justify-center ${
-                        darkMode
-                          ? "bg-white/95 ring-1 ring-white/20 shadow-[0_0_10px_rgba(255,255,255,0.08)]"
-                          : "bg-white/90 ring-1 ring-emerald-200"
-                      }`}
-                    >
-                      <img
-                        src={FPL_LOGO_SOURCES[0]}
-                        alt="Fantasy Premier League"
-                        className="h-4 w-auto object-contain"
-                        referrerPolicy="no-referrer"
-                        onError={(e) => {
-                          const img = e.currentTarget;
-                          const currentIndex = Number(img.dataset.logoSourceIndex || "0");
-                          const nextIndex = currentIndex + 1;
-                          if (nextIndex < FPL_LOGO_SOURCES.length) {
-                            img.dataset.logoSourceIndex = String(nextIndex);
-                            img.src = FPL_LOGO_SOURCES[nextIndex];
-                          }
-                        }}
-                      />
-                    </div>
+                    {isLaLiga ? (
+                      <div
+                        className={`h-6 w-6 rounded-full flex items-center justify-center ${
+                          darkMode
+                            ? "bg-white/10 ring-1 ring-white/10"
+                            : "bg-white/90 ring-1 ring-emerald-200"
+                        }`}
+                      >
+                        <Star size={14} className={darkMode ? "text-[#86efac]" : "text-emerald-600"} />
+                      </div>
+                    ) : (
+                      <div
+                        className={`h-6 px-1 rounded-full flex items-center justify-center ${
+                          darkMode
+                            ? "bg-white/95 ring-1 ring-white/20 shadow-[0_0_10px_rgba(255,255,255,0.08)]"
+                            : "bg-white/90 ring-1 ring-emerald-200"
+                        }`}
+                      >
+                        <img
+                          src={FPL_LOGO_SOURCES[0]}
+                          alt="Fantasy Premier League"
+                          className="h-4 w-auto object-contain"
+                          referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            const img = e.currentTarget;
+                            const currentIndex = Number(img.dataset.logoSourceIndex || "0");
+                            const nextIndex = currentIndex + 1;
+                            if (nextIndex < FPL_LOGO_SOURCES.length) {
+                              img.dataset.logoSourceIndex = String(nextIndex);
+                              img.src = FPL_LOGO_SOURCES[nextIndex];
+                            }
+                          }}
+                        />
+                      </div>
+                    )}
                     <span className={`text-xs uppercase tracking-wider font-semibold ${darkMode ? "text-[#86efac]/70" : "text-emerald-600"}`}>
                       Projected Points
                     </span>
@@ -645,8 +641,8 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
             </div>
           )}
 
-          {/* FPL Insight — EPL only; La Liga equivalent pending */}
-          {player.fpl_insight && !isLaLiga && (
+          {/* Projection insight */}
+          {player.fpl_insight && (
             <div
               className={`px-4 sm:px-6 py-4 ${darkMode ? "border-b border-[#1f1f1f]" : "border-b border-gray-100"}`}
             >
@@ -667,7 +663,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                       <span
                         className={`font-semibold ${darkMode ? "text-purple-300" : "text-purple-800"}`}
                       >
-                        {isLaLiga ? "La Liga Insight" : "FPL Insight"}
+                        {isLaLiga ? "Fantasy Insight" : "FPL Insight"}
                       </span>
                       <span
                         className={`text-xs px-2 py-0.5 rounded-full ${
@@ -676,7 +672,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                             : "bg-purple-200 text-purple-700"
                         }`}
                       >
-                        {isLaLiga ? "Fantasy Tip" : "Manager Tip"}
+                        Manager Tip
                       </span>
                     </div>
                     <p
@@ -690,8 +686,8 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
             </div>
           )}
 
-          {/* FPL Value Assessment */}
-          {player.fpl_value && !isLaLiga && (
+          {/* Fantasy value assessment */}
+          {player.fpl_value && (
             <div
               className={`px-4 sm:px-6 py-4 ${darkMode ? "border-b border-[#1f1f1f]" : "border-b border-gray-100"}`}
             >
@@ -732,17 +728,19 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                       <span
                         className={`font-semibold ${darkMode ? "text-white" : "text-gray-900"}`}
                       >
-                        {isLaLiga ? "Fantasy Value" : "FPL Value"}: {player.fpl_value.tier}
+                        Fantasy Value: {player.fpl_value.tier}
                       </span>
-                      <span
-                        className={`text-xs px-2 py-0.5 rounded-full ${
-                          darkMode
-                            ? "bg-white/10 text-gray-300"
-                            : "bg-gray-200 text-gray-700"
-                        }`}
-                      >
-                        {player.fpl_value.price}m
-                      </span>
+                      {player.fpl_value.price > 0 && (
+                        <span
+                          className={`text-xs px-2 py-0.5 rounded-full ${
+                            darkMode
+                              ? "bg-white/10 text-gray-300"
+                              : "bg-gray-200 text-gray-700"
+                          }`}
+                        >
+                          {player.fpl_value.price}m
+                        </span>
+                      )}
                     </div>
                     <p
                       className={`text-sm leading-relaxed ${darkMode ? "text-gray-300" : "text-gray-600"}`}
@@ -755,7 +753,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
             </div>
           )}
 
-          {/* Empty state if no FPL data */}
+          {/* Empty state if no fantasy data */}
           {!player.fpl_insight &&
             !player.fpl_value &&
             !player.fpl_points_projection && (
@@ -763,7 +761,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                 <p
                   className={`text-sm ${darkMode ? "text-gray-500" : "text-gray-400"}`}
                 >
-                  No FPL data available for this player.
+                  No projection data available for this player.
                 </p>
               </div>
             )}
