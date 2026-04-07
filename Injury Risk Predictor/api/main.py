@@ -16,6 +16,7 @@ import asyncio
 import subprocess
 import threading
 import re
+import time
 
 import unicodedata
 from pathlib import Path
@@ -66,7 +67,7 @@ from src.inference.story_generator import (
 from src.inference.llm_client import generate_grounded_narrative
 from src.data_loaders.fpl_api import FPLClient, get_fpl_insights
 from src.data_loaders.football_data_api import FootballDataClient, get_standings_summary
-from src.data_loaders.api_client import FootballDataClient as MatchHistoryApiClient
+from src.data_loaders.api_client import FootballDataClient as MatchHistoryApiClient, LA_LIGA_ID
 from src.data_loaders.odds_api import OddsClient, get_clean_sheet_insight
 # Archetype clustering imports are done lazily inside assign_hybrid_archetypes()
 # to avoid importing all of src.models (which pulls in lightgbm, xgboost, etc.)
@@ -148,13 +149,34 @@ refresh_state_lock = threading.Lock()
 _pl_standings_cache: Dict[str, Any] = {"data": None, "expires": None}  # football-data.org PL standings
 _fpl_insights_cache: Dict[str, Any] = {"data": None, "expires": None}  # FPL insights (standings + fixtures + gw)
 _player_risk_cache: Dict[str, Dict[str, Any]] = {}  # player name (lower) -> {"data": ..., "expires": ...}
+_la_liga_standings_cache: Dict[str, Any] = {"data": None, "expires": None}
+_la_liga_fixture_dataset_cache: Dict[str, Any] = {"season": None, "data": None, "expires": None}
+_la_liga_team_fixtures_cache: Dict[str, Dict[str, Any]] = {}
+_la_liga_moneyline_cache: Dict[str, Dict[str, Any]] = {}
+_la_liga_team_context_cache: Dict[str, Dict[str, Any]] = {}
 _PL_STANDINGS_TTL = timedelta(hours=6)   # team list barely changes mid-season
 _FPL_INSIGHTS_TTL = timedelta(minutes=15)  # GW fixture data refreshes each round
 _PLAYER_RISK_TTL = timedelta(minutes=10)  # odds + FPL data; stale-ish is fine for repeated views
+_LA_LIGA_STANDINGS_TTL = timedelta(minutes=12)
+_LA_LIGA_FIXTURE_DATASET_TTL = timedelta(minutes=12)
+_LA_LIGA_TEAM_FIXTURES_TTL = timedelta(minutes=10)
+_LA_LIGA_MONEYLINE_TTL = timedelta(minutes=7)
+_LA_LIGA_TEAM_CONTEXT_TTL = timedelta(minutes=5)
 
 
 def _utc_now_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _cache_entry_is_fresh(entry: Optional[Dict[str, Any]]) -> bool:
+    if not entry:
+        return False
+    expires = entry.get("expires")
+    return bool(expires and expires > datetime.utcnow())
+
+
+def _normalize_cache_key(value: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
 
 def _require_refresh_token(x_refresh_token: Optional[str]) -> None:
@@ -222,9 +244,16 @@ def _load_models_blocking():
     global fpl_team_names_by_id, fpl_team_meta, fpl_team_recent_defense
     global fpl_player_codes, fpl_players_by_team, fpl_element_lookup, historical_matches_df, fixture_history_cache, odds_client
     global shirt_numbers_by_team, shirt_number_lookup_attempted, _startup_complete, _player_risk_cache
+    global _la_liga_standings_cache, _la_liga_fixture_dataset_cache, _la_liga_team_fixtures_cache
+    global _la_liga_moneyline_cache, _la_liga_team_context_cache
     _startup_complete = False
     # Reset caches so manual/cron refreshes don't accumulate stale keys.
     _player_risk_cache = {}
+    _la_liga_standings_cache = {"data": None, "expires": None}
+    _la_liga_fixture_dataset_cache = {"season": None, "data": None, "expires": None}
+    _la_liga_team_fixtures_cache = {}
+    _la_liga_moneyline_cache = {}
+    _la_liga_team_context_cache = {}
     fpl_stats_cache = {}
     fpl_team_ids = {}
     fpl_team_name_to_id = {}
@@ -2912,50 +2941,239 @@ def get_upcoming_fixtures(team_name: str, count: int = 5) -> List[Dict]:
         return []
 
 
+def _build_la_liga_standings_rows(table: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    client = MatchHistoryApiClient()
+    rows = []
+    for row in table:
+        team = row.get("team", {})
+        short_name = client._normalize_la_liga_team(team.get("shortName", team.get("name", "")))
+        rows.append({
+            "position": row.get("position"),
+            "name": short_name,
+            "full_name": team.get("name", ""),
+            "badge_url": LA_LIGA_BADGE_MAP.get(short_name.lower()),
+            "played": row.get("playedGames", 0),
+            "won": row.get("won", 0),
+            "draw": row.get("draw", 0),
+            "lost": row.get("lost", 0),
+            "goals_for": row.get("goalsFor", 0),
+            "goals_against": row.get("goalsAgainst", 0),
+            "goal_difference": row.get("goalDifference", 0),
+            "points": row.get("points", 0),
+            "form": row.get("form"),
+        })
+    return rows
+
+
+def _fetch_la_liga_standings_live() -> List[Dict[str, Any]]:
+    started = time.perf_counter()
+    client = MatchHistoryApiClient()
+    data = client._get(f"competitions/{LA_LIGA_ID}/standings")
+    table = data.get("standings", [{}])[0].get("table", [])
+    rows = _build_la_liga_standings_rows(table)
+    logger.info(
+        "La Liga standings cache miss: fetched %s rows in %.2fs",
+        len(rows),
+        time.perf_counter() - started,
+    )
+    return rows
+
+
+def _get_la_liga_standings_cached() -> List[Dict[str, Any]]:
+    global _la_liga_standings_cache
+    if _cache_entry_is_fresh(_la_liga_standings_cache):
+        return _la_liga_standings_cache["data"] or []
+
+    rows = _fetch_la_liga_standings_live()
+    _la_liga_standings_cache = {
+        "data": rows,
+        "expires": datetime.utcnow() + _LA_LIGA_STANDINGS_TTL,
+    }
+    return rows
+
+
+def _current_season_year() -> int:
+    now = datetime.utcnow()
+    return now.year if now.month >= 8 else now.year - 1
+
+
+def _fetch_la_liga_fixture_dataset_live() -> Dict[str, Any]:
+    started = time.perf_counter()
+    client = MatchHistoryApiClient()
+    season = _current_season_year()
+    data = client._get(f"competitions/{LA_LIGA_ID}/matches", {"season": season})
+    matches = data.get("matches", [])
+
+    normalized_matches = []
+    for match in matches:
+        home_name = client._normalize_la_liga_team(
+            match.get("homeTeam", {}).get("shortName", match.get("homeTeam", {}).get("name", ""))
+        )
+        away_name = client._normalize_la_liga_team(
+            match.get("awayTeam", {}).get("shortName", match.get("awayTeam", {}).get("name", ""))
+        )
+        normalized_matches.append({
+            "status": match.get("status"),
+            "utcDate": match.get("utcDate"),
+            "home": home_name,
+            "away": away_name,
+        })
+
+    logger.info(
+        "La Liga fixture dataset cache miss: fetched %s matches for %s-%s in %.2fs",
+        len(normalized_matches),
+        season,
+        season + 1,
+        time.perf_counter() - started,
+    )
+    return {"season": season, "matches": normalized_matches}
+
+
+def _get_la_liga_fixture_dataset_cached() -> Dict[str, Any]:
+    global _la_liga_fixture_dataset_cache, _la_liga_team_fixtures_cache, _la_liga_team_context_cache
+    season = _current_season_year()
+    cache_entry = _la_liga_fixture_dataset_cache
+    if (
+        cache_entry.get("season") == season
+        and _cache_entry_is_fresh(cache_entry)
+        and cache_entry.get("data") is not None
+    ):
+        return {"season": season, "matches": cache_entry["data"]}
+
+    live_dataset = _fetch_la_liga_fixture_dataset_live()
+    _la_liga_fixture_dataset_cache = {
+        "season": live_dataset["season"],
+        "data": live_dataset["matches"],
+        "expires": datetime.utcnow() + _LA_LIGA_FIXTURE_DATASET_TTL,
+    }
+    _la_liga_team_fixtures_cache = {}
+    _la_liga_team_context_cache = {}
+    return live_dataset
+
+
+def _get_la_liga_team_fixtures_cached(team_name: str, count: int = 5) -> List[Dict[str, Any]]:
+    global _la_liga_team_fixtures_cache
+    team_key = _normalize_cache_key(team_name)
+    cache_key = f"{team_key}|{count}"
+    cache_entry = _la_liga_team_fixtures_cache.get(cache_key)
+    if _cache_entry_is_fresh(cache_entry):
+        return cache_entry["data"] or []
+
+    dataset = _get_la_liga_fixture_dataset_cached()
+    matches = dataset.get("matches") or []
+    today = str(datetime.utcnow().date())
+    upcoming: List[Dict[str, Any]] = []
+
+    for match in sorted(matches, key=lambda item: item.get("utcDate") or ""):
+        if len(upcoming) >= count:
+            break
+        status = match.get("status")
+        if status not in ("SCHEDULED", "TIMED"):
+            continue
+        match_date = str(match.get("utcDate") or "")[:10]
+        if match_date and match_date < today:
+            continue
+
+        home = str(match.get("home", "") or "")
+        away = str(match.get("away", "") or "")
+        if _normalize_cache_key(home) == team_key:
+            upcoming.append({
+                "opponent": away,
+                "is_home": True,
+                "difficulty": 3,
+                "match_time": match.get("utcDate"),
+            })
+        elif _normalize_cache_key(away) == team_key:
+            upcoming.append({
+                "opponent": home,
+                "is_home": False,
+                "difficulty": 3,
+                "match_time": match.get("utcDate"),
+            })
+
+    _la_liga_team_fixtures_cache[cache_key] = {
+        "data": upcoming,
+        "expires": datetime.utcnow() + _LA_LIGA_TEAM_FIXTURES_TTL,
+    }
+    return upcoming
+
+
+def _get_la_liga_moneyline_cached(team_name: str) -> Optional[Dict[str, Any]]:
+    global _la_liga_moneyline_cache
+    team_key = _normalize_cache_key(team_name)
+    cache_entry = _la_liga_moneyline_cache.get(team_key)
+    if _cache_entry_is_fresh(cache_entry):
+        return cache_entry.get("data")
+
+    data = None
+    if odds_client:
+        started = time.perf_counter()
+        data = odds_client.get_la_liga_moneyline_1x2(team_name)
+        logger.info(
+            "La Liga moneyline cache miss for %s fetched in %.2fs",
+            team_name,
+            time.perf_counter() - started,
+        )
+
+    _la_liga_moneyline_cache[team_key] = {
+        "data": data,
+        "expires": datetime.utcnow() + _LA_LIGA_MONEYLINE_TTL,
+    }
+    return data
+
+
+def _build_la_liga_next_fixture_data(team_name: str, upcoming_fixture: Optional[Dict[str, Any]], moneyline_data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not upcoming_fixture:
+        return None
+
+    books = moneyline_data.get("books") if moneyline_data and moneyline_data.get("books") else None
+    opponent = upcoming_fixture.get("opponent")
+    is_home = bool(upcoming_fixture.get("is_home"))
+    fixture_insight = (
+        _build_team_market_insight(team_name, opponent, is_home, moneyline_rows=books)
+        if books else None
+    )
+    return {
+        "opponent": opponent,
+        "is_home": is_home,
+        "match_time": upcoming_fixture.get("match_time"),
+        "clean_sheet_odds": None,
+        "win_probability": None,
+        "fixture_insight": fixture_insight,
+        "moneyline_1x2": books,
+    }
+
+
+def _get_la_liga_team_context_cached(team_name: str, count: int = 1) -> Dict[str, Any]:
+    global _la_liga_team_context_cache
+    team_key = _normalize_cache_key(team_name)
+    cache_key = f"{team_key}|{count}"
+    cache_entry = _la_liga_team_context_cache.get(cache_key)
+    if _cache_entry_is_fresh(cache_entry):
+        return cache_entry["data"] or {"upcoming_fixtures": [], "next_fixture_data": None}
+
+    upcoming = _get_la_liga_team_fixtures_cached(team_name, count=max(1, count))
+    moneyline_data = _get_la_liga_moneyline_cached(team_name)
+    next_fixture_data = _build_la_liga_next_fixture_data(
+        team_name,
+        upcoming[0] if upcoming else None,
+        moneyline_data,
+    )
+    payload = {
+        "upcoming_fixtures": upcoming,
+        "next_fixture_data": next_fixture_data,
+    }
+    _la_liga_team_context_cache[cache_key] = {
+        "data": payload,
+        "expires": datetime.utcnow() + _LA_LIGA_TEAM_CONTEXT_TTL,
+    }
+    return payload
+
+
 def get_upcoming_fixtures_la_liga(team_name: str, count: int = 5) -> List[Dict]:
-    """Get the next N La Liga fixtures for a team from football-data.org.
-
-    Returns same structure as get_upcoming_fixtures() so the frontend can
-    render them identically. Uses season=2025 (2025-26) and filters upcoming
-    in code since dateFrom param is not supported on the free tier.
-    """
+    """Get the next N La Liga fixtures for a team using the shared cached dataset."""
     try:
-        from src.data_loaders.api_client import FootballDataClient as MatchClient, LA_LIGA_ID
-        from datetime import datetime, timezone
-        client = MatchClient()
-        today = str(datetime.now(timezone.utc).date())
-        # Free tier doesn't support dateFrom — fetch full season and filter in code
-        season = datetime.now().year if datetime.now().month >= 8 else datetime.now().year - 1
-        data = client._get(f"competitions/{LA_LIGA_ID}/matches", {"season": season})
-        matches = data.get("matches", [])
-
-        team_norm = team_name.lower()
-
-        upcoming = []
-        for m in sorted(matches, key=lambda x: x.get("utcDate", "")):
-            if len(upcoming) >= count:
-                break
-            if m.get("status") not in ("SCHEDULED", "TIMED"):
-                continue
-            if (m.get("utcDate") or "") < today:
-                continue
-            home = client._normalize_la_liga_team(m.get("homeTeam", {}).get("shortName", m.get("homeTeam", {}).get("name", "")))
-            away = client._normalize_la_liga_team(m.get("awayTeam", {}).get("shortName", m.get("awayTeam", {}).get("name", "")))
-            if home.lower() == team_norm:
-                upcoming.append({
-                    "opponent": away,
-                    "is_home": True,
-                    "difficulty": 3,
-                    "match_time": m.get("utcDate"),
-                })
-            elif away.lower() == team_norm:
-                upcoming.append({
-                    "opponent": home,
-                    "is_home": False,
-                    "difficulty": 3,
-                    "match_time": m.get("utcDate"),
-                })
-        return upcoming
+        return _get_la_liga_team_fixtures_cached(team_name, count=count)
     except Exception as e:
         logger.warning(f"Failed to get La Liga upcoming fixtures for {team_name}: {e}")
         return []
@@ -3525,6 +3743,8 @@ def player_row_to_risk(row) -> PlayerRisk:
     total_days = int(prev_injuries * avg_severity) if prev_injuries > 0 else 0
     player_name = row.get("name", "Unknown")
     team = row.get("team", row.get("player_team", "Unknown"))
+    player_league = row.get("league", "Premier League")
+    is_la_liga = player_league == "La Liga"
 
     # Build enriched row with corrected injury fields + FPL stats
     # inference_df is now enriched at startup with real Transfermarkt data,
@@ -3544,8 +3764,7 @@ def player_row_to_risk(row) -> PlayerRisk:
 
     # Enrich with FPL stats — La Liga players are not in FPL so skip to avoid
     # matching La Liga players to wrong EPL entries (e.g. Fermín López → "H.Bueno")
-    player_league_check = row.get("league", "Premier League")
-    fpl_stats = get_fpl_stats_for_player(player_name, team_hint=team) if player_league_check != "La Liga" else None
+    fpl_stats = get_fpl_stats_for_player(player_name, team_hint=team) if not is_la_liga else None
     enriched_row["story_name"] = get_popular_player_name(player_name, fpl_stats)
     if fpl_stats:
         enriched_row.update({
@@ -3560,7 +3779,7 @@ def player_row_to_risk(row) -> PlayerRisk:
             "display_name": fpl_stats.get("name", ""),
             "popular_name": get_popular_player_name(player_name, fpl_stats),
         })
-    if _safe_int(enriched_row.get("shirt_number"), 0) <= 0:
+    if not is_la_liga and _safe_int(enriched_row.get("shirt_number"), 0) <= 0:
         enriched_row["shirt_number"] = _lookup_shirt_number(player_name, team_hint=team)
 
     # Compute within-league risk percentile for context (e.g. "higher risk than 92% of players")
@@ -3573,20 +3792,7 @@ def player_row_to_risk(row) -> PlayerRisk:
 
     player_league = enriched_row.get("league", "Premier League")
     if player_league == "La Liga":
-        _ll_upcoming = get_upcoming_fixtures_la_liga(team, count=1)
-        if _ll_upcoming:
-            _ll_ml = odds_client.get_la_liga_moneyline_1x2(team) if odds_client else None
-            next_fixture_data = {
-                "opponent": _ll_upcoming[0]["opponent"],
-                "is_home": _ll_upcoming[0]["is_home"],
-                "match_time": _ll_upcoming[0]["match_time"],
-                "clean_sheet_odds": None,
-                "win_probability": None,
-                "fixture_insight": None,
-                "moneyline_1x2": _ll_ml["books"] if _ll_ml and _ll_ml.get("books") else None,
-            }
-        else:
-            next_fixture_data = None
+        next_fixture_data = _get_la_liga_team_context_cached(team, count=1).get("next_fixture_data")
     else:
         next_fixture_data = get_next_fixture_for_team(team, prob)
     fixture_history_data = get_fixture_history_context(
@@ -3889,16 +4095,21 @@ def list_players(team: Optional[str] = None, risk_level: Optional[str] = None):
     for _, row in df.iterrows():
         prob = row.get("ensemble_prob", 0.5)
         name = row.get("name", "Unknown")
-        fpl = get_fpl_stats_for_player(name)
+        row_league = row.get("league", "Premier League")
+        is_la_liga = row_league == "La Liga"
+        fpl = None if is_la_liga else get_fpl_stats_for_player(name, team_hint=row.get("team", ""))
         minutes = fpl.get("minutes", 0) if fpl else 0
         fpl_status = fpl.get("status", "a") if fpl else "a"
-        row_league = row.get("league")
         display_prob = round(normalize_risk_score(prob, row_league) / 100, 3)
         players.append(PlayerSummary(
             name=name,
             team=row.get("team", "Unknown"),
             position=row.get("position", "Unknown"),
-            shirt_number=_resolve_shirt_number(name, fpl, row.get("team", "Unknown")),
+            shirt_number=(
+                _safe_int(row.get("shirt_number"), 0) or None
+                if is_la_liga
+                else _resolve_shirt_number(name, fpl, row.get("team", "Unknown"))
+            ),
             risk_level=get_risk_level(prob, row),
             risk_probability=display_prob,
             archetype=row.get("archetype", "Unknown"),
@@ -4080,6 +4291,7 @@ def get_predictions(team: str):
 @app.get("/api/players/{player_name}/risk", response_model=PlayerRisk)
 def get_player_risk(player_name: str):
     """Get detailed risk prediction for a specific player."""
+    started = time.perf_counter()
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
@@ -4087,6 +4299,11 @@ def get_player_risk(player_name: str):
     now = datetime.utcnow()
     cached = _player_risk_cache.get(cache_key)
     if cached and cached["expires"] > now:
+        logger.info(
+            "Player risk for %s served from cache in %.2fs",
+            player_name,
+            time.perf_counter() - started,
+        )
         return cached["data"]
 
     matches = inference_df[
@@ -4102,6 +4319,12 @@ def get_player_risk(player_name: str):
     row = matches.iloc[0].to_dict()
     result = player_row_to_risk(row)
     _player_risk_cache[cache_key] = {"data": result, "expires": now + _PLAYER_RISK_TTL}
+    logger.info(
+        "Player risk for %s (%s) built in %.2fs",
+        player_name,
+        row.get("league", "Unknown"),
+        time.perf_counter() - started,
+    )
     return result
 
 
@@ -4175,6 +4398,7 @@ def get_team_badges():
 @app.get("/api/teams/{team_name}/overview", response_model=TeamOverview)
 def get_team_overview(team_name: str):
     """Get risk overview for an entire team."""
+    started = time.perf_counter()
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
@@ -4186,6 +4410,9 @@ def get_team_overview(team_name: str):
 
     team_df = team_df.copy()
     team_df["risk_level"] = team_df.apply(lambda r: get_risk_level(r.get("ensemble_prob", 0.5), r), axis=1)
+    actual_team = team_df.iloc[0]["team"]
+    team_league = team_df.iloc[0].get("league", "Premier League")
+    is_la_liga = team_league == "La Liga"
 
     high_risk = len(team_df[team_df["risk_level"] == "High"])
     medium_risk = len(team_df[team_df["risk_level"] == "Medium"])
@@ -4197,7 +4424,7 @@ def get_team_overview(team_name: str):
     for _, row in team_df.iterrows():
         prob = row.get("ensemble_prob", 0.5)
         name = row.get("name", "Unknown")
-        fpl = get_fpl_stats_for_player(name)
+        fpl = None if is_la_liga else get_fpl_stats_for_player(name)
         minutes = fpl.get("minutes", 0) if fpl else 0
         fpl_status = fpl.get("status", "a") if fpl else "a"
         row_league = row.get("league")
@@ -4206,7 +4433,11 @@ def get_team_overview(team_name: str):
             name=name,
             team=row.get("team", "Unknown"),
             position=row.get("position", "Unknown"),
-            shirt_number=_resolve_shirt_number(name, fpl, row.get("team", "Unknown")),
+            shirt_number=(
+                _safe_int(row.get("shirt_number"), 0) or None
+                if is_la_liga
+                else _resolve_shirt_number(name, fpl, row.get("team", "Unknown"))
+            ),
             risk_level=get_risk_level(prob, row),
             risk_probability=display_prob,
             archetype=row.get("archetype", "Unknown"),
@@ -4219,40 +4450,13 @@ def get_team_overview(team_name: str):
             chance_of_playing=fpl.get("chance_of_playing") if fpl else None,
         ))
 
-    actual_team = team_df.iloc[0]["team"]
-
     # Get next fixture for the team
-    team_league = team_df.iloc[0].get("league", "Premier League")
-    if team_league == "La Liga":
-        # Build a minimal next_fixture from upcoming La Liga fixtures
-        _upcoming_ll = get_upcoming_fixtures_la_liga(actual_team, count=1)
-        if _upcoming_ll:
-            # Try to add moneyline from odds client using La Liga sport key
-            _ml_data = None
-            if odds_client:
-                _ml_result = odds_client.get_la_liga_moneyline_1x2(actual_team)
-                if _ml_result and _ml_result.get("books"):
-                    _ml_data = _ml_result["books"]
-            _opponent = _upcoming_ll[0]["opponent"]
-            _is_home = _upcoming_ll[0]["is_home"]
-            _fixture_insight = _build_team_market_insight(
-                actual_team, _opponent, _is_home, moneyline_rows=_ml_data
-            ) if _ml_data else None
-            next_fixture_data = {
-                "opponent": _opponent,
-                "is_home": _is_home,
-                "match_time": _upcoming_ll[0]["match_time"],
-                "clean_sheet_odds": None,
-                "win_probability": None,
-                "fixture_insight": _fixture_insight,
-                "moneyline_1x2": _ml_data,
-            }
-        else:
-            next_fixture_data = None
+    if is_la_liga:
+        next_fixture_data = _get_la_liga_team_context_cached(actual_team, count=1).get("next_fixture_data")
     else:
         next_fixture_data = get_next_fixture_for_team(actual_team, team_df["ensemble_prob"].mean())
 
-    return TeamOverview(
+    response = TeamOverview(
         team=actual_team,
         total_players=len(team_df),
         high_risk_count=high_risk,
@@ -4263,6 +4467,13 @@ def get_team_overview(team_name: str):
         team_badge_url=get_team_badge_url(actual_team),
         next_fixture=next_fixture_data,
     )
+    logger.info(
+        "Team overview for %s (%s) built in %.2fs",
+        actual_team,
+        team_league,
+        time.perf_counter() - started,
+    )
+    return response
 
 
 @app.get("/api/archetypes")
@@ -4318,31 +4529,13 @@ def get_league_standings():
 @app.get("/api/la-liga/standings")
 def get_la_liga_standings():
     """Get current La Liga standings from football-data.org."""
+    started = time.perf_counter()
     try:
-        from src.data_loaders.api_client import FootballDataClient as MatchHistoryApiClient, LA_LIGA_ID
-        client = MatchHistoryApiClient()
-        data = client._get(f"competitions/{LA_LIGA_ID}/standings")
-        table = data.get("standings", [{}])[0].get("table", [])
-        rows = []
-        for row in table:
-            team = row.get("team", {})
-            rows.append({
-                "position": row.get("position"),
-                "name": client._normalize_la_liga_team(team.get("shortName", team.get("name", ""))),
-                "full_name": team.get("name", ""),
-                "badge_url": LA_LIGA_BADGE_MAP.get(
-                    client._normalize_la_liga_team(team.get("shortName", "")).lower()
-                ),
-                "played": row.get("playedGames", 0),
-                "won": row.get("won", 0),
-                "draw": row.get("draw", 0),
-                "lost": row.get("lost", 0),
-                "goals_for": row.get("goalsFor", 0),
-                "goals_against": row.get("goalsAgainst", 0),
-                "goal_difference": row.get("goalDifference", 0),
-                "points": row.get("points", 0),
-                "form": row.get("form"),
-            })
+        rows = _get_la_liga_standings_cached()
+        logger.info(
+            "La Liga standings served in %.2fs",
+            time.perf_counter() - started,
+        )
         return rows
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"La Liga standings unavailable: {str(e)}")
