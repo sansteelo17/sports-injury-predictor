@@ -80,22 +80,38 @@ export default function Home() {
     setTeamOverview(null);
     setSelectedPlayer(null);
     setPlayerRisk(null);
+    setStandings(null);
+    setLaLigaStandings([]);
     getTeams(league)
       .then(setTeams)
       .catch(() => setError("Failed to load teams. Is the API running?"));
   }, [league]);
 
-  // Load FPL data and badges on mount
+  // Load FPL data only when EPL/FPL-specific context is active.
   useEffect(() => {
+    const needsFplInsights = league === "Premier League" || mode === "squad";
+    if (!needsFplInsights || fplInsights) return;
 
     getFPLInsights()
       .then(setFplInsights)
       .catch(() => console.log("FPL insights unavailable"));
+  }, [league, mode, fplInsights]);
 
+  // Team badges are league-agnostic and cheap enough to load once.
+  useEffect(() => {
     getTeamBadges()
       .then(setTeamBadges)
       .catch(() => console.log("Team badges unavailable"));
   }, []);
+
+  // Load La Liga standings once per league switch, not on every team click.
+  useEffect(() => {
+    if (league !== "La Liga") return;
+
+    getLaLigaStandings()
+      .then(setLaLigaStandings)
+      .catch(() => console.log("La Liga standings unavailable"));
+  }, [league]);
 
   const handleLeagueSwitch = (l: "Premier League" | "La Liga") => {
     if (l !== league) {
@@ -120,14 +136,13 @@ export default function Home() {
     const isLaLiga = league === "La Liga";
 
     const standingsPromise = isLaLiga
-      ? getLaLigaStandings().catch(() => null)
+      ? Promise.resolve(null)
       : getStandingsSummary(selectedTeam).catch(() => null);
 
     Promise.all([getTeamOverview(selectedTeam), standingsPromise])
       .then(([teamData, standingsData]) => {
         setTeamOverview(teamData);
         if (isLaLiga) {
-          setLaLigaStandings((standingsData as LaLigaStandingRow[] | null) ?? []);
           setStandings(null);
         } else {
           setStandings(standingsData as StandingsSummary | null);
@@ -138,7 +153,7 @@ export default function Home() {
       })
       .catch(() => setError("Failed to load team data"))
       .finally(() => setLoading(false));
-  }, [selectedTeam]);
+  }, [selectedTeam, league]);
 
   // Load player risk when player selected
   useEffect(() => {
