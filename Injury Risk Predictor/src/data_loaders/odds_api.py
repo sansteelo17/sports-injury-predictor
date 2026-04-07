@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import os
 import re
+import unicodedata
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -59,6 +60,69 @@ MARKETS = {
 
 class OddsClient:
     """Client for fetching betting odds from external APIs."""
+
+    _LA_LIGA_TEAM_ALIASES = {
+        "real madrid cf": "real madrid",
+        "real madrid": "real madrid",
+        "fc barcelona": "barcelona",
+        "barcelona": "barcelona",
+        "barca": "barcelona",
+        "club atletico de madrid": "atletico madrid",
+        "atletico de madrid": "atletico madrid",
+        "atletico madrid": "atletico madrid",
+        "atletico": "atletico madrid",
+        "atleti": "atletico madrid",
+        "athletic club de bilbao": "athletic club",
+        "athletic bilbao": "athletic club",
+        "athletic club": "athletic club",
+        "athletic": "athletic club",
+        "real sociedad de futbol": "real sociedad",
+        "real sociedad": "real sociedad",
+        "real betis balompie": "real betis",
+        "real betis": "real betis",
+        "betis": "real betis",
+        "rc celta de vigo": "celta vigo",
+        "celta de vigo": "celta vigo",
+        "celta vigo": "celta vigo",
+        "celta": "celta vigo",
+        "deportivo alaves": "alaves",
+        "alaves": "alaves",
+        "cd leganes": "leganes",
+        "leganes": "leganes",
+        "rayo vallecano de madrid": "rayo vallecano",
+        "rayo vallecano": "rayo vallecano",
+        "rayo": "rayo vallecano",
+        "rcd espanyol de barcelona": "espanyol",
+        "espanyol": "espanyol",
+        "ud almeria": "almeria",
+        "almeria": "almeria",
+        "cadiz cf": "cadiz",
+        "cadiz": "cadiz",
+        "sevilla fc": "sevilla",
+        "sevilla": "sevilla",
+        "valencia cf": "valencia",
+        "valencia": "valencia",
+        "villarreal cf": "villarreal",
+        "villarreal": "villarreal",
+        "ca osasuna": "osasuna",
+        "osasuna": "osasuna",
+        "ud las palmas": "las palmas",
+        "las palmas": "las palmas",
+        "girona fc": "girona",
+        "girona": "girona",
+        "rcd mallorca": "mallorca",
+        "mallorca": "mallorca",
+        "real valladolid cf": "valladolid",
+        "valladolid": "valladolid",
+        "getafe cf": "getafe",
+        "getafe": "getafe",
+        "granada cf": "granada",
+        "granada": "granada",
+        "elche cf": "elche",
+        "elche": "elche",
+        "levante ud": "levante",
+        "levante": "levante",
+    }
 
     def __init__(self, api_key: Optional[str] = None):
         """
@@ -706,6 +770,26 @@ class OddsClient:
         return (raw_name or "Unknown").strip() or "Unknown"
 
     @staticmethod
+    def _strip_accents(text: str) -> str:
+        return "".join(
+            char for char in unicodedata.normalize("NFD", text or "")
+            if unicodedata.category(char) != "Mn"
+        )
+
+    def _normalize_team_key(self, team_name: str) -> str:
+        normalized = self._strip_accents((team_name or "").lower())
+        normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        return self._LA_LIGA_TEAM_ALIASES.get(normalized, normalized)
+
+    def _match_team_in_text(self, team_name: str, text: str) -> bool:
+        team_key = self._normalize_team_key(team_name)
+        text_key = self._normalize_team_key(text)
+        if not team_key or not text_key:
+            return False
+        return team_key == text_key or team_key in text_key or text_key in team_key
+
+    @staticmethod
     def _american_to_decimal_str(price) -> Optional[str]:
         """Convert American odds (or decimal passthrough) to decimal odds string."""
         if price is None:
@@ -752,13 +836,14 @@ class OddsClient:
             away_price = None
             draw_price = None
             for outcome in h2h_market.get("outcomes", []):
-                name = outcome.get("name", "").lower()
+                outcome_name = outcome.get("name", "")
+                name = outcome_name.lower()
                 price = outcome.get("price")
                 if not name:
                     continue
-                if home_team.lower() in name:
+                if self._match_team_in_text(home_team, outcome_name):
                     home_price = self._american_to_decimal_str(price)
-                elif away_team.lower() in name:
+                elif self._match_team_in_text(away_team, outcome_name):
                     away_price = self._american_to_decimal_str(price)
                 elif "draw" in name:
                     draw_price = self._american_to_decimal_str(price)
@@ -795,14 +880,13 @@ class OddsClient:
             return None
         home_team = match.get("home_team", "")
         away_team = match.get("away_team", "")
-        team_lower = (team_name or "").lower()
         books = self._extract_match_moneyline_books(match)
         if not books:
             return None
         return {
             "home_team": home_team,
             "away_team": away_team,
-            "is_home": team_lower in home_team.lower(),
+            "is_home": self._match_team_in_text(team_name, home_team),
             "books": books,
         }
 
@@ -896,22 +980,19 @@ class OddsClient:
             logger.error(f"Failed to fetch La Liga odds: {e}")
             return None
 
-        team_lower = team_name.lower()
-        la_liga_aliases = {
-            "atletico madrid": "atletico",
-            "athletic club": "athletic",
-            "rayo vallecano": "rayo",
-            "celta vigo": "celta",
-            "real betis": "betis",
-            "real sociedad": "sociedad",
-            "real madrid": "real madrid",
-        }
-        search_term = la_liga_aliases.get(team_lower, team_lower)
+        team_key = self._normalize_team_key(team_name)
         matched = None
         for m in matches:
-            home = m.get("home_team", "").lower()
-            away = m.get("away_team", "").lower()
-            if search_term in home or search_term in away or team_lower in home or team_lower in away:
+            home = m.get("home_team", "")
+            away = m.get("away_team", "")
+            home_key = self._normalize_team_key(home)
+            away_key = self._normalize_team_key(away)
+            if (
+                team_key == home_key
+                or team_key == away_key
+                or self._match_team_in_text(team_name, home)
+                or self._match_team_in_text(team_name, away)
+            ):
                 matched = m
                 break
         if not matched:
