@@ -53,24 +53,24 @@ export function PlayerList({ players, onSelectPlayer, selectedPlayer, darkMode =
                 : 'bg-white hover:bg-gray-50 border-2 border-transparent hover:border-emerald-300'
           }`}
         >
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2.5 min-w-0">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-2.5 min-w-0 flex-1">
               <PlayerImage url={player.player_image_url} name={player.name} darkMode={darkMode} />
-              <div className="min-w-0">
-                <div className={`font-medium text-sm truncate flex items-center gap-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  {player.name}
+              <div className="min-w-0 flex-1">
+                <div className={`font-medium text-sm leading-tight flex items-start gap-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                  <span className="min-w-0 flex-1 break-words sm:truncate">{player.name}</span>
                   {player.is_currently_injured && (
-                    <Cross size={10} className="text-red-400 flex-shrink-0" />
+                    <Cross size={10} className="text-red-400 flex-shrink-0 mt-0.5" />
                   )}
                 </div>
-                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                <div className={`text-xs mt-0.5 leading-tight break-words ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
                   {player.position}
                   {player.shirt_number != null ? ` \u00B7 #${player.shirt_number}` : ''}
                   {player.minutes_played > 0 ? ` \u00B7 ${player.minutes_played}'` : ''}
                 </div>
               </div>
             </div>
-            <div className="text-right flex-shrink-0">
+            <div className="text-right flex-shrink-0 pt-0.5">
               {player.is_currently_injured ? (
                 <>
                   <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${

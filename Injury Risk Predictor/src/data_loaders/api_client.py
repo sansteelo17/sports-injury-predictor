@@ -345,28 +345,39 @@ class FootballDataClient:
         }
         return name_map.get(name, name)
 
-    def get_team_squad(self, team_name: str) -> pd.DataFrame:
+    def get_team_squad(
+        self,
+        team_name: str,
+        competition_id: str = PREMIER_LEAGUE_ID,
+        season: Optional[int] = None,
+    ) -> pd.DataFrame:
         """
-        Fetch current squad for a team.
+        Fetch current squad for a team in a given competition.
 
         Args:
             team_name: Team name (e.g., "Arsenal", "Manchester United")
+            competition_id: Competition code, e.g. "PL" or "PD"
+            season: Optional season year for competitions endpoint
 
         Returns:
             DataFrame with player info: name, position, dateOfBirth, nationality, shirt_number
         """
         # First get team ID
-        teams_data = self._get(f"competitions/{PREMIER_LEAGUE_ID}/teams")
+        params = {"season": season} if season else None
+        teams_data = self._get(f"competitions/{competition_id}/teams", params)
         teams = teams_data.get("teams", [])
 
         team_id = None
         for t in teams:
-            if team_name.lower() in t["name"].lower() or team_name.lower() in t["shortName"].lower():
+            team_name_norm = self._normalize_la_liga_team(team_name) if competition_id == LA_LIGA_ID else team_name
+            candidate_name = self._normalize_la_liga_team(t["name"]) if competition_id == LA_LIGA_ID else t["name"]
+            candidate_short = self._normalize_la_liga_team(t["shortName"]) if competition_id == LA_LIGA_ID else t["shortName"]
+            if team_name_norm.lower() in candidate_name.lower() or team_name_norm.lower() in candidate_short.lower():
                 team_id = t["id"]
                 break
 
         if not team_id:
-            raise ValueError(f"Team '{team_name}' not found in Premier League")
+            raise ValueError(f"Team '{team_name}' not found in competition {competition_id}")
 
         # Get squad
         team_data = self._get(f"teams/{team_id}")

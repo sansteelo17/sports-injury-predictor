@@ -21,9 +21,7 @@ import {
   User,
   Users,
   Zap,
-  Share2,
 } from "lucide-react";
-import { ShareCard } from "./ShareCard";
 import { toAbsoluteApiUrl } from "@/lib/api";
 
 interface PlayerCardProps {
@@ -123,7 +121,6 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
   ];
   type TabId = (typeof tabs)[number]["id"];
   const [activeTab, setActiveTab] = useState<TabId>("overview");
-  const [showShare, setShowShare] = useState(false);
 
   return (
     <div
@@ -152,24 +149,26 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
             />
           )}
           <div className="flex-1 min-w-0">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <h2
-                  className={`text-xl sm:text-2xl font-bold truncate flex items-center gap-2 ${darkMode ? "text-white" : ""}`}
-                >
-                  {player.name}
+            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-start gap-2">
+                  <h2
+                    className={`min-w-0 flex-1 text-xl sm:text-2xl font-bold leading-tight ${darkMode ? "text-white" : ""}`}
+                  >
+                    <span className="block break-words sm:truncate">{player.name}</span>
+                  </h2>
                   {player.is_currently_injured && (
                     <span
-                      className="inline-flex items-center justify-center h-5 w-5 rounded-full bg-red-500/20 text-red-400 border border-red-500/30 flex-shrink-0"
+                      className="mt-0.5 inline-flex items-center justify-center h-5 w-5 rounded-full bg-red-500/20 text-red-400 border border-red-500/30 flex-shrink-0"
                       title="Injured"
                       aria-label="Injured"
                     >
                       <Ambulance size={12} />
                     </span>
                   )}
-                </h2>
+                </div>
                 <div
-                  className={`flex items-center gap-2 mt-1 flex-wrap ${darkMode ? "text-gray-400" : "text-emerald-100"}`}
+                  className={`flex items-center gap-x-2 gap-y-1 mt-1.5 flex-wrap ${darkMode ? "text-gray-400" : "text-emerald-100"}`}
                 >
                   {player.team_badge_url && (
                     <img
@@ -191,18 +190,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                   <span className="text-sm">Age {player.age}</span>
                 </div>
               </div>
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <button
-                  onClick={() => setShowShare(true)}
-                  className={`p-2 rounded-lg transition-colors ${
-                    darkMode
-                      ? "hover:bg-white/10 text-gray-400 hover:text-white"
-                      : "hover:bg-gray-100 text-gray-500 hover:text-gray-800"
-                  }`}
-                  title="Share card"
-                >
-                  <Share2 size={16} />
-                </button>
+              <div className="flex items-center justify-end gap-2 w-full sm:w-auto flex-shrink-0">
                 {player.is_currently_injured ? (
                   <span className={`inline-block px-3 py-1 rounded-lg text-sm font-bold ${
                     darkMode ? 'bg-red-900/40 text-red-400 border border-red-500/30' : 'bg-red-100 text-red-600 border border-red-200'
@@ -1049,13 +1037,6 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
         </>
       )}
 
-      {showShare && (
-        <ShareCard
-          player={player}
-          darkMode={darkMode}
-          onClose={() => setShowShare(false)}
-        />
-      )}
     </div>
   );
 }

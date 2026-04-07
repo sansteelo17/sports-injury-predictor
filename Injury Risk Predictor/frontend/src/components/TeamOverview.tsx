@@ -213,7 +213,7 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
               <div className={`text-xs font-medium ${darkMode ? 'text-cyan-300' : 'text-cyan-700'}`}>
                 Next Match
               </div>
-              <div className={`text-sm font-bold truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              <div className={`text-sm font-bold leading-tight break-words sm:truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                 {team.next_fixture.is_home
                   ? `vs ${team.next_fixture.opponent} (H)`
                   : `@ ${team.next_fixture.opponent} (A)`}

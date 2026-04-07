@@ -61,6 +61,21 @@ function riskDot(player: FPLSquadPlayer, darkMode: boolean): string {
   return darkMode ? 'bg-[#86efac]' : 'bg-emerald-500';
 }
 
+function compactPitchName(name: string): string {
+  const clean = name.trim();
+  const parts = clean.split(/\s+/).filter(Boolean);
+
+  if (clean.length <= 12 || parts.length <= 1) return clean;
+
+  const last = parts[parts.length - 1];
+  if (last.length <= 12) return last;
+
+  const first = parts[0];
+  if (first.length <= 12) return first;
+
+  return `${first.slice(0, 10)}.`;
+}
+
 /* ─── List view player row (numbered) ─── */
 
 function SquadPlayerRow({ player, index, onSelect, isSelected, darkMode }: {
@@ -84,8 +99,8 @@ function SquadPlayerRow({ player, index, onSelect, isSelected, darkMode }: {
             : 'bg-white hover:bg-gray-50 border-2 border-transparent hover:border-emerald-300'
       } ${isBench ? 'opacity-60' : ''}`}
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2.5 min-w-0">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2.5 min-w-0 flex-1">
           {/* Number */}
           <span className={`text-xs font-mono w-5 text-center flex-shrink-0 ${
             darkMode ? 'text-gray-600' : 'text-gray-400'
@@ -93,19 +108,19 @@ function SquadPlayerRow({ player, index, onSelect, isSelected, darkMode }: {
             {index}
           </span>
           <PlayerImage url={player.player_image_url} name={player.name} darkMode={darkMode} />
-          <div className="min-w-0">
-            <div className={`font-medium text-sm truncate flex items-center gap-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              {player.name}
+          <div className="min-w-0 flex-1">
+            <div className={`font-medium text-sm leading-tight flex items-start gap-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              <span className="min-w-0 flex-1 break-words sm:truncate">{player.name}</span>
               {player.is_captain && <CaptainBadge type="C" darkMode={darkMode} />}
               {player.is_vice_captain && <CaptainBadge type="V" darkMode={darkMode} />}
             </div>
-            <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+            <div className={`text-xs mt-0.5 leading-tight break-words ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
               {player.position} · {player.team}
               {player.shirt_number != null ? ` · #${player.shirt_number}` : ''}
             </div>
           </div>
         </div>
-        <div className="text-right flex-shrink-0">
+        <div className="text-right flex-shrink-0 pt-0.5">
           {player.is_currently_injured ? (
             <>
               <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
@@ -169,11 +184,14 @@ function PitchPlayer({ player, onSelect, isSelected, darkMode }: {
         )}
       </div>
       {/* Name + risk */}
-      <div className="text-center max-w-[72px]">
-        <div className={`text-[10px] font-semibold leading-tight truncate ${
+      <div className="text-center max-w-[82px] sm:max-w-[72px]">
+        <div
+          className={`text-[10px] font-semibold leading-[1.05] whitespace-normal break-words ${
           darkMode ? 'text-white' : 'text-gray-900'
-        }`}>
-          {player.name}
+        }`}
+          title={player.name}
+        >
+          {compactPitchName(player.name)}
         </div>
         <div className="flex items-center justify-center gap-0.5 mt-0.5">
           <div className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
