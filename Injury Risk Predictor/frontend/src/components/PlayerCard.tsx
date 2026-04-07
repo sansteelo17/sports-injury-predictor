@@ -190,7 +190,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                   <span className="text-sm">Age {player.age}</span>
                 </div>
               </div>
-              <div className="flex items-center justify-end gap-2 w-full sm:w-auto flex-shrink-0">
+              <div className="flex items-center justify-start sm:justify-end gap-2 w-full sm:w-auto flex-shrink-0">
                 {player.is_currently_injured ? (
                   <span className={`inline-block px-3 py-1 rounded-lg text-sm font-bold ${
                     darkMode ? 'bg-red-900/40 text-red-400 border border-red-500/30' : 'bg-red-100 text-red-600 border border-red-200'
