@@ -75,6 +75,7 @@ export interface CleanSheetOdds {
   american: string;
   decimal: number;
   availability_factor: number;
+  analysis?: string | null;
 }
 
 export interface NextFixture {

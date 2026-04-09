@@ -21,8 +21,12 @@ def clean_stats_df(df: pd.DataFrame) -> pd.DataFrame:
     # Standardize columns
     df.columns = df.columns.str.lower().str.strip()
 
-    # Filter Premier League rows
-    df = df[df["league"].str.lower().str.contains("premier", na=False)].copy()
+    # Keep the leagues we actively model today
+    league_key = df["league"].astype(str).str.lower()
+    df = df[league_key.str.contains("premier|la liga", na=False)].copy()
+    df.loc[:, "league"] = df["league"].astype(str).map(
+        lambda value: "La Liga" if "la liga" in value.lower() else "Premier League"
+    )
 
     # Normalize strings safely using .loc
     df.loc[:, "player_name"] = (
@@ -41,5 +45,11 @@ def clean_stats_df(df: pd.DataFrame) -> pd.DataFrame:
     df = normalize_team_column(df, "squad")
 
     df = df.rename(columns={"squad": "player_team"})
+
+    # A tiny number of historical rows are duplicated in the source dump.
+    # Keep the richest season row so downstream merges stay many-to-one.
+    if "min" in df.columns:
+        df = df.sort_values("min", ascending=False)
+    df = df.drop_duplicates(subset=["player_name", "player_team", "season_year"], keep="first")
 
     return df

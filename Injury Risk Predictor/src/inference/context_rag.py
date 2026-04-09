@@ -989,6 +989,56 @@ def build_player_context_chunks(
         _add_chunk(chunks, "opponent_defense", opp_text,
             ["opponent", "defense", "conceded", "fixture"], 2.7)
 
+    team_form = matchup.get("team_form") or {}
+    if team_form.get("samples", 0):
+        tf_samp = _safe_int(team_form.get("samples", 0))
+        tf_points = _safe_int(team_form.get("points_last5", 0))
+        tf_gf = _safe_int(team_form.get("goals_for_last5", 0))
+        tf_ga = _safe_int(team_form.get("goals_against_last5", 0))
+        team_display = _display_team_name(extra_context.get("team_name") or player_data.get("team", "Team"))
+        team_form_text = (
+            f"{team_display} have taken {tf_points} points from the last {tf_samp}, scoring {tf_gf} and conceding {tf_ga}."
+        )
+        _add_chunk(
+            chunks,
+            "team_form",
+            team_form_text,
+            ["team", "form", "points", "fixture", "momentum"],
+            2.45,
+        )
+
+    opponent_form = matchup.get("opponent_form") or {}
+    if opponent_form.get("samples", 0):
+        of_samp = _safe_int(opponent_form.get("samples", 0))
+        of_points = _safe_int(opponent_form.get("points_last5", 0))
+        of_gf = _safe_int(opponent_form.get("goals_for_last5", 0))
+        of_ga = _safe_int(opponent_form.get("goals_against_last5", 0))
+        opp_display = matchup_opponent_display or "Opponent"
+        opponent_form_text = (
+            f"{opp_display} come in with {of_points} points from the last {of_samp}, scoring {of_gf} and conceding {of_ga}."
+        )
+        _add_chunk(
+            chunks,
+            "opponent_form",
+            opponent_form_text,
+            ["opponent", "form", "strength", "fixture", "momentum"],
+            2.4,
+        )
+
+    fixture_edge_score = _safe_float(matchup.get("fixture_edge_score", 0.0), 0.0)
+    if abs(fixture_edge_score) >= 0.35 and matchup_opponent_display:
+        if fixture_edge_score > 0:
+            edge_text = f"Recent form and fixture history both tilt toward {call_name}'s side against {matchup_opponent_display}."
+        else:
+            edge_text = f"Recent form and fixture history both make {matchup_opponent_display} a tougher spot than it looks."
+        _add_chunk(
+            chunks,
+            "fixture_edge",
+            edge_text,
+            ["fixture", "h2h", "momentum", "opponent", "strength"],
+            2.55,
+        )
+
     # Match density chunk
     matches_7 = _safe_int(player_data.get("matches_last_7", 0))
     matches_30 = _safe_int(player_data.get("matches_last_30", 0))
@@ -1280,6 +1330,9 @@ SECTION_RAG_PRIORITIES = {
         "importance_summary",
         "recent_form",
         "defensive_form",
+        "team_form",
+        "opponent_form",
+        "fixture_edge",
         "fixture_history",
         "fixture_history_all_time",
         "fixture_latest",
@@ -1293,6 +1346,9 @@ SECTION_RAG_PRIORITIES = {
     "scoring": [
         "importance_summary",
         "recent_form",
+        "team_form",
+        "opponent_form",
+        "fixture_edge",
         "opponent_defense",
         "vs_opponent",
         "fixture",
@@ -1308,6 +1364,9 @@ SECTION_RAG_PRIORITIES = {
         "importance_exposure",
         "recent_form",
         "defensive_form",
+        "team_form",
+        "opponent_form",
+        "fixture_edge",
         "vs_opponent",
         "output",
         "fixture",

@@ -18,6 +18,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import json
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -28,7 +29,12 @@ from ..utils.logger import get_logger
 logger = get_logger(__name__)
 
 # Configuration
-BASE_URL = "https://www.transfermarkt.com"
+BASE_URL_CANDIDATES = [
+    "https://www.transfermarkt.co.uk",
+    "https://www.transfermarkt.com",
+    "https://www.transfermarkt.us",
+]
+BASE_URL = BASE_URL_CANDIDATES[0]
 RATE_LIMIT_DELAY = 3.0  # seconds between requests
 CACHE_DIR = Path(__file__).parent.parent.parent / "data" / "cache" / "transfermarkt"
 
@@ -51,12 +57,13 @@ class TransfermarktScraper:
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Language": "en-GB,en;q=0.9,en-US;q=0.8",
             "Accept-Encoding": "gzip, deflate, br",
             "Connection": "keep-alive",
         })
         self._last_request_time = 0
         self.cache_hours = cache_hours
+        self.base_urls = list(BASE_URL_CANDIDATES)
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     def _rate_limit(self):
@@ -66,9 +73,19 @@ class TransfermarktScraper:
             time.sleep(RATE_LIMIT_DELAY - elapsed)
         self._last_request_time = time.time()
 
-    def _cache_key(self, url: str) -> Path:
-        """Generate cache file path for a URL."""
-        url_hash = hashlib.md5(url.encode()).hexdigest()[:16]
+    def _cache_key(self, url_or_path: str) -> Path:
+        """Generate cache file path for a URL/path.
+
+        Uses path + query so cached pages can be reused across Transfermarkt domains.
+        """
+        cache_source = url_or_path
+        if url_or_path.startswith("http"):
+            parsed = urlparse(url_or_path)
+            cache_source = parsed.path or "/"
+            if parsed.query:
+                cache_source = f"{cache_source}?{parsed.query}"
+
+        url_hash = hashlib.md5(cache_source.encode()).hexdigest()[:16]
         return CACHE_DIR / f"{url_hash}.html"
 
     def _get_cached(self, url: str) -> Optional[str]:
@@ -85,24 +102,44 @@ class TransfermarktScraper:
         cache_file = self._cache_key(url)
         cache_file.write_text(content, encoding="utf-8")
 
-    def _fetch(self, url: str) -> str:
-        """Fetch URL with caching and rate limiting."""
-        cached = self._get_cached(url)
+    def _candidate_urls(self, url_or_path: str) -> List[str]:
+        """Return one or more full URLs to try for a given path."""
+        if url_or_path.startswith("http://") or url_or_path.startswith("https://"):
+            return [url_or_path]
+        path = url_or_path if url_or_path.startswith("/") else f"/{url_or_path}"
+        return [f"{base}{path}" for base in self.base_urls]
+
+    def _fetch(self, url_or_path: str) -> str:
+        """Fetch URL/path with caching, rate limiting, and domain fallback."""
+        cached = self._get_cached(url_or_path)
         if cached:
-            logger.debug(f"Cache hit: {url}")
+            logger.debug(f"Cache hit: {url_or_path}")
             return cached
 
         self._rate_limit()
-        logger.debug(f"Fetching: {url}")
+        last_error: Optional[Exception] = None
 
-        try:
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
-            self._save_cache(url, response.text)
-            return response.text
-        except requests.RequestException as e:
-            logger.warning(f"Failed to fetch {url}: {e}")
-            raise
+        for url in self._candidate_urls(url_or_path):
+            logger.debug(f"Fetching: {url}")
+            try:
+                parsed = urlparse(url)
+                response = self.session.get(
+                    url,
+                    timeout=30,
+                    headers={"Referer": f"{parsed.scheme}://{parsed.netloc}/"},
+                )
+                response.raise_for_status()
+                self._save_cache(url_or_path, response.text)
+                return response.text
+            except requests.RequestException as e:
+                last_error = e
+                logger.debug(f"Failed candidate {url}: {e}")
+                continue
+
+        logger.warning(f"Failed to fetch {url_or_path}: {last_error}")
+        if last_error:
+            raise last_error
+        raise RuntimeError(f"Failed to fetch {url_or_path}")
 
     def search_player(self, name: str, team_hint: Optional[str] = None) -> Optional[Dict]:
         """
@@ -111,7 +148,7 @@ class TransfermarktScraper:
         Returns:
             Dict with 'name', 'slug', 'player_id', 'team' or None if not found
         """
-        search_url = f"{BASE_URL}/schnellsuche/ergebnis/schnellsuche?query={name.replace(' ', '+')}"
+        search_url = f"/schnellsuche/ergebnis/schnellsuche?query={name.replace(' ', '+')}"
 
         try:
             html = self._fetch(search_url)
@@ -176,7 +213,7 @@ class TransfermarktScraper:
         Returns:
             List of injury records with keys: injury, date, days_out, games_missed
         """
-        url = f"{BASE_URL}/{slug}/verletzungen/spieler/{player_id}"
+        url = f"/{slug}/verletzungen/spieler/{player_id}"
 
         try:
             html = self._fetch(url)
@@ -274,7 +311,7 @@ class TransfermarktScraper:
         Returns:
             Dict with: minutes_played, appearances, goals, assists
         """
-        url = f"{BASE_URL}/{slug}/leistungsdaten/spieler/{player_id}/saison/{season}/plus/1"
+        url = f"/{slug}/leistungsdaten/spieler/{player_id}/saison/{season}/plus/1"
 
         try:
             html = self._fetch(url)
@@ -361,7 +398,7 @@ class TransfermarktScraper:
         Returns:
             Float value in millions (e.g. 8.0 for €8.00m) or None.
         """
-        url = f"{BASE_URL}/{slug}/profil/spieler/{player_id}"
+        url = f"/{slug}/profil/spieler/{player_id}"
 
         try:
             html = self._fetch(url)
@@ -414,7 +451,7 @@ class TransfermarktScraper:
         Returns:
             List of player dicts with name, slug, player_id, position, age
         """
-        url = f"{BASE_URL}/{team_slug}/kader/verein/{team_id}/saison_id/2025/plus/1"
+        url = f"/{team_slug}/kader/verein/{team_id}/saison_id/2025/plus/1"
 
         try:
             html = self._fetch(url)
@@ -480,7 +517,7 @@ class TransfermarktScraper:
         Returns:
             Age as integer, or None if not found
         """
-        url = f"{BASE_URL}/{slug}/profil/spieler/{player_id}"
+        url = f"/{slug}/profil/spieler/{player_id}"
 
         try:
             html = self._fetch(url)
