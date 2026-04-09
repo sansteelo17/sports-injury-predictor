@@ -25,6 +25,7 @@ Get API key at: https://www.football-data.org/client/register
 import os
 import sys
 import argparse
+import unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -139,10 +140,280 @@ _TEAM_NAME_MAP = {
     "Nottingham": "Nottingham Forest",
 }
 
+_LA_LIGA_TEAM_KEY_MAP = {
+    "athletic": "athletic club",
+    "athletic bilbao": "athletic club",
+    "athletic club de bilbao": "athletic club",
+    "atleti": "atletico madrid",
+    "atletico": "atletico madrid",
+    "atletico de madrid": "atletico madrid",
+    "club atletico de madrid": "atletico madrid",
+    "barca": "barcelona",
+    "fc barcelona": "barcelona",
+    "real betis balompie": "real betis",
+    "betis": "real betis",
+    "real sociedad de futbol": "real sociedad",
+    "deportivo alaves": "alaves",
+    "alaves": "alaves",
+    "almeria": "almeria",
+    "ud almeria": "almeria",
+    "cd leganes": "leganes",
+    "leganes": "leganes",
+    "leganes cf": "leganes",
+    "espanyol": "espanyol",
+    "rcd espanyol de barcelona": "espanyol",
+    "rc celta de vigo": "celta vigo",
+    "celta": "celta vigo",
+    "sevilla fc": "sevilla",
+    "valencia cf": "valencia",
+    "villarreal cf": "villarreal",
+    "ca osasuna": "osasuna",
+    "getafe cf": "getafe",
+    "rayo vallecano de madrid": "rayo vallecano",
+    "mallorca": "mallorca",
+    "rcd mallorca": "mallorca",
+    "levante ud": "levante",
+    "cadiz cf": "cadiz",
+    "real madrid cf": "real madrid",
+}
+
+_PLAYER_NAME_CANONICAL_MAP = {
+    # La Liga / football-data common call-name mismatches
+    "gavi": "pablo gavira",
+    "pablo martin paez gavira": "pablo gavira",
+    "pablo martín páez gavira": "pablo gavira",
+    "alejandro balde": "alex balde",
+    "alex balde": "alex balde",
+    "pedro gonzalez lopez": "pedri",
+    "pedro gonzalez lópez": "pedri",
+    "pedri": "pedri",
+    # Common top-level aliases used across providers
+    "vinicius jose paixao de oliveira junior": "vinicius junior",
+    "vinicius jose passador de oliveira": "vinicius junior",
+    "vinicius jr": "vinicius junior",
+    "vinicius junior": "vinicius junior",
+    "martin odegaard": "martin odegaard",
+    "martin ødegaard": "martin odegaard",
+}
+
 
 def _normalize_match_team(team: str) -> str:
     """Map squad team name to match data team name."""
     return _TEAM_NAME_MAP.get(team, team)
+
+
+def _normalize_lookup_text(value: str) -> str:
+    """Fold accents/punctuation for cross-provider matching."""
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.lower()
+    text = "".join(ch if ch.isalnum() else " " for ch in text)
+    return " ".join(text.split())
+
+
+def _normalize_player_key(name: str) -> str:
+    return _normalize_lookup_text(name)
+
+
+def _canonical_player_key(name: str) -> str:
+    key = _normalize_player_key(name)
+    return _PLAYER_NAME_CANONICAL_MAP.get(key, key)
+
+
+def _normalize_team_key(team: str) -> str:
+    key = _normalize_lookup_text(team)
+    return _LA_LIGA_TEAM_KEY_MAP.get(key, key)
+
+
+def _register_minutes_payload(lookup: dict, name: str, payload: dict, team: str | None = None):
+    """Register a minutes payload under robust match keys."""
+    if not name:
+        return
+
+    payload = {
+        "ratio": payload.get("ratio"),
+        "minutes_played": int(payload.get("minutes_played", 0) or 0),
+        "appearances": int(payload.get("appearances", 0) or 0),
+        "source": str(payload.get("source", "unknown")),
+    }
+
+    normalized_name = _normalize_player_key(name)
+    canonical_name = _canonical_player_key(name)
+    normalized_team = _normalize_team_key(team) if team else ""
+
+    lookup[name] = payload
+    lookup[name.lower()] = payload
+    lookup[normalized_name] = payload
+    lookup[canonical_name] = payload
+    if team:
+        lookup[(normalized_name, normalized_team)] = payload
+        lookup[(canonical_name, normalized_team)] = payload
+
+    parts = normalized_name.split()
+    if parts:
+        lookup[parts[-1]] = payload
+
+
+def _lookup_minutes_payload(lookup: dict, player_name: str, team_name: str | None = None):
+    """Resolve the best minutes payload using team-aware keys first."""
+    normalized_name = _normalize_player_key(player_name)
+    canonical_name = _canonical_player_key(player_name)
+    normalized_team = _normalize_team_key(team_name) if team_name else ""
+
+    candidates = []
+    if normalized_team:
+        candidates.append((normalized_name, normalized_team))
+        candidates.append((canonical_name, normalized_team))
+    candidates.extend([
+        player_name,
+        player_name.lower(),
+        normalized_name,
+        canonical_name,
+    ])
+    parts = normalized_name.split()
+    if parts:
+        candidates.append(parts[-1])
+
+    for key in candidates:
+        if key in lookup:
+            return lookup[key]
+    return None
+
+
+def _register_signal_payload(lookup: dict, name: str, payload: dict, team: str | None = None):
+    if not name:
+        return
+
+    normalized_name = _normalize_player_key(name)
+    canonical_name = _canonical_player_key(name)
+    normalized_team = _normalize_team_key(team) if team else ""
+
+    keys = [name, name.lower(), normalized_name, canonical_name]
+    if normalized_team:
+        keys.extend([
+            (normalized_name, normalized_team),
+            (canonical_name, normalized_team),
+        ])
+    if normalized_name.split():
+        keys.append(normalized_name.split()[-1])
+
+    for key in keys:
+        lookup[key] = payload
+
+
+def _lookup_signal_payload(lookup: dict, player_name: str, team_name: str | None = None):
+    normalized_name = _normalize_player_key(player_name)
+    canonical_name = _canonical_player_key(player_name)
+    normalized_team = _normalize_team_key(team_name) if team_name else ""
+
+    candidates = []
+    if normalized_team:
+        candidates.extend([
+            (normalized_name, normalized_team),
+            (canonical_name, normalized_team),
+        ])
+    candidates.extend([player_name, player_name.lower(), normalized_name, canonical_name])
+    if normalized_name.split():
+        candidates.append(normalized_name.split()[-1])
+
+    for key in candidates:
+        if key in lookup:
+            return lookup[key]
+    return None
+
+
+def _register_injury_payload(lookup: dict, name: str, payload: dict):
+    """Register injury history under exact and canonicalized keys."""
+    if not name:
+        return
+    normalized_name = _normalize_player_key(name)
+    canonical_name = _canonical_player_key(name)
+    lookup[name] = payload
+    lookup[name.lower()] = payload
+    lookup[normalized_name] = payload
+    lookup[canonical_name] = payload
+
+
+def _lookup_injury_payload(lookup: dict, player_name: str):
+    """Resolve injury history using exact, normalized, and canonical keys."""
+    normalized_name = _normalize_player_key(player_name)
+    canonical_name = _canonical_player_key(player_name)
+    for key in (player_name, player_name.lower(), normalized_name, canonical_name):
+        if key in lookup:
+            return lookup[key]
+    return None
+
+
+def _count_minutes_matches(players_df: pd.DataFrame, lookup: dict) -> int:
+    matched = 0
+    for _, player in players_df[["name", "team"]].drop_duplicates().iterrows():
+        entry = _lookup_minutes_payload(lookup, str(player["name"]), str(player["team"]))
+        if entry and int(entry.get("minutes_played", 0) or 0) > 0:
+            matched += 1
+    return matched
+
+
+def _merge_minutes_lookup(base_lookup: dict, incoming_lookup: dict) -> dict:
+    """
+    Merge minutes lookups without letting stale fallback rows overwrite stronger data.
+
+    Priority rule:
+    - keep existing populated minutes if they are already present
+    - allow incoming to replace empty/zero-minute placeholders
+    """
+    merged = dict(base_lookup)
+    for key, payload in (incoming_lookup or {}).items():
+        existing = merged.get(key)
+        existing_minutes = int((existing or {}).get("minutes_played", 0) or 0)
+        incoming_minutes = int((payload or {}).get("minutes_played", 0) or 0)
+
+        if existing is None or existing_minutes <= 0 < incoming_minutes or existing_minutes <= 0:
+            merged[key] = payload
+    return merged
+
+
+def build_artifact_minutes_lookup(players_df, artifact_df, league_name: str):
+    """Seed minutes from the existing inference artifact when external sources miss."""
+    if not isinstance(artifact_df, pd.DataFrame) or artifact_df.empty:
+        return {}
+
+    artifact = artifact_df.copy()
+    if "league" in artifact.columns:
+        artifact = artifact[artifact["league"].fillna("") == league_name]
+    if artifact.empty:
+        return {}
+
+    wanted = {
+        (_normalize_player_key(str(row["name"])), _normalize_team_key(str(row["team"])))
+        for _, row in players_df[["name", "team"]].drop_duplicates().iterrows()
+    }
+
+    lookup = {}
+    matched = 0
+    for _, row in artifact.iterrows():
+        name = str(row.get("name", "")).strip()
+        team = str(row.get("team", "") or row.get("player_team", "")).strip()
+        key = (_normalize_player_key(name), _normalize_team_key(team))
+        if key not in wanted:
+            continue
+
+        minutes_played = int(row.get("minutes_played", 0) or 0)
+        appearances = int(row.get("appearances", 0) or 0)
+        if minutes_played <= 0 and appearances <= 0:
+            continue
+
+        payload = {
+            "ratio": row.get("playing_time_ratio"),
+            "minutes_played": minutes_played,
+            "appearances": appearances,
+            "source": "artifact",
+        }
+        _register_minutes_payload(lookup, name, payload, team=team)
+        matched += 1
+
+    if matched:
+        logger.info(f"Seeded {matched} {league_name} players from cached artifact minutes")
+    return lookup
 
 
 def compute_team_workload(matches_df, team, as_of_date):
@@ -242,7 +513,9 @@ def load_player_minutes_lookup():
     FPL provides actual minutes played this season for every PL player.
     Converts to a ratio: minutes / max_possible_minutes.
 
-    Returns a dict mapping player name -> playing time ratio (0-1).
+    Returns a dict mapping player name -> metadata dict with:
+    - ratio: playing time ratio (0-1)
+    - minutes_played: actual minutes played this season
     """
     try:
         from src.data_loaders.fpl_api import FPLClient
@@ -262,19 +535,433 @@ def load_player_minutes_lookup():
             else:
                 ratio = 0.5
 
+            payload = {
+                "ratio": ratio,
+                "minutes_played": minutes,
+                "appearances": p.get("minutes", 0) // 90 if minutes else 0,
+                "source": "fpl",
+            }
+
             # Index by multiple name formats for matching
             name = p.get("name", "")
             full_name = p.get("full_name", "")
+            team = p.get("team", "")
             if name:
-                lookup[name] = ratio
+                _register_minutes_payload(lookup, name, payload, team=team)
             if full_name:
-                lookup[full_name] = ratio
+                _register_minutes_payload(lookup, full_name, payload, team=team)
 
         logger.info(f"Loaded playing time ratios for {len(all_stats)} players from FPL API (GW{gw_num})")
         return lookup
     except Exception as e:
         logger.warning(f"Failed to load FPL minutes: {e}")
         return {}
+
+
+def load_fpl_live_signal_lookup():
+    """Load live EPL player stats that can proxy output and role importance."""
+    try:
+        from src.data_loaders.fpl_api import FPLClient
+        client = FPLClient()
+        all_stats = client.get_all_player_stats()
+        lookup = {}
+        for player in all_stats:
+            payload = {
+                "goals": int(player.get("goals", 0) or 0),
+                "assists": int(player.get("assists", 0) or 0),
+                "goals_per_90": float(player.get("goals_per_90", 0) or 0.0),
+                "assists_per_90": float(player.get("assists_per_90", 0) or 0.0),
+                "minutes": int(player.get("minutes", 0) or 0),
+                "price": float(player.get("price", 0) or 0.0),
+                "selected_by": float(player.get("selected_by", 0) or 0.0),
+                "points_per_game": float(player.get("points_per_game", 0) or 0.0),
+                "form": float(player.get("form", 0) or 0.0),
+            }
+            team = str(player.get("team", "")).strip()
+            for name_key in [player.get("name"), player.get("full_name")]:
+                if name_key:
+                    _register_signal_payload(lookup, str(name_key), payload, team=team)
+        logger.info("Loaded live FPL signal lookup for %s players", len(all_stats))
+        return lookup
+    except Exception as e:
+        logger.warning(f"Failed to load FPL live signal lookup: {e}")
+        return {}
+
+
+def load_laliga_public_signal_lookup(players_df):
+    """Load public La Liga player output signals for current-season projections."""
+    from src.data_loaders.laliga_public_stats import (
+        LaLigaPublicStatsLoader,
+        resolve_public_player_stats,
+    )
+
+    try:
+        stats_df = LaLigaPublicStatsLoader(cache_hours=6).load_stats(
+            fields=["minutes_played", "goals", "assists", "shots", "saves"]
+        )
+    except Exception as e:
+        logger.warning(f"Failed to load public La Liga signal lookup: {e}")
+        return {}
+
+    lookup = {}
+    for _, player in players_df[["name", "team"]].drop_duplicates().iterrows():
+        name = str(player.get("name", "")).strip()
+        team = str(player.get("team", "")).strip()
+        stats_row = resolve_public_player_stats(stats_df, name, team)
+        if not stats_row:
+            continue
+        payload = {
+            "goals": int(stats_row.get("goals", 0) or 0),
+            "assists": int(stats_row.get("assists", 0) or 0),
+            "goals_per_90": float(stats_row.get("goals_per_90", 0) or 0.0),
+            "assists_per_90": float(stats_row.get("assists_per_90", 0) or 0.0),
+            "shots_per_90": float(stats_row.get("shots_per_90", 0) or 0.0),
+            "saves_per_90": float(stats_row.get("saves_per_90", 0) or 0.0),
+            "minutes": int(stats_row.get("minutes_played", 0) or 0),
+        }
+        _register_signal_payload(lookup, name, payload, team=team)
+
+    logger.info("Loaded public La Liga signal lookup for %s players", len(lookup))
+    return lookup
+
+
+def load_api_football_minutes_lookup(players_df, season: int, league_name: str = "La Liga", league_id: int = 140):
+    """
+    Load season minutes from API-Football player statistics.
+
+    Uses a CSV cache to avoid paginating through the entire league every run.
+    """
+    import requests
+
+    api_key = os.environ.get("API_FOOTBALL_KEY", "").strip()
+    if not api_key:
+        logger.info(f"No API_FOOTBALL_KEY set - skipping {league_name} API-Football minutes")
+        return {}
+
+    cache_dir = Path(PROJECT_ROOT) / "data" / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = cache_dir / f"api_football_minutes_{league_name.lower().replace(' ', '_')}_{season}.csv"
+
+    def _read_cache():
+        if not cache_file.exists():
+            return {}
+        try:
+            cache_df = pd.read_csv(cache_file)
+        except Exception as e:
+            logger.warning(f"Failed to read API-Football minutes cache: {e}")
+            return {}
+
+        lookup = {}
+        for _, row in cache_df.iterrows():
+            payload = {
+                "minutes_played": int(row.get("minutes_played", 0) or 0),
+                "appearances": int(row.get("appearances", 0) or 0),
+                "source": str(row.get("source", "api-football-cache")),
+            }
+            _register_minutes_payload(
+                lookup,
+                str(row.get("name", "")).strip(),
+                payload,
+                team=str(row.get("team", "")).strip(),
+            )
+        return lookup
+
+    if cache_file.exists():
+        age_hours = (datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)).total_seconds() / 3600
+        if age_hours < 12:
+            cached_lookup = _read_cache()
+            if cached_lookup:
+                matched = _count_minutes_matches(players_df, cached_lookup)
+                print(f"   API-Football cache matched {matched}/{len(players_df)} {league_name} players")
+                return cached_lookup
+
+    print(f"   Loading {league_name} minutes from API-Football...")
+
+    session = requests.Session()
+    headers = {"x-apisports-key": api_key}
+    rows = []
+    page = 1
+    total_pages = 1
+
+    try:
+        while page <= total_pages:
+            resp = session.get(
+                "https://v3.football.api-sports.io/players",
+                params={"league": league_id, "season": season, "page": page},
+                headers=headers,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            errors = data.get("errors", {})
+            if errors:
+                logger.warning(f"API-Football player stats error for {league_name}: {errors}")
+                break
+
+            total_pages = int(data.get("paging", {}).get("total", page) or page)
+            response_rows = data.get("response", []) or []
+            if not response_rows:
+                break
+
+            for item in response_rows:
+                player = item.get("player", {}) or {}
+                name = str(player.get("name") or "").strip()
+                if not name:
+                    continue
+
+                total_minutes = 0
+                total_appearances = 0
+                primary_team = ""
+
+                for stat in item.get("statistics", []) or []:
+                    games = stat.get("games", {}) or {}
+                    minutes = games.get("minutes")
+                    appearances = games.get("appearences", games.get("appearances"))
+                    team_name = str((stat.get("team", {}) or {}).get("name") or "").strip()
+
+                    try:
+                        total_minutes += int(minutes or 0)
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        total_appearances += int(appearances or 0)
+                    except (TypeError, ValueError):
+                        pass
+
+                    if team_name and not primary_team:
+                        primary_team = team_name
+
+                if total_minutes <= 0 and total_appearances <= 0:
+                    continue
+
+                rows.append({
+                    "name": name,
+                    "team": primary_team,
+                    "minutes_played": total_minutes,
+                    "appearances": total_appearances,
+                    "source": "api-football",
+                })
+
+            page += 1
+    except Exception as e:
+        logger.warning(f"Failed to fetch {league_name} minutes from API-Football: {e}")
+
+    if not rows:
+        cached_lookup = _read_cache()
+        if cached_lookup:
+            matched = _count_minutes_matches(players_df, cached_lookup)
+            print(f"   API-Football cache fallback matched {matched}/{len(players_df)} {league_name} players")
+            return cached_lookup
+        return {}
+
+    try:
+        pd.DataFrame(rows).drop_duplicates(subset=["name", "team"], keep="first").to_csv(cache_file, index=False)
+    except Exception as e:
+        logger.warning(f"Failed to write API-Football minutes cache: {e}")
+
+    lookup = {}
+    for row in rows:
+        _register_minutes_payload(
+            lookup,
+            str(row.get("name", "")).strip(),
+            {
+                "minutes_played": int(row.get("minutes_played", 0) or 0),
+                "appearances": int(row.get("appearances", 0) or 0),
+                "source": "api-football",
+            },
+            team=str(row.get("team", "")).strip(),
+        )
+
+    matched = _count_minutes_matches(players_df, lookup)
+    print(f"   API-Football matched {matched}/{len(players_df)} {league_name} players")
+    return lookup
+
+
+def load_fbref_minutes_lookup(players_df, league_name: str = "La Liga"):
+    """Load season minutes from FBref team standard tables."""
+    from src.data_loaders.fbref_scraper import FBrefScraper
+
+    print(f"   Loading {league_name} minutes from FBref fallback...")
+    scraper = FBrefScraper(cache_hours=24)
+
+    try:
+        if league_name == "La Liga":
+            fbref_df = scraper.get_all_la_liga_players()
+        else:
+            fbref_df = scraper.get_all_premier_league_players()
+    except Exception as e:
+        logger.warning(f"Failed to load {league_name} minutes from FBref: {e}")
+        return {}
+
+    lookup = {}
+    for _, row in fbref_df.iterrows():
+        minutes_played = int(row.get("season_minutes", 0) or 0)
+        appearances = int(row.get("appearances", 0) or 0)
+        if minutes_played <= 0 and appearances <= 0:
+            continue
+        _register_minutes_payload(
+            lookup,
+            str(row.get("name", "")).strip(),
+            {
+                "minutes_played": minutes_played,
+                "appearances": appearances,
+                "source": "fbref",
+            },
+            team=str(row.get("team", "")).strip(),
+        )
+
+    matched = _count_minutes_matches(players_df, lookup)
+    print(f"   FBref matched {matched}/{len(players_df)} {league_name} players")
+    return lookup
+
+
+def load_laliga_public_minutes_lookup(players_df):
+    """Load current La Liga minutes from public official LaLiga leaderboard pages."""
+    from src.data_loaders.laliga_public_stats import (
+        LaLigaPublicStatsLoader,
+        resolve_public_player_stats,
+    )
+
+    print("   Loading La Liga minutes from official public LaLiga leaderboards...")
+    try:
+        stats_df = LaLigaPublicStatsLoader(cache_hours=6).load_stats(
+            fields=["minutes_played", "goals", "assists"]
+        )
+    except Exception as e:
+        logger.warning(f"Failed to load public LaLiga stats: {e}")
+        return {}, 0
+
+    lookup = {}
+    matched = 0
+    for _, player in players_df[["name", "team"]].drop_duplicates().iterrows():
+        stats_row = resolve_public_player_stats(
+            stats_df,
+            str(player.get("name", "")).strip(),
+            str(player.get("team", "")).strip(),
+        )
+        if not stats_row:
+            continue
+
+        minutes_played = int(stats_row.get("minutes_played", 0) or 0)
+        appearances = int(stats_row.get("appearances", 0) or 0)
+        if minutes_played <= 0 and appearances <= 0:
+            continue
+
+        matched += 1
+        _register_minutes_payload(
+            lookup,
+            str(player.get("name", "")).strip(),
+            {
+                "minutes_played": minutes_played,
+                "appearances": appearances,
+                "source": str(stats_row.get("stats_source", "laliga-official-public")),
+            },
+            team=str(player.get("team", "")).strip(),
+        )
+
+    print(f"   Public LaLiga leaderboards matched {matched}/{len(players_df)} La Liga players")
+    return lookup, matched
+
+
+def load_transfermarkt_minutes_lookup(players_df, season: int, league_name: str = "La Liga"):
+    """
+    Load season minutes for players from Transfermarkt.
+
+    Uses the scraper's HTML cache, plus a light CSV cache keyed by player + team,
+    so the first run may be slow but subsequent refreshes stay reasonable.
+    """
+    from src.data_loaders.transfermarkt_scraper import TransfermarktScraper
+
+    scraper = TransfermarktScraper(cache_hours=168)
+    cache_dir = Path(PROJECT_ROOT) / "data" / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = cache_dir / f"transfermarkt_minutes_{league_name.lower().replace(' ', '_')}_{season}.csv"
+
+    cached_rows = {}
+    if cache_file.exists():
+        try:
+            cache_df = pd.read_csv(cache_file)
+            for _, row in cache_df.iterrows():
+                key = (
+                    str(row.get("name", "")).strip().lower(),
+                    str(row.get("team", "")).strip().lower(),
+                )
+                cached_rows[key] = {
+                    "minutes_played": int(row.get("minutes_played", 0) or 0),
+                    "appearances": int(row.get("appearances", 0) or 0),
+                    "source": "transfermarkt-cache",
+                }
+        except Exception as e:
+            logger.warning(f"Failed to read Transfermarkt minutes cache: {e}")
+
+    lookup = {}
+    updated_rows = []
+    matched = 0
+
+    players = players_df[["name", "team"]].drop_duplicates()
+    print(f"   Loading {league_name} minutes from Transfermarkt cache/scraper...")
+
+    for _, player in players.iterrows():
+        name = str(player.get("name", "")).strip()
+        team = str(player.get("team", "")).strip()
+        key = (name.lower(), team.lower())
+
+        entry = cached_rows.get(key)
+        if entry is None:
+            try:
+                match = scraper.search_player(name, team_hint=team)
+                if match:
+                    stats = scraper.get_player_stats(
+                        match["slug"],
+                        match["player_id"],
+                        season=str(season),
+                    )
+                    entry = {
+                        "minutes_played": int(stats.get("minutes_played", 0) or 0),
+                        "appearances": int(stats.get("appearances", 0) or 0),
+                        "source": "transfermarkt",
+                    }
+                else:
+                    entry = {
+                        "minutes_played": 0,
+                        "appearances": 0,
+                        "source": "transfermarkt",
+                    }
+            except Exception as e:
+                logger.debug(f"Transfermarkt minutes lookup failed for {name} ({team}): {e}")
+                entry = {
+                    "minutes_played": 0,
+                    "appearances": 0,
+                    "source": "transfermarkt",
+                }
+
+        if entry.get("minutes_played", 0) > 0:
+            matched += 1
+
+        payload = {
+            "minutes_played": int(entry.get("minutes_played", 0) or 0),
+            "appearances": int(entry.get("appearances", 0) or 0),
+            "source": str(entry.get("source", "transfermarkt")),
+        }
+        lookup[name] = payload
+        lookup[name.lower()] = payload
+        if " " in name:
+            lookup[name.split()[-1]] = payload
+
+        updated_rows.append({
+            "name": name,
+            "team": team,
+            **payload,
+        })
+
+    try:
+        pd.DataFrame(updated_rows).to_csv(cache_file, index=False)
+    except Exception as e:
+        logger.warning(f"Failed to write Transfermarkt minutes cache: {e}")
+
+    print(f"   Matched Transfermarkt minutes for {matched}/{len(players)} {league_name} players")
+    return lookup
 
 
 def load_injury_history_lookup():
@@ -297,75 +984,136 @@ def load_injury_history_lookup():
     """
     today = datetime.now()
     lookup = {}
+    detail_players = 0
+    summary_players = 0
 
-    # --- Source 1: Scraped detail pkl (per-injury records with dates) ---
-    detail_path = os.path.join(PROJECT_ROOT, "models", "player_injuries_detail.pkl")
-    if os.path.exists(detail_path):
+    def _read_pickle_compat(path: str):
         try:
-            detail_df = pd.read_pickle(detail_path)
+            return pd.read_pickle(path)
         except (NotImplementedError, Exception) as e:
-            # StringDtype compatibility: re-save as plain object dtype
-            logger.warning(f"Pickle compat issue, re-loading with fix: {e}")
+            logger.warning(f"Pickle compat issue for {os.path.basename(path)}: {e}")
             import pickle
-            with open(detail_path, "rb") as f:
-                detail_df = pickle.load(f)
+            with open(path, "rb") as f:
+                return pickle.load(f)
 
-        # Fix StringDtype columns → plain object dtype
+    def _merge_payload(name: str, payload: dict, overwrite: bool = False):
+        existing = _lookup_injury_payload(lookup, name)
+        if not existing or overwrite:
+            _register_injury_payload(lookup, name, payload)
+            return
+
+        merged = dict(existing)
+        if int(merged.get("previous_injuries", 0) or 0) <= 0 and int(payload.get("previous_injuries", 0) or 0) > 0:
+            merged["previous_injuries"] = int(payload.get("previous_injuries", 0) or 0)
+        if float(merged.get("avg_severity", 0) or 0) <= 0 and float(payload.get("avg_severity", 0) or 0) > 0:
+            merged["avg_severity"] = float(payload.get("avg_severity", 0) or 0)
+        if int(merged.get("total_days_lost", 0) or 0) <= 0 and int(payload.get("total_days_lost", 0) or 0) > 0:
+            merged["total_days_lost"] = int(payload.get("total_days_lost", 0) or 0)
+        existing_days = merged.get("days_since_last_injury")
+        incoming_days = payload.get("days_since_last_injury")
+        if incoming_days is not None and (existing_days is None or int(existing_days) >= 365):
+            merged["days_since_last_injury"] = int(incoming_days)
+        if not merged.get("last_injury_date") and payload.get("last_injury_date"):
+            merged["last_injury_date"] = payload.get("last_injury_date")
+        _register_injury_payload(lookup, name, merged)
+
+    # --- Source 1: Detailed injury records (primary, includes real recency) ---
+    detail_paths = [
+        os.path.join(PROJECT_ROOT, "models", "player_injuries_detail.pkl"),
+        os.path.join(PROJECT_ROOT, "models", "laliga_injuries_detail.pkl"),
+    ]
+    for detail_path in detail_paths:
+        if not os.path.exists(detail_path):
+            continue
+        try:
+            detail_df = _read_pickle_compat(detail_path)
+        except Exception as e:
+            logger.warning(f"Failed to read injury detail data from {os.path.basename(detail_path)}: {e}")
+            continue
+
+        if not hasattr(detail_df, "columns") or "name" not in detail_df.columns:
+            continue
+
         for col in detail_df.select_dtypes(include=["string"]).columns:
             detail_df[col] = detail_df[col].astype(object)
-        if hasattr(detail_df['name'].dtype, 'name') and 'String' in str(detail_df['name'].dtype):
-            detail_df['name'] = detail_df['name'].astype(str)
+        if "name" in detail_df.columns and hasattr(detail_df["name"].dtype, "name") and "String" in str(detail_df["name"].dtype):
+            detail_df["name"] = detail_df["name"].astype(str)
 
-        if 'name' in detail_df.columns:
-            detail_df['injury_datetime'] = pd.to_datetime(detail_df['injury_datetime'], errors='coerce')
-            detail_df = detail_df.dropna(subset=['injury_datetime'])
+        if "injury_datetime" not in detail_df.columns:
+            continue
 
-            for player, group in detail_df.groupby('name'):
-                injuries = group.sort_values('injury_datetime', ascending=False)
-                last_injury = injuries.iloc[0]['injury_datetime']
-                total_lost = int(injuries['severity_days'].sum()) if 'severity_days' in injuries.columns else 0
-                avg_sev = float(injuries['severity_days'].mean()) if 'severity_days' in injuries.columns else 0
+        detail_df["injury_datetime"] = pd.to_datetime(detail_df["injury_datetime"], errors="coerce")
+        detail_df = detail_df.dropna(subset=["injury_datetime"])
+        if detail_df.empty:
+            continue
 
-                lookup[player] = {
-                    'previous_injuries': len(injuries),
-                    'days_since_last_injury': max(0, (today - last_injury).days),
-                    'last_injury_date': last_injury.strftime('%Y-%m-%d'),
-                    'total_days_lost': total_lost,
-                    'avg_severity': avg_sev,
-                }
-            logger.info(f"Loaded injury history for {len(lookup)} players from detail pkl ({len(detail_df)} records)")
-            return lookup
+        severity_col = "severity_days" if "severity_days" in detail_df.columns else "days_out" if "days_out" in detail_df.columns else None
+        grouped_count = 0
+        for player, group in detail_df.groupby("name"):
+            injuries = group.sort_values("injury_datetime", ascending=False)
+            last_injury = injuries.iloc[0]["injury_datetime"]
+            total_lost = int(injuries[severity_col].sum()) if severity_col else 0
+            avg_sev = float(injuries[severity_col].mean()) if severity_col else 0.0
+            payload = {
+                "previous_injuries": len(injuries),
+                "days_since_last_injury": max(0, (today - last_injury).days),
+                "last_injury_date": last_injury.strftime("%Y-%m-%d"),
+                "total_days_lost": total_lost,
+                "avg_severity": avg_sev,
+            }
+            _merge_payload(str(player), payload, overwrite=True)
+            grouped_count += 1
+        detail_players += grouped_count
 
-    # --- Source 2: Player history pkl (summary stats, no per-injury dates) ---
-    history_path = os.path.join(PROJECT_ROOT, "models", "player_history.pkl")
-    if os.path.exists(history_path):
+    # --- Source 2: Summary history pkls (fill gaps when detail is missing) ---
+    history_paths = [
+        os.path.join(PROJECT_ROOT, "models", "player_history.pkl"),
+        os.path.join(PROJECT_ROOT, "models", "laliga_player_history.pkl"),
+    ]
+    for history_path in history_paths:
+        if not os.path.exists(history_path):
+            continue
         try:
-            history_df = pd.read_pickle(history_path)
-        except (NotImplementedError, Exception):
-            import pickle
-            with open(history_path, "rb") as f:
-                history_df = pickle.load(f)
+            history_df = _read_pickle_compat(history_path)
+        except Exception as e:
+            logger.warning(f"Failed to read injury history data from {os.path.basename(history_path)}: {e}")
+            continue
 
-        if hasattr(history_df, 'columns') and 'name' in history_df.columns:
-            for _, row in history_df.iterrows():
-                count = int(row.get('player_injury_count', 0) or 0)
-                avg_sev = float(row.get('player_avg_severity', 0) or 0)
-                days_since = row.get('days_since_last_injury')
-                last_date = row.get('last_injury_date')
+        if not hasattr(history_df, "columns") or "name" not in history_df.columns:
+            continue
 
-                # Estimate days_since if not populated
-                if pd.isna(days_since) or days_since is None:
-                    days_since = 180 if count > 0 else 365 * 3
+        loaded = 0
+        for _, row in history_df.iterrows():
+            name = str(row.get("name", "")).strip()
+            if not name:
+                continue
+            count = int(row.get("player_injury_count", 0) or 0)
+            avg_sev = float(row.get("player_avg_severity", 0) or 0)
+            total_days_lost = row.get("total_days_lost")
+            if pd.isna(total_days_lost) or total_days_lost is None:
+                total_days_lost = int(round(count * avg_sev))
+            days_since = row.get("days_since_last_injury")
+            if pd.isna(days_since) or days_since is None:
+                days_since = None
+            payload = {
+                "previous_injuries": count,
+                "days_since_last_injury": None if days_since is None else int(days_since),
+                "last_injury_date": row.get("last_injury_date") if pd.notna(row.get("last_injury_date")) else None,
+                "total_days_lost": int(total_days_lost or 0),
+                "avg_severity": avg_sev,
+            }
+            _merge_payload(name, payload, overwrite=False)
+            loaded += 1
+        summary_players += loaded
 
-                lookup[row['name']] = {
-                    'previous_injuries': count,
-                    'days_since_last_injury': int(days_since),
-                    'last_injury_date': last_date if pd.notna(last_date) else None,
-                    'total_days_lost': int(count * avg_sev),
-                    'avg_severity': avg_sev,
-                }
-            logger.info(f"Loaded injury history for {len(lookup)} players from history pkl (summary only)")
-            return lookup
+    if lookup:
+        logger.info(
+            "Loaded injury history for %s players (%s detail records, %s summary rows)",
+            len({k for k in lookup.keys() if isinstance(k, str) and k == k.lower()}),
+            detail_players,
+            summary_players,
+        )
+        return lookup
 
     logger.warning("No scraped injury data found. Run: python scripts/scrape_injuries.py")
     return {}
@@ -524,6 +1272,98 @@ def compute_team_form(matches_df, team, as_of_date, n_matches=5):
     }
 
 
+def build_next_fixture_map(fixtures_df: pd.DataFrame) -> dict:
+    """Map each team to its next scheduled fixture."""
+    if fixtures_df is None or fixtures_df.empty:
+        return {}
+
+    fixtures = fixtures_df.copy()
+    fixtures["date"] = pd.to_datetime(fixtures["date"], errors="coerce")
+    fixtures = fixtures.sort_values(["date", "time"], na_position="last").reset_index(drop=True)
+
+    next_map = {}
+    for _, row in fixtures.iterrows():
+        home = str(row.get("home", "")).strip()
+        away = str(row.get("away", "")).strip()
+        date_val = row.get("date")
+        if home and home not in next_map:
+            next_map[home] = {
+                "opponent": away,
+                "is_home": True,
+                "date": date_val,
+            }
+        if away and away not in next_map:
+            next_map[away] = {
+                "opponent": home,
+                "is_home": False,
+                "date": date_val,
+            }
+    return next_map
+
+
+def compute_fixture_context(match_df: pd.DataFrame, team: str, opponent: str, as_of_date: datetime) -> dict:
+    """Build live opponent-strength and H2H features for the next fixture."""
+    if not opponent:
+        return {
+            "opp_form_avg_last_5": 0.0,
+            "opp_goal_diff_last_5": 0.0,
+            "opp_win_ratio_last_5": 0.0,
+            "h2h_matches_played": 0.0,
+            "h2h_win_ratio": 0.0,
+            "h2h_points_per_match": 0.0,
+            "fixture_edge_score": 0.0,
+        }
+
+    team_form = compute_team_form(match_df, team, as_of_date)
+    opp_form = compute_team_form(match_df, opponent, as_of_date)
+
+    team_norm = _normalize_match_team(team)
+    opp_norm = _normalize_match_team(opponent)
+    h2h = match_df[
+        (
+            ((match_df["Home"] == team_norm) & (match_df["Away"] == opp_norm)) |
+            ((match_df["Home"] == opp_norm) & (match_df["Away"] == team_norm))
+        ) &
+        (match_df["Date"] < as_of_date)
+    ].sort_values("Date", ascending=False).head(6)
+
+    wins = 0
+    points = 0
+    goal_diff_total = 0
+    for _, match in h2h.iterrows():
+        is_home = match["Home"] == team_norm
+        gf = int(match["HomeGoals"] if is_home else match["AwayGoals"])
+        ga = int(match["AwayGoals"] if is_home else match["HomeGoals"])
+        goal_diff_total += (gf - ga)
+        if gf > ga:
+            wins += 1
+            points += 3
+        elif gf == ga:
+            points += 1
+
+    samples = len(h2h)
+    h2h_win_ratio = round(wins / samples, 3) if samples else 0.0
+    h2h_points_per_match = round(points / samples, 3) if samples else 0.0
+    h2h_goal_diff_avg = round(goal_diff_total / samples, 3) if samples else 0.0
+
+    fixture_edge_score = (
+        (team_form["form_avg_last_5"] - opp_form["form_avg_last_5"])
+        + ((team_form["goal_diff_last_5"] - opp_form["goal_diff_last_5"]) * 0.15)
+        + (h2h_points_per_match * 0.25)
+    )
+
+    return {
+        "opp_form_avg_last_5": opp_form["form_avg_last_5"],
+        "opp_goal_diff_last_5": opp_form["goal_diff_last_5"],
+        "opp_win_ratio_last_5": opp_form["win_ratio_last_5"],
+        "h2h_matches_played": float(samples),
+        "h2h_win_ratio": h2h_win_ratio,
+        "h2h_points_per_match": h2h_points_per_match,
+        "h2h_goal_diff_avg": h2h_goal_diff_avg,
+        "fixture_edge_score": round(fixture_edge_score, 3),
+    }
+
+
 def refresh_with_api(artifacts, api_key, dry_run=False):
     """
     Refresh predictions using football-data.org API.
@@ -541,6 +1381,7 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
     print("\n3. Loading player playing time data...")
     minutes_lookup = load_player_minutes_lookup()
     print(f"   Loaded playing time ratios for {len(minutes_lookup)} players")
+    epl_signal_lookup = load_fpl_live_signal_lookup()
 
     # Fetch matches (PL + all other competitions for accurate workload)
     print("\n4. Fetching current season matches (PL + cups/European)...")
@@ -558,6 +1399,13 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
     print("\n5. Fetching current Premier League squads...")
     players = client.get_all_team_squads()
     print(f"   Fetched {len(players)} players from {players['team'].nunique()} teams")
+
+    try:
+        upcoming_epl = client.get_upcoming_fixtures(days_ahead=14)
+    except Exception as e:
+        logger.warning(f"Failed to fetch upcoming EPL fixtures for live context: {e}")
+        upcoming_epl = pd.DataFrame()
+    epl_next_fixture_map = build_next_fixture_map(upcoming_epl)
 
     # Build snapshots with player-scaled workload + team form
     print("\n6. Computing player workloads (team schedule × playing time)...")
@@ -583,7 +1431,40 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
     else:
         snapshot_date = now
 
-    def _build_player_rows(squad_df, match_df, league_name, snapshot_dt, minutes_lkp, ref_now=None):
+    def _resolve_playing_time(player_name, team_name, match_df, team_snapshot, minutes_lkp):
+        """Resolve player playing-time payload into a usable ratio + raw minutes."""
+        play_entry = _lookup_minutes_payload(minutes_lkp, player_name, team_name)
+
+        team_norm = _normalize_match_team(team_name)
+        team_matches_played = len(match_df[
+            ((match_df["Home"] == team_norm) | (match_df["Away"] == team_norm)) &
+            (match_df["Date"] < team_snapshot)
+        ])
+        max_minutes = max(team_matches_played * 90, 90)
+
+        if isinstance(play_entry, dict):
+            minutes_played = int(play_entry.get("minutes_played", 0) or 0)
+            appearances = int(play_entry.get("appearances", 0) or 0)
+            ratio = play_entry.get("ratio")
+            if ratio is None:
+                ratio = min(minutes_played / max_minutes, 1.0) if minutes_played > 0 else 0.5
+            return float(ratio), minutes_played, appearances
+
+        if play_entry is not None:
+            return float(play_entry), 0, 0
+
+        return 0.5, 0, 0
+
+    def _build_player_rows(
+        squad_df,
+        match_df,
+        league_name,
+        snapshot_dt,
+        minutes_lkp,
+        signal_lkp,
+        next_fixture_map,
+        ref_now=None,
+    ):
         """Build workload snapshot rows for all players in a squad."""
         if ref_now is None:
             ref_now = datetime.now()
@@ -620,13 +1501,24 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
 
             team_workload = team_workload_cache[team]
             team_form = team_form_cache[team]
+            team_snap = team_snapshot_cache.get(team, snapshot_dt)
 
             player_name = player["name"]
-            play_ratio = minutes_lkp.get(player_name)
-            if play_ratio is None and " " in player_name:
-                play_ratio = minutes_lkp.get(player_name.split()[-1])
-            if play_ratio is None:
-                play_ratio = 0.5
+            play_ratio, minutes_played, appearances = _resolve_playing_time(
+                player_name,
+                team,
+                match_df,
+                team_snap,
+                minutes_lkp,
+            )
+            signal_payload = _lookup_signal_payload(signal_lkp, player_name, team) or {}
+            next_fixture = next_fixture_map.get(team, {})
+            fixture_context = compute_fixture_context(
+                match_df,
+                team,
+                str(next_fixture.get("opponent", "")).strip(),
+                team_snap,
+            )
 
             player_acute = team_workload["acute_load"]
             player_chronic = team_workload["chronic_load"]
@@ -658,11 +1550,10 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
                 "matches_last_30": team_workload["matches_last_30"],
             }
 
-            if player_name in minutes_lkp:
+            if _lookup_minutes_payload(minutes_lkp, player_name, team):
                 matched += 1
 
             rest_days = team_form["rest_days_before_injury"]
-            team_snap = team_snapshot_cache.get(team, snapshot_dt)
             rows.append({
                 "name": player_name,
                 "player_team": player["team"],
@@ -673,7 +1564,16 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
                 "injury_datetime": team_snap,
                 "snapshot_date": team_snap.strftime("%Y-%m-%d"),
                 "playing_time_ratio": play_ratio,
+                "minutes_played": minutes_played,
+                "appearances": appearances,
+                "goals": int(signal_payload.get("goals", 0) or 0),
+                "assists": int(signal_payload.get("assists", 0) or 0),
+                "goals_per_90": float(signal_payload.get("goals_per_90", 0) or 0.0),
+                "assists_per_90": float(signal_payload.get("assists_per_90", 0) or 0.0),
+                "shots_per_90": float(signal_payload.get("shots_per_90", 0) or 0.0),
+                "saves_per_90": float(signal_payload.get("saves_per_90", 0) or 0.0),
                 "days_since_last_match": rest_days,
+                **fixture_context,
                 **scaled_workload,
                 **team_form,
             })
@@ -681,7 +1581,16 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
         return rows
 
     # --- Premier League ---
-    epl_rows = _build_player_rows(players, matches, "Premier League", snapshot_date, minutes_lookup, ref_now=now)
+    epl_rows = _build_player_rows(
+        players,
+        matches,
+        "Premier League",
+        snapshot_date,
+        minutes_lookup,
+        epl_signal_lookup,
+        epl_next_fixture_map,
+        ref_now=now,
+    )
 
     # --- La Liga (+ UCL for La Liga teams) ---
     print("\n   Fetching La Liga squads and matches...")
@@ -689,6 +1598,12 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
         la_liga_players = client.get_all_la_liga_squads(season=season)
         la_liga_matches = client.get_la_liga_matches(season=season, status="FINISHED")
         print(f"   La Liga: {len(la_liga_players)} players, {len(la_liga_matches)} La Liga matches")
+        try:
+            upcoming_laliga = client.get_upcoming_la_liga_fixtures(days_ahead=14)
+        except Exception as e:
+            logger.warning(f"Failed to fetch upcoming La Liga fixtures for live context: {e}")
+            upcoming_laliga = pd.DataFrame()
+        laliga_next_fixture_map = build_next_fixture_map(upcoming_laliga)
 
         # Add UCL matches for La Liga teams (same API call we already do for EPL)
         try:
@@ -711,8 +1626,41 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
         except Exception as cl_e:
             print(f"   Warning: UCL fetch failed ({cl_e}), using La Liga only")
 
-        # La Liga players have no FPL minutes data; all default to 0.5
-        la_liga_rows = _build_player_rows(la_liga_players, la_liga_matches, "La Liga", snapshot_date, {}, ref_now=now)
+        public_minutes_lookup, public_matches = load_laliga_public_minutes_lookup(la_liga_players)
+        fbref_minutes_lookup = load_fbref_minutes_lookup(
+            la_liga_players,
+            league_name="La Liga",
+        )
+        artifact_minutes_lookup = build_artifact_minutes_lookup(
+            la_liga_players,
+            artifacts.get("inference_df"),
+            "La Liga",
+        )
+        laliga_signal_lookup = load_laliga_public_signal_lookup(la_liga_players)
+
+        la_liga_minutes_lookup = {}
+        la_liga_minutes_lookup = _merge_minutes_lookup(la_liga_minutes_lookup, public_minutes_lookup)
+        la_liga_minutes_lookup = _merge_minutes_lookup(la_liga_minutes_lookup, fbref_minutes_lookup)
+        la_liga_minutes_lookup = _merge_minutes_lookup(la_liga_minutes_lookup, artifact_minutes_lookup)
+
+        total_players = len(la_liga_players)
+        fbref_matches = _count_minutes_matches(la_liga_players, fbref_minutes_lookup)
+        artifact_matches = _count_minutes_matches(la_liga_players, artifact_minutes_lookup)
+        final_matches = _count_minutes_matches(la_liga_players, la_liga_minutes_lookup)
+        print(
+            f"   La Liga minutes coverage: {final_matches}/{total_players} players "
+            f"(public {public_matches}, FBref {fbref_matches}, artifact {artifact_matches})"
+        )
+        la_liga_rows = _build_player_rows(
+            la_liga_players,
+            la_liga_matches,
+            "La Liga",
+            snapshot_date,
+            la_liga_minutes_lookup,
+            laliga_signal_lookup,
+            laliga_next_fixture_map,
+            ref_now=now,
+        )
     except Exception as e:
         print(f"   Warning: could not fetch La Liga data ({e}). Skipping.")
         la_liga_rows = []
@@ -786,6 +1734,51 @@ def assign_archetype_heuristic(row):
     return "Moderate Risk"
 
 
+def calibrate_live_probabilities(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Apply a conservative live-data calibration layer.
+
+    The retrained ensemble can rank players well while still running too hot on
+    current snapshots because live rows do not perfectly mirror the historical
+    training distribution. Blend the model with a feature-grounded baseline, then
+    shrink only when the pool-level mean clearly drifts too high.
+    """
+    out = df.copy()
+    raw = pd.to_numeric(out.get("ensemble_prob", 0.5), errors="coerce").fillna(0.5).clip(0.01, 0.995)
+    out["ensemble_prob_raw"] = raw
+
+    recent_pressure = pd.to_numeric(out.get("recent_injury_pressure", 0.0), errors="coerce").fillna(0.0).clip(0.0, 1.0)
+    injury_burden = pd.to_numeric(out.get("injury_burden_index", 0.0), errors="coerce").fillna(0.0).clip(0.0, 1.0)
+    acwr = pd.to_numeric(out.get("acwr", 1.0), errors="coerce").fillna(1.0)
+    player_importance = pd.to_numeric(out.get("player_importance_score", 0.0), errors="coerce").fillna(0.0).clip(0.0, 1.0)
+    fixture_edge = pd.to_numeric(out.get("fixture_edge_score", 0.0), errors="coerce").fillna(0.0)
+
+    load_pressure = ((acwr - 1.0) / 0.9).clip(0.0, 1.0)
+    fixture_pressure = ((-fixture_edge) / 3.0).clip(0.0, 1.0)
+
+    baseline = (
+        0.06
+        + recent_pressure * 0.28
+        + injury_burden * 0.24
+        + load_pressure * 0.18
+        + player_importance * 0.12
+        + fixture_pressure * 0.06
+    ).clip(0.03, 0.82)
+
+    calibrated = ((raw * 0.62) + (baseline * 0.38)).clip(0.02, 0.95)
+    current_mean = float(calibrated.mean())
+    if current_mean > 0.55:
+        target_mean = 0.42
+        try:
+            gamma = max(1.0, min(8.0, float(np.log(target_mean) / np.log(current_mean))))
+        except (ValueError, ZeroDivisionError):
+            gamma = 2.5
+        calibrated = calibrated.pow(gamma).clip(0.02, 0.95)
+
+    out["ensemble_prob"] = calibrated.round(6)
+    return out
+
+
 def run_inference(snapshots_df, ensemble, severity_clf, player_history, archetype_df, use_transfermarkt=False):
     """
     Run model inference on player snapshots.
@@ -796,6 +1789,7 @@ def run_inference(snapshots_df, ensemble, severity_clf, player_history, archetyp
         use_transfermarkt: If True, fetch injury history from Transfermarkt for
                           players not found in local CSV (slower but more complete)
     """
+    from src.feature_engineering.classification import add_contextual_classification_features
     from src.inference.inference_pipeline import apply_all_feature_engineering, add_player_history_features
 
     print("\n7. Running inference...")
@@ -827,32 +1821,40 @@ def run_inference(snapshots_df, ensemble, severity_clf, player_history, archetyp
         print(f"   Total injury records after Transfermarkt: {len(injury_history)}")
 
     # Compute full injury history features from detail pkl (most accurate source)
-    detail_path = os.path.join(PROJECT_ROOT, "models", "player_injuries_detail.pkl")
     detail_stats = {}
-    if os.path.exists(detail_path):
+    for detail_path in [
+        os.path.join(PROJECT_ROOT, "models", "player_injuries_detail.pkl"),
+        os.path.join(PROJECT_ROOT, "models", "laliga_injuries_detail.pkl"),
+    ]:
+        if not os.path.exists(detail_path):
+            continue
         try:
             detail_df = pd.read_pickle(detail_path)
-            if "severity_days" in detail_df.columns and "name" in detail_df.columns:
+            severity_col = "severity_days" if "severity_days" in detail_df.columns else "days_out" if "days_out" in detail_df.columns else None
+            if severity_col and "name" in detail_df.columns:
                 for name, grp in detail_df.groupby("name"):
-                    detail_stats[name] = {
-                        "worst": grp["severity_days"].max(),
-                        "std": grp["severity_days"].std() if len(grp) > 1 else 0.0,
+                    payload = {
+                        "worst": grp[severity_col].max(),
+                        "std": grp[severity_col].std() if len(grp) > 1 else 0.0,
                     }
+                    detail_stats[name] = payload
+                    detail_stats[_canonical_player_key(name)] = payload
         except Exception as e:
-            logger.debug(f"Failed to load detail stats: {e}")
+            logger.debug(f"Failed to load detail stats from {os.path.basename(detail_path)}: {e}")
 
     # Merge real injury history (scraped data is the primary source)
     matched_injuries = 0
     for idx, row in df.iterrows():
         player_name = row.get("name", "")
-        if player_name in injury_history:
-            hist = injury_history[player_name]
+        hist = _lookup_injury_payload(injury_history, str(player_name))
+        if hist:
             count = hist["previous_injuries"]
             avg_sev = hist.get("avg_severity", 0)
             total_lost = hist.get("total_days_lost", 0)
-            ds = detail_stats.get(player_name, {})
+            ds = detail_stats.get(player_name, {}) or detail_stats.get(_canonical_player_key(player_name), {})
             df.at[idx, "previous_injuries"] = count
-            df.at[idx, "days_since_last_injury"] = hist["days_since_last_injury"]
+            if hist.get("days_since_last_injury") is not None:
+                df.at[idx, "days_since_last_injury"] = hist["days_since_last_injury"]
             df.at[idx, "total_days_lost"] = total_lost
             df.at[idx, "player_injury_count"] = count
             df.at[idx, "player_avg_severity"] = avg_sev
@@ -875,6 +1877,7 @@ def run_inference(snapshots_df, ensemble, severity_clf, player_history, archetyp
     # Assign archetypes using heuristic (instead of just merging old assignments)
     print("   Assigning player archetypes...")
     df["archetype"] = df.apply(assign_archetype_heuristic, axis=1)
+    df = add_contextual_classification_features(df)
 
     # Get expected features from model
     feature_cols = ensemble.feature_names_
@@ -894,6 +1897,22 @@ def run_inference(snapshots_df, ensemble, severity_clf, player_history, archetyp
         "win_ratio_last_5": 0.4,
         "win_streak": 0,
         "loss_streak": 0,
+        "opp_form_avg_last_5": 1.4,
+        "opp_goal_diff_last_5": 0.0,
+        "opp_win_ratio_last_5": 0.4,
+        "h2h_matches_played": 0.0,
+        "h2h_win_ratio": 0.0,
+        "h2h_points_per_match": 0.0,
+        "fixture_edge_score": 0.0,
+        "minutes_share": 0.45,
+        "starter_ratio": 0.5,
+        "goal_involvement_per90": 0.2,
+        "shot_volume_per90": 0.8,
+        "creative_actions_per90": 0.8,
+        "player_importance_score": 0.45,
+        "days_since_last_injury_capped": 180,
+        "recent_injury_pressure": 0.0,
+        "injury_burden_index": 0.0,
     }
 
     if missing_features:
@@ -920,11 +1939,12 @@ def run_inference(snapshots_df, ensemble, severity_clf, player_history, archetyp
         df["xgb_prob"] = base_preds["xgb_prob"]
         df["catboost_prob"] = base_preds["catboost_prob"]
 
-    # Keep raw model probabilities — the API uses percentile-based normalization
-    # (normalize_risk_score + get_risk_level) to display relative risk, so arbitrary
-    # post-hoc calibration is unnecessary and can distort the model's rankings.
-    print(f"   Raw probs: mean={df['ensemble_prob'].mean():.1%}, "
+    raw_mean = df["ensemble_prob"].mean()
+    df = calibrate_live_probabilities(df)
+    print(f"   Post-calibration probs: mean={df['ensemble_prob'].mean():.1%}, "
           f"range=[{df['ensemble_prob'].min():.1%}, {df['ensemble_prob'].max():.1%}]")
+    if abs(df["ensemble_prob"].mean() - raw_mean) > 0.05:
+        print(f"   Live calibration adjusted pool mean from {raw_mean:.1%} to {df['ensemble_prob'].mean():.1%}")
 
     # Agreement: how many models agree the player is above-median risk
     median_prob = df["ensemble_prob"].median()

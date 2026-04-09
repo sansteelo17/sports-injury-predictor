@@ -591,6 +591,45 @@ class FootballDataClient:
 
         return pd.DataFrame(rows)
 
+    def get_upcoming_competition_fixtures(
+        self,
+        competition_id: str,
+        days_ahead: int = 14,
+    ) -> pd.DataFrame:
+        """Fetch upcoming fixtures for a supported competition."""
+        date_from = datetime.now().strftime("%Y-%m-%d")
+        date_to = (datetime.now() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+
+        params = {
+            "dateFrom": date_from,
+            "dateTo": date_to,
+            "status": "SCHEDULED",
+        }
+
+        data = self._get(f"competitions/{competition_id}/matches", params)
+        matches = data.get("matches", [])
+
+        if competition_id == LA_LIGA_ID:
+            normalize_team = self._normalize_la_liga_team
+        else:
+            normalize_team = self._normalize_team_name
+
+        rows = []
+        for m in matches:
+            rows.append({
+                "date": m["utcDate"][:10],
+                "time": m["utcDate"][11:16],
+                "home": normalize_team(m["homeTeam"]["shortName"]),
+                "away": normalize_team(m["awayTeam"]["shortName"]),
+                "matchday": m.get("matchday"),
+            })
+
+        return pd.DataFrame(rows)
+
+    def get_upcoming_la_liga_fixtures(self, days_ahead: int = 14) -> pd.DataFrame:
+        """Fetch upcoming La Liga fixtures."""
+        return self.get_upcoming_competition_fixtures(LA_LIGA_ID, days_ahead=days_ahead)
+
     def _normalize_team_name(self, name: str) -> str:
         """
         Normalize team names to match our historical data.

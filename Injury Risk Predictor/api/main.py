@@ -159,6 +159,7 @@ _la_liga_fixture_dataset_cache: Dict[str, Any] = {"season": None, "data": None, 
 _la_liga_team_fixtures_cache: Dict[str, Dict[str, Any]] = {}
 _la_liga_moneyline_cache: Dict[str, Dict[str, Any]] = {}
 _la_liga_team_context_cache: Dict[str, Dict[str, Any]] = {}
+_la_liga_public_stats_cache: Dict[str, Any] = {"season": None, "data": None, "expires": None}
 _tm_player_profile_cache: Dict[str, Dict[str, Any]] = {}
 _tm_scraper_instance = None
 _PL_STANDINGS_TTL = timedelta(hours=6)   # team list barely changes mid-season
@@ -169,6 +170,7 @@ _LA_LIGA_FIXTURE_DATASET_TTL = timedelta(minutes=12)
 _LA_LIGA_TEAM_FIXTURES_TTL = timedelta(minutes=10)
 _LA_LIGA_MONEYLINE_TTL = timedelta(minutes=7)
 _LA_LIGA_TEAM_CONTEXT_TTL = timedelta(minutes=5)
+_LA_LIGA_PUBLIC_STATS_TTL = timedelta(hours=6)
 _TM_PLAYER_PROFILE_TTL = timedelta(hours=24)
 
 
@@ -253,7 +255,7 @@ def _load_models_blocking():
     global fpl_player_codes, fpl_players_by_team, fpl_element_lookup, historical_matches_df, fixture_history_cache, odds_client
     global shirt_numbers_by_team, shirt_number_lookup_attempted, _startup_complete, _player_risk_cache
     global _la_liga_standings_cache, _la_liga_fixture_dataset_cache, _la_liga_team_fixtures_cache
-    global _la_liga_moneyline_cache, _la_liga_team_context_cache, _tm_player_profile_cache
+    global _la_liga_moneyline_cache, _la_liga_team_context_cache, _la_liga_public_stats_cache, _tm_player_profile_cache
     _startup_complete = False
     # Reset caches so manual/cron refreshes don't accumulate stale keys.
     _player_risk_cache = {}
@@ -262,6 +264,7 @@ def _load_models_blocking():
     _la_liga_team_fixtures_cache = {}
     _la_liga_moneyline_cache = {}
     _la_liga_team_context_cache = {}
+    _la_liga_public_stats_cache = {"season": None, "data": None, "expires": None}
     _tm_player_profile_cache = {}
     fpl_stats_cache = {}
     fpl_team_ids = {}
@@ -1082,6 +1085,7 @@ class NextFixture(BaseModel):
     clean_sheet_odds: Optional[str] = None
     win_probability: Optional[float] = None
     fixture_insight: Optional[str] = None
+    difficulty: Optional[int] = None
 
 
 class YaraResponse(BaseModel):
@@ -1884,6 +1888,149 @@ def _market_value_to_fantasy_price(market_value_millions: float) -> float:
     return round(min(max(scaled, 4.0), 14.0), 1)
 
 
+def _public_stats_to_fantasy_price(stats_row: Dict[str, Any], position: str) -> float:
+    """Derive a fantasy-style price from public output + minutes for non-FPL leagues."""
+    minutes = _safe_int(stats_row.get("minutes_played", 0), 0)
+    goals = _safe_int(stats_row.get("goals", 0), 0)
+    assists = _safe_int(stats_row.get("assists", 0), 0)
+    shots = _safe_int(stats_row.get("shots", 0), 0)
+    saves = _safe_int(stats_row.get("saves", 0), 0)
+    yellow_cards = _safe_int(stats_row.get("yellow_cards", 0), 0)
+    red_cards = _safe_int(stats_row.get("red_cards", 0), 0)
+
+    pos = str(position or "").lower()
+    availability_score = min(minutes / 1800.0, 1.0) * 2.8
+    if any(token in pos for token in ("gk", "goalkeeper")):
+        output_score = saves * 0.025 + goals * 0.45 + assists * 0.20
+    elif any(token in pos for token in ("def", "back")):
+        output_score = goals * 0.42 + assists * 0.28 + shots * 0.02
+    elif any(token in pos for token in ("midfield", "mid", "playmaker", "am", "cm", "dm")):
+        output_score = goals * 0.34 + assists * 0.26 + shots * 0.025
+    else:
+        output_score = goals * 0.30 + assists * 0.22 + shots * 0.03
+
+    discipline_penalty = yellow_cards * 0.03 + red_cards * 0.20
+    price = 4.2 + availability_score + output_score - discipline_penalty
+    return round(min(max(price, 4.0), 13.5), 1)
+
+
+def _public_stats_to_points_per_game(stats_row: Dict[str, Any], position: str) -> float:
+    """Build a lightweight fantasy-points proxy from public season output."""
+    appearances = _safe_int(stats_row.get("appearances", 0), 0)
+    minutes = _safe_int(stats_row.get("minutes_played", 0), 0)
+    if appearances <= 0 and minutes > 0:
+        appearances = max(1, round(minutes / 78))
+    if appearances <= 0:
+        return 0.0
+
+    goals = _safe_int(stats_row.get("goals", 0), 0)
+    assists = _safe_int(stats_row.get("assists", 0), 0)
+    saves = _safe_int(stats_row.get("saves", 0), 0)
+    yellow_cards = _safe_int(stats_row.get("yellow_cards", 0), 0)
+    red_cards = _safe_int(stats_row.get("red_cards", 0), 0)
+
+    pos = str(position or "").lower()
+    if any(token in pos for token in ("gk", "goalkeeper")):
+        goal_points = 6.0
+        save_points = saves / 3.0
+    elif any(token in pos for token in ("def", "back")):
+        goal_points = 6.0
+        save_points = 0.0
+    elif any(token in pos for token in ("midfield", "mid", "playmaker", "am", "cm", "dm")):
+        goal_points = 5.0
+        save_points = 0.0
+    else:
+        goal_points = 4.0
+        save_points = 0.0
+
+    total_points = (
+        appearances * 2.0
+        + goals * goal_points
+        + assists * 3.0
+        + save_points
+        - yellow_cards
+        - (red_cards * 3.0)
+    )
+    return round(max(total_points / max(1, appearances), 0.0), 2)
+
+
+def _get_laliga_public_stats_df_cached():
+    global _la_liga_public_stats_cache
+    season = _current_season_year()
+    cache_entry = _la_liga_public_stats_cache
+    if (
+        cache_entry.get("season") == season
+        and _cache_entry_is_fresh(cache_entry)
+        and cache_entry.get("data") is not None
+    ):
+        return cache_entry["data"]
+
+    from src.data_loaders.laliga_public_stats import LaLigaPublicStatsLoader
+
+    started = time.perf_counter()
+    loader = LaLigaPublicStatsLoader(cache_hours=6)
+    try:
+        data = loader.load_stats()
+    except Exception as e:
+        logger.warning(f"La Liga public stats fetch failed: {e}")
+        data = cache_entry.get("data")
+        if data is None:
+            try:
+                import pandas as pd
+                data = pd.DataFrame()
+            except Exception:
+                data = None
+    _la_liga_public_stats_cache = {
+        "season": season,
+        "data": data,
+        "expires": datetime.utcnow() + _LA_LIGA_PUBLIC_STATS_TTL,
+    }
+    logger.info(
+        "La Liga public stats cache miss: loaded %s rows in %.2fs",
+        len(data) if data is not None else 0,
+        time.perf_counter() - started,
+    )
+    return data
+
+
+def _get_laliga_public_player_profile(player_name: str, team_hint: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Resolve a La Liga player against the cached public official stat dataset."""
+    from src.data_loaders.laliga_public_stats import resolve_public_player_stats
+
+    stats_df = _get_laliga_public_stats_df_cached()
+    if stats_df is None or getattr(stats_df, "empty", True):
+        return None
+    try:
+        return resolve_public_player_stats(stats_df, player_name, team_hint)
+    except Exception as e:
+        logger.debug(f"Public LaLiga stats unavailable for {player_name}: {e}")
+        return None
+
+
+def _resolve_display_minutes(
+    row: Dict[str, Any],
+    fpl_stats: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Resolve minutes for UI summary cards with a live La Liga fallback."""
+    if fpl_stats:
+        return _safe_int(fpl_stats.get("minutes", 0), 0)
+
+    minutes = _safe_int(row.get("minutes_played", row.get("minutes", 0)), 0)
+    if minutes > 0:
+        return minutes
+
+    league = str(row.get("league", "") or "")
+    if league == "La Liga":
+        profile = _get_laliga_public_player_profile(
+            str(row.get("name", "")).strip(),
+            team_hint=str(row.get("team", "")).strip(),
+        )
+        if profile:
+            return _safe_int(profile.get("minutes_played", 0), 0)
+
+    return 0
+
+
 def _get_transfermarkt_scraper():
     global _tm_scraper_instance
     if _tm_scraper_instance is None:
@@ -2221,6 +2368,40 @@ HISTORY_TEAM_ALIASES = {
     "leeds united": "Leeds",
     "burnley": "Burnley",
     "sunderland": "Sunderland",
+    "athletic": "Athletic Club",
+    "athletic club": "Athletic Club",
+    "athletic bilbao": "Athletic Club",
+    "atleti": "Atletico Madrid",
+    "atletico": "Atletico Madrid",
+    "atletico madrid": "Atletico Madrid",
+    "barca": "Barcelona",
+    "barcelona": "Barcelona",
+    "real madrid": "Real Madrid",
+    "real betis": "Real Betis",
+    "betis": "Real Betis",
+    "real sociedad": "Real Sociedad",
+    "valencia": "Valencia",
+    "villarreal": "Villarreal",
+    "sevilla": "Sevilla",
+    "sevilla fc": "Sevilla",
+    "girona": "Girona",
+    "espanyol": "Espanyol",
+    "getafe": "Getafe",
+    "osasuna": "Osasuna",
+    "mallorca": "Mallorca",
+    "rayo vallecano": "Rayo Vallecano",
+    "celta": "Celta Vigo",
+    "celta vigo": "Celta Vigo",
+    "leganes": "Leganes",
+    "alaves": "Alaves",
+    "almeria": "Almeria",
+    "cadiz": "Cadiz",
+    "las palmas": "Las Palmas",
+    "valladolid": "Valladolid",
+    "granada": "Granada",
+    "elche": "Elche",
+    "levante": "Levante",
+    "real oviedo": "Real Oviedo",
 }
 
 
@@ -2352,6 +2533,12 @@ def _fetch_live_fixture_history_backfill(local_df):
                 frames.append(df[["Date", "Home", "Away", "HomeGoals", "AwayGoals"]].copy())
         except Exception as e:
             logger.warning(f"Failed fetching season {season}-{season+1} for fixture backfill: {e}")
+        try:
+            df = client.get_la_liga_matches(season=season, status="FINISHED")
+            if df is not None and not df.empty:
+                frames.append(df[["Date", "Home", "Away", "HomeGoals", "AwayGoals"]].copy())
+        except Exception as e:
+            logger.warning(f"Failed fetching La Liga season {season}-{season+1} for fixture backfill: {e}")
 
     if not frames:
         return pd.DataFrame()
@@ -2372,21 +2559,28 @@ def _fetch_live_fixture_history_backfill(local_df):
 
 
 def _load_fixture_history_local_only():
-    """Load only the local CSV fixture history (fast, no API calls)."""
+    """Load local EPL + La Liga fixture history (fast, no API calls)."""
     import pandas as pd
 
-    history_path = Path(PROJECT_ROOT) / "csv" / "premier-league-matches.csv"
-    if not history_path.exists():
+    frames = []
+    for history_path in [
+        Path(PROJECT_ROOT) / "csv" / "premier-league-matches.csv",
+        Path(PROJECT_ROOT) / "csv" / "la-liga-matches.csv",
+    ]:
+        if not history_path.exists():
+            continue
+        try:
+            frames.append(pd.read_csv(
+                history_path,
+                usecols=["Date", "Home", "Away", "HomeGoals", "AwayGoals"],
+            ))
+        except Exception as e:
+            logger.warning(f"Failed loading local fixture history CSV {history_path.name}: {e}")
+
+    if not frames:
         return pd.DataFrame(columns=["Date", "Home", "Away", "HomeGoals", "AwayGoals"])
-    try:
-        local_df = pd.read_csv(
-            history_path,
-            usecols=["Date", "Home", "Away", "HomeGoals", "AwayGoals"],
-        )
-        return _normalize_fixture_history_df(local_df)
-    except Exception as e:
-        logger.warning(f"Failed loading local fixture history CSV: {e}")
-        return pd.DataFrame(columns=["Date", "Home", "Away", "HomeGoals", "AwayGoals"])
+
+    return _normalize_fixture_history_df(pd.concat(frames, ignore_index=True))
 
 
 def _load_fixture_history_live_cached_first():
@@ -2600,29 +2794,169 @@ def get_fixture_history_context(
     return summary
 
 
+def _get_generic_opponent_defense_context(opponent_name: Optional[str], sample_n: int = 5) -> Optional[Dict[str, Any]]:
+    """League-agnostic defensive form from the blended historical fixture dataset."""
+    if historical_matches_df is None or historical_matches_df.empty or not opponent_name:
+        return None
+
+    opponent = _normalize_history_team_name(opponent_name)
+    if not opponent:
+        return None
+
+    matches = historical_matches_df[
+        (historical_matches_df["Home"] == opponent) |
+        (historical_matches_df["Away"] == opponent)
+    ].sort_values("Date")
+    if matches.empty:
+        return None
+
+    recent = matches.tail(sample_n)
+    conceded = []
+    clean_sheets = 0
+    for _, match in recent.iterrows():
+        is_home = match["Home"] == opponent
+        goals_against = int(match["AwayGoals"] if is_home else match["HomeGoals"])
+        conceded.append(goals_against)
+        if goals_against == 0:
+            clean_sheets += 1
+
+    if not conceded:
+        return None
+
+    return {
+        "avg_goals_conceded_last5": round(sum(conceded) / len(conceded), 2),
+        "clean_sheets_last5": clean_sheets,
+        "samples": len(conceded),
+    }
+
+
+def _get_generic_team_form_context(team_name: Optional[str], sample_n: int = 5) -> Optional[Dict[str, Any]]:
+    """League-agnostic recent team form from the blended historical fixture dataset."""
+    if historical_matches_df is None or historical_matches_df.empty or not team_name:
+        return None
+
+    team = _normalize_history_team_name(team_name)
+    if not team:
+        return None
+
+    matches = historical_matches_df[
+        (historical_matches_df["Home"] == team) |
+        (historical_matches_df["Away"] == team)
+    ].sort_values("Date", ascending=False)
+    if matches.empty:
+        return None
+
+    recent = matches.head(sample_n)
+    if recent.empty:
+        return None
+
+    goals_for = goals_against = points = wins = 0
+    for _, match in recent.iterrows():
+        is_home = match["Home"] == team
+        gf = int(match["HomeGoals"] if is_home else match["AwayGoals"])
+        ga = int(match["AwayGoals"] if is_home else match["HomeGoals"])
+        goals_for += gf
+        goals_against += ga
+        if gf > ga:
+            points += 3
+            wins += 1
+        elif gf == ga:
+            points += 1
+
+    sample_count = len(recent)
+    goal_diff = goals_for - goals_against
+    return {
+        "samples": sample_count,
+        "points_last5": int(points),
+        "form_avg_last5": round(points / max(1, sample_count), 2),
+        "win_ratio_last5": round(wins / max(1, sample_count), 2),
+        "goals_for_last5": int(goals_for),
+        "goals_against_last5": int(goals_against),
+        "avg_goals_for_last5": round(goals_for / max(1, sample_count), 2),
+        "avg_goals_against_last5": round(goals_against / max(1, sample_count), 2),
+        "goal_diff_last5": int(goal_diff),
+        "avg_goal_diff_last5": round(goal_diff / max(1, sample_count), 2),
+    }
+
+
 def get_player_matchup_context(
     player_name: str,
     team_hint: Optional[str] = None,
     next_fixture_data: Optional[Dict[str, Any]] = None,
+    league_hint: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Build opponent-specific context: recent form + historical output vs next opponent."""
     try:
+        resolved_league = (league_hint or _infer_team_league(team_hint)).strip()
+        opponent = next_fixture_data.get("opponent") if next_fixture_data else None
+        generic_opponent_defense = _get_generic_opponent_defense_context(
+            opponent
+        )
+        generic_team_form = _get_generic_team_form_context(team_hint)
+        generic_opponent_form = _get_generic_team_form_context(opponent)
+        generic_fixture_history = get_fixture_history_context(
+            team_name=team_hint,
+            opponent_name=opponent,
+            years=5,
+        )
+        fixture_edge_score = 0.0
+        if generic_team_form and generic_opponent_form:
+            fixture_edge_score += (
+                _safe_float(generic_team_form.get("form_avg_last5"), 0.0)
+                - _safe_float(generic_opponent_form.get("form_avg_last5"), 0.0)
+            )
+            fixture_edge_score += (
+                _safe_float(generic_team_form.get("avg_goal_diff_last5"), 0.0)
+                - _safe_float(generic_opponent_form.get("avg_goal_diff_last5"), 0.0)
+            ) * 0.5
+        if generic_fixture_history:
+            samples = max(1, _safe_int(generic_fixture_history.get("samples", 0), 0))
+            fixture_points = (
+                (_safe_int(generic_fixture_history.get("wins", 0), 0) * 3)
+                + _safe_int(generic_fixture_history.get("draws", 0), 0)
+            ) / samples
+            goal_edge = (
+                _safe_float(generic_fixture_history.get("goals_for", 0), 0.0)
+                - _safe_float(generic_fixture_history.get("goals_against", 0), 0.0)
+            ) / samples
+            fixture_edge_score += ((fixture_points - 1.0) * 0.4) + (goal_edge * 0.15)
+
+        generic_context = {
+            "recent_form": {},
+            "minutes_last_5": [],
+            "games_played": 0,
+            "seasons_played": 0,
+            "opponent": opponent,
+            "is_home": bool(next_fixture_data.get("is_home")) if next_fixture_data else None,
+            "vs_opponent": {},
+            "opponent_defense": generic_opponent_defense or {},
+            "team_form": generic_team_form or {},
+            "opponent_form": generic_opponent_form or {},
+            "fixture_edge_score": round(fixture_edge_score, 3),
+            "opponent_goals_conceded_avg": _safe_float(
+                (generic_opponent_defense or {}).get("avg_goals_conceded_last5"),
+                0.0,
+            ),
+        }
+        if resolved_league != "Premier League":
+            return generic_context
+
         fpl_stats = get_fpl_stats_for_player(player_name, team_hint=team_hint or "")
         if not fpl_stats:
-            return None
+            return generic_context
         player_id = _safe_int(fpl_stats.get("player_id"), 0)
         if player_id <= 0:
-            return None
+            return generic_context
 
         client = FPLClient()
         summary = client.get_player_summary(player_id)
         history = summary.get("history", []) if summary else []
         if not history:
-            return None
+            return generic_context
 
         played = [h for h in history if _safe_int(h.get("minutes"), 0) > 0]
         if not played:
-            return None
+            return generic_context
         played = sorted(played, key=lambda h: h.get("kickoff_time") or "")
 
         recent = played[-5:]
@@ -2648,7 +2982,6 @@ def get_player_matchup_context(
         past_season_minutes = sum(_safe_int(s.get("total_points"), 0) for s in history_past)
         seasons_played = len(history_past)
 
-        opponent = next_fixture_data.get("opponent") if next_fixture_data else None
         opponent_id = _resolve_fpl_team_id(opponent)
         vs_opponent = []
         if opponent_id:
@@ -2704,6 +3037,8 @@ def get_player_matchup_context(
                     "clean_sheets_last5": _safe_int((defense_form or {}).get("clean_sheets_last5"), 0),
                     "samples": _safe_int((defense_form or {}).get("samples"), 0),
                 }
+        if opponent_defense is None:
+            opponent_defense = generic_opponent_defense
 
         return {
             "recent_form": {
@@ -2722,6 +3057,13 @@ def get_player_matchup_context(
             "is_home": bool(next_fixture_data.get("is_home")) if next_fixture_data else None,
             "vs_opponent": vs_context,
             "opponent_defense": opponent_defense,
+            "team_form": generic_team_form or {},
+            "opponent_form": generic_opponent_form or {},
+            "fixture_edge_score": round(fixture_edge_score, 3),
+            "opponent_goals_conceded_avg": _safe_float(
+                (opponent_defense or {}).get("avg_goals_conceded_last5"),
+                0.0,
+            ),
         }
     except Exception as e:
         logger.warning(f"Failed building matchup context for {player_name}: {e}")
@@ -2832,13 +3174,19 @@ def _classify_price_state(
     return "awaiting stronger live pricing"
 
 
-def _top_team_risk_names(team_name: str, top_n: int = 3, threshold: float = 0.45) -> List[str]:
+def _top_team_risk_names(
+    team_name: str,
+    top_n: int = 3,
+    threshold: float = 0.45,
+    league_hint: Optional[str] = None,
+) -> List[str]:
     if inference_df is None:
         return []
     try:
         team_rows = inference_df[inference_df["team"].str.lower() == team_name.lower()].copy()
         if team_rows.empty:
             return []
+        resolved_league = (league_hint or _infer_team_league(team_name)).strip()
         team_rows = team_rows.sort_values("ensemble_prob", ascending=False)
         names = []
         for _, row in team_rows.iterrows():
@@ -2848,7 +3196,11 @@ def _top_team_risk_names(team_name: str, top_n: int = 3, threshold: float = 0.45
             player_name = row.get("name", "")
             if not player_name:
                 continue
-            fpl = get_fpl_stats_for_player(player_name, team_hint=team_name)
+            fpl = (
+                get_fpl_stats_for_player(player_name, team_hint=team_name)
+                if resolved_league == "Premier League"
+                else None
+            )
             display = get_popular_player_name(player_name, fpl)
             if display not in names:
                 names.append(display)
@@ -2864,6 +3216,7 @@ def _build_team_market_insight(
     opponent_name: Optional[str],
     is_home: bool,
     moneyline_rows: Optional[List[Dict[str, Any]]] = None,
+    league_hint: Optional[str] = None,
 ) -> Optional[str]:
     team_short = _team_nickname(team_name)
     opponent_short = _team_nickname(opponent_name) if opponent_name else "opponent"
@@ -2892,7 +3245,7 @@ def _build_team_market_insight(
             f"({period})."
         )
 
-    risk_names = _top_team_risk_names(team_name)
+    risk_names = _top_team_risk_names(team_name, league_hint=league_hint)
     risk_part = f" Risk watch: {', '.join(risk_names)}." if risk_names else ""
 
     headline = f"Market Insight: {team_short} {price_state} vs {opponent_short}."
@@ -2999,6 +3352,7 @@ def get_next_fixture_for_team(team_name: str, injury_prob: float) -> Optional[Di
                         opponent_name=fixture_result.get("opponent"),
                         is_home=bool(fixture_result.get("is_home")),
                         moneyline_rows=fixture_result.get("moneyline_1x2"),
+                        league_hint="Premier League",
                     )
                     return fixture_result
     except Exception as e:
@@ -3129,6 +3483,85 @@ def _current_season_year() -> int:
     return now.year if now.month >= 8 else now.year - 1
 
 
+def _estimate_la_liga_fixture_difficulty(
+    team_name: str,
+    opponent_name: str,
+    is_home: bool,
+    moneyline_data: Optional[Dict[str, Any]] = None,
+) -> int:
+    """
+    Build a generic 1-5 fixture difficulty score for La Liga.
+
+    Priority:
+    - bookmaker 1X2 when available
+    - standings + opponent defensive profile fallback
+    """
+    difficulty_from_market: Optional[int] = None
+    books = (moneyline_data or {}).get("books") or []
+    if books:
+        probabilities: List[float] = []
+        for book in books:
+            try:
+                decimal = float(book.get("home" if is_home else "away"))
+                if decimal > 1.01:
+                    probabilities.append(1 / decimal)
+            except (TypeError, ValueError):
+                continue
+        if probabilities:
+            win_prob = sum(probabilities) / len(probabilities)
+            if win_prob >= 0.62:
+                difficulty_from_market = 1
+            elif win_prob >= 0.52:
+                difficulty_from_market = 2
+            elif win_prob >= 0.40:
+                difficulty_from_market = 3
+            elif win_prob >= 0.28:
+                difficulty_from_market = 4
+            else:
+                difficulty_from_market = 5
+
+    standings = _get_la_liga_standings_cached()
+    opp_key = _normalize_cache_key(opponent_name)
+    team_key = _normalize_cache_key(team_name)
+    team_row = next((row for row in standings if _normalize_cache_key(row.get("name")) == team_key), None)
+    opponent_row = next((row for row in standings if _normalize_cache_key(row.get("name")) == opp_key), None)
+    if opponent_row is None:
+        return difficulty_from_market or 3
+
+    team_pos = _safe_int((team_row or {}).get("position"), 10)
+    opp_pos = _safe_int(opponent_row.get("position"), 10)
+    opp_played = max(1, _safe_int(opponent_row.get("played"), 1))
+    opp_goals_against_pg = _safe_float(opponent_row.get("goals_against", 0), 0.0) / opp_played
+    opp_goal_diff = _safe_int(opponent_row.get("goal_difference"), 0)
+
+    difficulty_score = 3.0
+    if opp_pos <= 4:
+        difficulty_score += 1.0
+    elif opp_pos <= 8:
+        difficulty_score += 0.4
+    elif opp_pos >= 17:
+        difficulty_score -= 1.0
+    elif opp_pos >= 13:
+        difficulty_score -= 0.4
+
+    if opp_goals_against_pg <= 1.0:
+        difficulty_score += 0.6
+    elif opp_goals_against_pg >= 1.5:
+        difficulty_score -= 0.6
+
+    if opp_goal_diff >= 12:
+        difficulty_score += 0.3
+    elif opp_goal_diff <= -12:
+        difficulty_score -= 0.3
+
+    difficulty_score += -0.25 if is_home else 0.25
+
+    if difficulty_from_market is not None:
+        difficulty_score = (difficulty_score * 0.45) + (difficulty_from_market * 0.55)
+
+    return max(1, min(5, int(round(difficulty_score))))
+
+
 def _fetch_la_liga_fixture_dataset_live() -> Dict[str, Any]:
     started = time.perf_counter()
     client = MatchHistoryApiClient()
@@ -3212,14 +3645,14 @@ def _get_la_liga_team_fixtures_cached(team_name: str, count: int = 5) -> List[Di
             upcoming.append({
                 "opponent": away,
                 "is_home": True,
-                "difficulty": 3,
+                "difficulty": _estimate_la_liga_fixture_difficulty(team_name, away, True),
                 "match_time": match.get("utcDate"),
             })
         elif _normalize_cache_key(away) == team_key:
             upcoming.append({
                 "opponent": home,
                 "is_home": False,
-                "difficulty": 3,
+                "difficulty": _estimate_la_liga_fixture_difficulty(team_name, home, False),
                 "match_time": match.get("utcDate"),
             })
 
@@ -3261,8 +3694,20 @@ def _build_la_liga_next_fixture_data(team_name: str, upcoming_fixture: Optional[
     books = moneyline_data.get("books") if moneyline_data and moneyline_data.get("books") else None
     opponent = upcoming_fixture.get("opponent")
     is_home = bool(upcoming_fixture.get("is_home"))
+    difficulty = _estimate_la_liga_fixture_difficulty(
+        team_name,
+        str(opponent or ""),
+        is_home,
+        moneyline_data=moneyline_data,
+    )
     fixture_insight = (
-        _build_team_market_insight(team_name, opponent, is_home, moneyline_rows=books)
+        _build_team_market_insight(
+            team_name,
+            opponent,
+            is_home,
+            moneyline_rows=books,
+            league_hint="La Liga",
+        )
         if books else None
     )
     return {
@@ -3272,6 +3717,7 @@ def _build_la_liga_next_fixture_data(team_name: str, upcoming_fixture: Optional[
         "clean_sheet_odds": None,
         "win_probability": None,
         "fixture_insight": fixture_insight,
+        "difficulty": difficulty,
         "moneyline_1x2": books,
     }
 
@@ -3713,6 +4159,14 @@ def calculate_player_importance(
     ppg = _safe_float(stats.get("points_per_game", player_row.get("points_per_game")), 0.0)
     form = _safe_float(stats.get("form", player_row.get("form")), 0.0)
     minutes = _safe_int(stats.get("minutes", player_row.get("minutes")), 0)
+    if not stats and ppg <= 0:
+        ppg = _public_stats_to_points_per_game(player_row, player_row.get("position", ""))
+    if not stats and form <= 0:
+        goals_per_90 = _safe_float(player_row.get("goals_per_90", 0), 0.0)
+        assists_per_90 = _safe_float(player_row.get("assists_per_90", 0), 0.0)
+        shots_per_90 = _safe_float(player_row.get("shots_per_90", 0), 0.0)
+        saves_per_90 = _safe_float(player_row.get("saves_per_90", 0), 0.0)
+        form = round(ppg + (goals_per_90 * 1.8) + (assists_per_90 * 1.3) + (shots_per_90 * 0.08) + (saves_per_90 * 0.05), 2)
     role = _position_importance_role(player_row.get("position", ""))
 
     # If no useful signal is available at all, don't emit noisy placeholders.
@@ -3933,7 +4387,7 @@ def player_row_to_risk(row) -> PlayerRisk:
     # Enrich with FPL stats — La Liga players are not in FPL so skip to avoid
     # matching La Liga players to wrong EPL entries (e.g. Fermín López → "H.Bueno")
     fpl_stats = get_fpl_stats_for_player(player_name, team_hint=team) if not is_la_liga else None
-    tm_profile = _get_transfermarkt_player_profile_cached(player_name, team_hint=team) if is_la_liga else None
+    public_profile = _get_laliga_public_player_profile(player_name, team_hint=team) if is_la_liga else None
     enriched_row["story_name"] = get_popular_player_name(player_name, fpl_stats)
     if fpl_stats:
         enriched_row.update({
@@ -3948,17 +4402,33 @@ def player_row_to_risk(row) -> PlayerRisk:
             "display_name": fpl_stats.get("name", ""),
             "popular_name": get_popular_player_name(player_name, fpl_stats),
         })
-    elif tm_profile:
+    elif public_profile:
+        public_price = _public_stats_to_fantasy_price(public_profile, enriched_row.get("position", ""))
+        public_ppg = _public_stats_to_points_per_game(public_profile, enriched_row.get("position", ""))
         enriched_row.update({
-            "goals": tm_profile.get("goals", 0),
-            "assists": tm_profile.get("assists", 0),
-            "goals_per_90": tm_profile.get("goals_per_90", 0),
-            "assists_per_90": tm_profile.get("assists_per_90", 0),
-            "price": tm_profile.get("fantasy_price", 0),
-            "market_value_m": tm_profile.get("market_value_m"),
-            "minutes": tm_profile.get("minutes_played", 0),
-            "minutes_played": tm_profile.get("minutes_played", 0),
-            "appearances": tm_profile.get("appearances", 0),
+            "goals": public_profile.get("goals", 0),
+            "assists": public_profile.get("assists", 0),
+            "goals_per_90": public_profile.get("goals_per_90", 0),
+            "assists_per_90": public_profile.get("assists_per_90", 0),
+            "shots": public_profile.get("shots", 0),
+            "shots_per_90": public_profile.get("shots_per_90", 0),
+            "saves": public_profile.get("saves", 0),
+            "saves_per_90": public_profile.get("saves_per_90", 0),
+            "yellow_cards": public_profile.get("yellow_cards", 0),
+            "red_cards": public_profile.get("red_cards", 0),
+            "price": public_price,
+            "minutes": public_profile.get("minutes_played", enriched_row.get("minutes_played", 0)),
+            "minutes_played": public_profile.get("minutes_played", enriched_row.get("minutes_played", 0)),
+            "appearances": public_profile.get("appearances", enriched_row.get("appearances", 0)),
+            "points_per_game": public_ppg,
+            "form": public_ppg,
+            "stats_source": public_profile.get("stats_source", "laliga_official_public"),
+            "popular_name": get_popular_player_name(player_name, None),
+        })
+    elif is_la_liga:
+        enriched_row.update({
+            "minutes": _safe_int(enriched_row.get("minutes_played", enriched_row.get("minutes", 0)), 0),
+            "appearances": _safe_int(enriched_row.get("appearances", 0), 0),
             "popular_name": get_popular_player_name(player_name, None),
         })
     if _safe_int(enriched_row.get("shirt_number"), 0) <= 0:
@@ -3991,6 +4461,7 @@ def player_row_to_risk(row) -> PlayerRisk:
         player_name=player_name,
         team_hint=team,
         next_fixture_data=next_fixture_data,
+        league_hint=player_league,
     )
     importance_data = calculate_player_importance(
         player_row=enriched_row,
@@ -4289,7 +4760,7 @@ def list_players(team: Optional[str] = None, risk_level: Optional[str] = None):
         row_league = row.get("league", "Premier League")
         is_la_liga = row_league == "La Liga"
         fpl = None if is_la_liga else get_fpl_stats_for_player(name, team_hint=row.get("team", ""))
-        minutes = fpl.get("minutes", 0) if fpl else 0
+        minutes = _resolve_display_minutes(row, fpl)
         fpl_status = fpl.get("status", "a") if fpl else "a"
         display_prob = round(normalize_risk_score(prob, row_league) / 100, 3)
         players.append(PlayerSummary(
@@ -4445,6 +4916,7 @@ def get_predictions(team: str):
             player_name=name,
             team_hint=team_name,
             next_fixture_data=next_fixture_data,
+            league_hint=row_dict.get("league"),
         )
 
         minutes_last_5 = (matchup or {}).get("minutes_last_5", [])
@@ -4618,7 +5090,7 @@ def get_team_overview(team_name: str):
         prob = row.get("ensemble_prob", 0.5)
         name = row.get("name", "Unknown")
         fpl = None if is_la_liga else get_fpl_stats_for_player(name)
-        minutes = fpl.get("minutes", 0) if fpl else 0
+        minutes = _resolve_display_minutes(row, fpl)
         fpl_status = fpl.get("status", "a") if fpl else "a"
         row_league = row.get("league")
         display_prob = round(normalize_risk_score(prob, row_league) / 100, 3)

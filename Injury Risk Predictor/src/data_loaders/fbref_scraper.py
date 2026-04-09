@@ -42,6 +42,7 @@ logger = get_logger(__name__)
 # Configuration
 BASE_URL = "https://fbref.com"
 PREMIER_LEAGUE_URL = f"{BASE_URL}/en/comps/9/Premier-League-Stats"
+LA_LIGA_URL = f"{BASE_URL}/en/comps/12/La-Liga-Stats"
 RATE_LIMIT_DELAY = 4.0  # seconds between requests (be respectful to FBref)
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
@@ -142,14 +143,14 @@ class FBrefScraper:
 
         return response.text
 
-    def get_premier_league_teams(self) -> List[Dict]:
+    def _get_league_teams(self, league_url: str, league_name: str) -> List[Dict]:
         """
-        Get all current Premier League teams with their FBref IDs.
+        Get all current teams for a league page.
 
         Returns:
             List of dicts with: name, url, fbref_id
         """
-        html = self._get(PREMIER_LEAGUE_URL)
+        html = self._get(league_url)
         soup = BeautifulSoup(html, "html.parser")
 
         teams = []
@@ -161,7 +162,7 @@ class FBrefScraper:
             table = soup.find("table", {"class": "stats_table"})
 
         if not table:
-            logger.warning("Could not find teams table on FBref")
+            logger.warning(f"Could not find teams table on FBref for {league_name}")
             return teams
 
         # Parse team rows
@@ -183,8 +184,16 @@ class FBrefScraper:
                         "fbref_id": fbref_id,
                     })
 
-        logger.info(f"Found {len(teams)} Premier League teams")
+        logger.info(f"Found {len(teams)} {league_name} teams")
         return teams
+
+    def get_premier_league_teams(self) -> List[Dict]:
+        """Get all current Premier League teams with their FBref IDs."""
+        return self._get_league_teams(PREMIER_LEAGUE_URL, "Premier League")
+
+    def get_la_liga_teams(self) -> List[Dict]:
+        """Get all current La Liga teams with their FBref IDs."""
+        return self._get_league_teams(LA_LIGA_URL, "La Liga")
 
     def get_team_players(self, team_url: str) -> List[Dict]:
         """
@@ -237,7 +246,17 @@ class FBrefScraper:
                         if age_match:
                             age = int(age_match.group(1))
 
-                    # Get minutes played this season
+                    # Get appearances and minutes played this season
+                    app_td = row.find("td", {"data-stat": "games"})
+                    if not app_td:
+                        app_td = row.find("td", {"data-stat": "matches"})
+                    appearances = 0
+                    if app_td:
+                        try:
+                            appearances = int(app_td.text.strip().replace(",", ""))
+                        except ValueError:
+                            pass
+
                     min_td = row.find("td", {"data-stat": "minutes"})
                     minutes = 0
                     if min_td:
@@ -252,6 +271,7 @@ class FBrefScraper:
                         "fbref_id": fbref_id,
                         "position": position,
                         "age": age,
+                        "appearances": appearances,
                         "season_minutes": minutes,
                     })
 
@@ -400,6 +420,34 @@ class FBrefScraper:
         df = pd.DataFrame(all_players)
 
         # Rename url to player_url
+        if "url" in df.columns:
+            df = df.rename(columns={"url": "player_url"})
+
+        logger.info(f"Total: {len(df)} players from {len(teams)} teams")
+        return df
+
+    def get_all_la_liga_players(self) -> pd.DataFrame:
+        """
+        Get all current La Liga players with their team info.
+
+        Returns:
+            DataFrame with: name, team, position, age, appearances, season_minutes,
+                           fbref_id, player_url
+        """
+        teams = self.get_la_liga_teams()
+
+        all_players = []
+        for team in teams:
+            logger.info(f"Fetching players for {team['name']}...")
+
+            players = self.get_team_players(team["url"])
+
+            for player in players:
+                player["team"] = team["name"]
+                all_players.append(player)
+
+        df = pd.DataFrame(all_players)
+
         if "url" in df.columns:
             df = df.rename(columns={"url": "player_url"})
 

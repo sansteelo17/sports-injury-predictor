@@ -483,13 +483,13 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
             </ul>
           </div>
 
-          {/* Fixture Difficulty (EPL only — FDR from FPL) */}
-          {!isLaLiga && player.upcoming_fixtures && player.upcoming_fixtures.length > 0 && (
+          {/* Fixture Difficulty / Outlook */}
+          {player.upcoming_fixtures && player.upcoming_fixtures.length > 0 && (
             <div className={`px-4 sm:px-6 py-4 ${darkMode ? "border-t border-[#1f1f1f]" : "border-t border-gray-100"}`}>
               <div className="flex items-center gap-2 mb-3">
                 <Calendar className={darkMode ? "text-cyan-400" : "text-cyan-600"} size={18} />
                 <span className={`font-semibold text-sm ${darkMode ? "text-white" : "text-gray-900"}`}>
-                  Upcoming Fixture Difficulty
+                  Upcoming Fixture Outlook
                 </span>
               </div>
               <div className="flex gap-2">
@@ -513,16 +513,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                 })}
               </div>
               <div className={`flex justify-between mt-2 text-[10px] ${darkMode ? "text-gray-600" : "text-gray-400"}`}>
-                <span>FDR: 1 (easy) → 5 (hard)</span>
-              </div>
-            </div>
-          )}
-          {/* La Liga: fixture difficulty coming */}
-          {isLaLiga && (
-            <div className={`px-4 sm:px-6 py-3 ${darkMode ? "border-t border-[#1f1f1f]" : "border-t border-gray-100"}`}>
-              <div className={`flex items-center gap-2 text-xs ${darkMode ? "text-gray-500" : "text-gray-400"}`}>
-                <Calendar size={13} />
-                <span>Fixture difficulty ratings for La Liga coming soon.</span>
+                <span>Scale: 1 (easier) → 5 (harder)</span>
               </div>
             </div>
           )}
@@ -906,9 +897,8 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                     />
                   </div>
                   <p className={`text-sm ${darkMode ? "text-gray-300" : "text-gray-700"}`}>
-                    Yara estimates clean-sheet probability at{" "}
-                    {Math.round(player.clean_sheet_odds.clean_sheet_probability * 100)}%
-                    ({player.clean_sheet_odds.decimal.toFixed(2)}).
+                    {player.clean_sheet_odds.analysis ??
+                      `Yara estimates clean-sheet probability at ${Math.round(player.clean_sheet_odds.clean_sheet_probability * 100)}% (${player.clean_sheet_odds.decimal.toFixed(2)}).`}
                   </p>
                 </div>
               </div>

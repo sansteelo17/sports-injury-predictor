@@ -52,6 +52,12 @@ DISPLAY_TEAM_NAME_OVERRIDES = {
 }
 
 
+def _fantasy_game_label(player_data: Dict) -> str:
+    """Return user-facing fantasy game label by league."""
+    league = str(player_data.get("league", "Premier League") or "Premier League").strip()
+    return "FPL" if league == "Premier League" else "fantasy"
+
+
 def _safe_float(value, default=0.0):
     try:
         if value is None:
@@ -275,6 +281,86 @@ def _build_importance_sentence(importance: Dict, first_name: str, risk_pct: int)
     return ". ".join(parts) + "."
 
 
+def _season_output_sentence(player_data: Dict, first_name: str, role: str) -> Optional[str]:
+    """Fallback stat line when recent-match logs are thin or unavailable."""
+    minutes = _safe_int(player_data.get("minutes", player_data.get("minutes_played", 0)), 0)
+    goals = _safe_int(player_data.get("goals", 0), 0)
+    assists = _safe_int(player_data.get("assists", 0), 0)
+    goals_per_90 = _safe_float(player_data.get("goals_per_90", 0.0), 0.0)
+    assists_per_90 = _safe_float(player_data.get("assists_per_90", 0.0), 0.0)
+    shots_per_90 = _safe_float(player_data.get("shots_per_90", 0.0), 0.0)
+    saves_per_90 = _safe_float(player_data.get("saves_per_90", 0.0), 0.0)
+
+    if minutes < 450:
+        return None
+
+    if role in ("attacker", "midfielder") and (goals > 0 or assists > 0 or goals_per_90 + assists_per_90 > 0):
+        output_rate = goals_per_90 + assists_per_90
+        if goals > 0 and assists > 0:
+            return (
+                f"{first_name} has {goals} goals and {assists} assists in {minutes} league minutes, "
+                f"running at {output_rate:.2f} goal involvements per 90."
+            )
+        if goals > 0:
+            return (
+                f"{first_name} has {goals} league goals in {minutes} minutes, "
+                f"with {goals_per_90:.2f} goals per 90."
+            )
+        return (
+            f"{first_name} has {assists} assists in {minutes} league minutes, "
+            f"with {assists_per_90:.2f} assists per 90."
+        )
+
+    if role == "goalkeeper" and saves_per_90 > 0:
+        return (
+            f"{first_name} has logged {minutes} league minutes and is still making {saves_per_90:.2f} saves per 90."
+        )
+
+    if role == "defender":
+        if goals > 0 or assists > 0:
+            return (
+                f"{first_name} has given {goals + assists} attacking returns from the back in {minutes} league minutes."
+            )
+        return f"{first_name} has already logged {minutes} league minutes, so this is not a bit-part role."
+
+    if shots_per_90 > 0:
+        return (
+            f"{first_name} is getting through {shots_per_90:.2f} shots per 90 across {minutes} league minutes."
+        )
+    return None
+
+
+def _fixture_form_sentence(team_form: Dict, opponent_form: Dict, team: str, opponent: str) -> Optional[str]:
+    """Summarize recent team-v-opponent momentum in one football sentence."""
+    tf_samples = _safe_int(team_form.get("samples", 0), 0)
+    of_samples = _safe_int(opponent_form.get("samples", 0), 0)
+    if tf_samples <= 0 or of_samples <= 0:
+        return None
+
+    team_points = _safe_int(team_form.get("points_last5", 0), 0)
+    opp_points = _safe_int(opponent_form.get("points_last5", 0), 0)
+    team_gd = _safe_int(team_form.get("goal_diff_last5", 0), 0)
+    opp_gd = _safe_int(opponent_form.get("goal_diff_last5", 0), 0)
+
+    team_display = _display_team_name(team)
+    opp_display = _display_team_name(opponent)
+    if team_points >= opp_points + 4:
+        return (
+            f"{team_display} come in hotter here with {team_points} points from the last {tf_samples}, "
+            f"while {opp_display} have taken {opp_points}."
+        )
+    if opp_points >= team_points + 4:
+        return (
+            f"{opp_display} arrive in better nick with {opp_points} points from the last {of_samples}, "
+            f"so this is tougher than the badge alone suggests."
+        )
+    if team_gd >= opp_gd + 3:
+        return f"{team_display} have been carrying the stronger recent goal difference into this fixture."
+    if opp_gd >= team_gd + 3:
+        return f"{opp_display} have had the sharper recent edge on goal difference coming into this match."
+    return None
+
+
 # ── OptaJoe voice helpers ───────────────────────────────────────────────────
 
 _KICKER_POOLS = {
@@ -401,6 +487,9 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
     player_importance = _extract_player_importance(extra_context)
     matchup_context = extra_context.get("matchup_context") or {}
     recent_form = matchup_context.get("recent_form") or {}
+    team_form = matchup_context.get("team_form") or {}
+    opponent_form = matchup_context.get("opponent_form") or {}
+    fixture_edge_score = _safe_float(matchup_context.get("fixture_edge_score", 0.0), 0.0)
     recent_samples = _safe_int(recent_form.get("samples", 0), 0)
     recent_goals = _safe_int(recent_form.get("goals", 0), 0)
     recent_assists = _safe_int(recent_form.get("assists", 0), 0)
@@ -417,6 +506,10 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
     is_home = matchup_context.get("is_home")
     if is_home is None:
         is_home = next_fixture.get("is_home")
+    team_name = _display_team_name(str(player_data.get("team", "") or ""))
+    season_output_line = _season_output_sentence(player_data, first_name, role)
+    importance_line = _build_importance_sentence(player_importance, first_name, risk_pct)
+    fixture_form_line = _fixture_form_sentence(team_form, opponent_form, team_name, opponent)
 
     # Per-injury detail records (sorted most recent first)
     injury_records = extra_context.get("injury_records") or []
@@ -680,6 +773,9 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
                     f"Workload ratio is {acwr:.2f}. No spike, no fatigue flag. Load looks well managed."
                 )
 
+    if importance_line and not any(first_name in sentence and "ownership" in sentence.lower() for sentence in sentences):
+        sentences.append(importance_line.rstrip("."))
+
     # AGE
     if age >= 34:
         sentences.append(
@@ -696,7 +792,7 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
 
     # FIXTURE — layer all 3 data dimensions: recent form, opponent defense, player H2H
     if opponent:
-        team = _display_team_name(str(player_data.get("team", "") or ""))
+        team = team_name
         venue_word = "at home" if is_home else "away" if is_home is not None else ""
 
         # 1. Player's recent form (role-aware) — full sentence
@@ -722,11 +818,16 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
                 sentences.append(
                     f"No goal involvements in {recent_samples} appearances is a concern, the output has dried up."
                 )
+            elif season_output_line:
+                sentences.append(season_output_line)
 
         # 2. Opponent defense — full sentence
         conceded_line = _natural_conceding_line(opponent, opp_conceded)
         if conceded_line:
             sentences.append(f"{conceded_line}.")
+
+        if fixture_form_line:
+            sentences.append(fixture_form_line)
 
         # 3. Player's personal record vs this opponent — full sentence
         if role in ("defender", "goalkeeper"):
@@ -754,6 +855,10 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
             sentences.append(
                 f"{team} have gone {fh_wins}W-{fh_losses}L in {fixture_samples} recent meetings with {opponent}."
             )
+        elif fixture_edge_score <= -0.75:
+            sentences.append(
+                f"This is not a soft landing for {first_name}. Recent form and matchup history both lean toward {opponent}."
+            )
 
         # 5. Venue context woven in naturally if not already implied
         fixture_already_mentioned = any(opponent in s for s in sentences)
@@ -778,6 +883,8 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
             )
         elif recent_gi > 0:
             sentences.append(f"{recent_output_line}.")
+    elif "fixture" not in covered and season_output_line and len(sentences) < 5:
+        sentences.append(season_output_line)
 
     # Minimum sentence guarantee for sparse profiles
     if is_sparse_profile and len(sentences) < 3 and opponent:
@@ -992,6 +1099,7 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
     first_name = _call_name(player_data)
     if first_name and first_name[0].islower():
         first_name = first_name[0].upper() + first_name[1:]
+    game_label = _fantasy_game_label(player_data)
     injury_prob = _safe_float(player_data.get("ensemble_prob", 0.5), 0.5)
     days_since = _safe_int(player_data.get("days_since_last_injury", 365), 365)
     is_currently_injured = bool(player_data.get("is_currently_injured", False))
@@ -1007,6 +1115,9 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
     player_importance = _extract_player_importance(extra_context)
     matchup_context = extra_context.get("matchup_context") or {}
     recent_form = matchup_context.get("recent_form") or {}
+    team_form = matchup_context.get("team_form") or {}
+    opponent_form = matchup_context.get("opponent_form") or {}
+    fixture_edge_score = _safe_float(matchup_context.get("fixture_edge_score", 0.0), 0.0)
     recent_samples = _safe_int(recent_form.get("samples", 0), 0)
     recent_goals = _safe_int(recent_form.get("goals", 0), 0)
     recent_assists = _safe_int(recent_form.get("assists", 0), 0)
@@ -1037,12 +1148,20 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
 
     importance_tier = str(player_importance.get("tier", "") or "").strip()
     importance_ownership = _safe_float(player_importance.get("ownership_pct", 0.0), 0.0)
+    season_output_line = _season_output_sentence(player_data, first_name, role)
+    fixture_form_line = _fixture_form_sentence(
+        team_form,
+        opponent_form,
+        str(player_data.get("team", "") or ""),
+        opponent,
+    )
 
     # Fixture attractiveness: high-output player + weak opponent = still worth starting
     fixture_is_attractive = (
         (opp_conceded >= 1.2 and is_home is True)
         or (opp_conceded >= 1.5)
         or (vs_samples >= 2 and (vs_goals + vs_assists) >= 2)
+        or fixture_edge_score >= 0.65
     )
     high_output_player = output_per_90 >= 0.4 or (role in ("defender", "goalkeeper") and recent_clean_sheets >= 2)
 
@@ -1062,17 +1181,23 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
         has_form = recent_clean_sheets >= 2 and recent_samples > 0
         form_cold = recent_clean_sheets == 0 and recent_samples >= 3
         has_h2h = vs_samples >= 1 and vs_clean_sheets > 0
-        has_good_fixture = team_dominates or (is_home is True and fh_samples >= 2)
+        has_good_fixture = team_dominates or (is_home is True and fh_samples >= 2) or fixture_edge_score >= 0.65
         # "opponent concedes a lot" is irrelevant for a defender's clean sheet potential
         form_detail = f"{recent_clean_sheets} clean sheets in {recent_samples}" if has_form else ""
         h2h_detail = f"{vs_clean_sheets} clean sheet{'s' if vs_clean_sheets != 1 else ''} in {vs_samples} against {opponent}" if has_h2h else ""
     else:
         # Attackers/midfielders: form = goal involvements, H2H = returns, fixture = weak opponent
         has_form = recent_gi >= 2 and recent_samples > 0
+        if not has_form and season_output_line and minutes >= 900 and output_per_90 >= 0.40:
+            has_form = True
         form_cold = recent_gi == 0 and recent_samples >= 3
         has_h2h = vs_samples >= 1 and (vs_goals + vs_assists) >= 1
-        has_good_fixture = opp_conceded >= 1.0
-        form_detail = f"{recent_gi} goal involvements in {recent_samples}" if has_form else ""
+        has_good_fixture = opp_conceded >= 1.0 or fixture_edge_score >= 0.65
+        form_detail = (
+            f"{recent_gi} goal involvements in {recent_samples}"
+            if recent_samples > 0 and recent_gi >= 2
+            else (season_output_line or "")
+        )
         h2h_detail = (
             f"{vs_goals + vs_assists} return{'s' if (vs_goals + vs_assists) != 1 else ''} in {vs_samples} against {opponent}"
             if has_h2h else ""
@@ -1090,7 +1215,7 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
     elif is_currently_injured or days_since < 14:
         action = "Bench"
         reason_bits.append(
-            f"Only {days_since} days back, too soon to be starting in FPL"
+            f"Only {days_since} days back, too soon to be trusting this in {game_label}"
         )
     elif all_align:
         action = "Start"
@@ -1118,9 +1243,14 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
                 f"Worth the gamble this week but make sure the bench is solid"
             )
         else:
-            reason_bits.append(
-                f"{form_detail} and {opponent} are not exactly shutting teams out. Good week to start"
-            )
+            if fixture_form_line:
+                reason_bits.append(
+                    f"{form_detail} {fixture_form_line} {opponent} are not exactly shutting teams out. Good week to start"
+                )
+            else:
+                reason_bits.append(
+                    f"{form_detail} and {opponent} are not exactly shutting teams out. Good week to start"
+                )
     elif has_form and has_h2h:
         action = "Start"
         reason_bits.append(
@@ -1149,8 +1279,9 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
         if role in ("defender", "goalkeeper"):
             action = "Start" if injury_prob < 0.50 else "Bench"
             if action == "Start":
+                fixture_detail = fixture_form_line or f"{team} have been solid in this fixture"
                 reason_bits.append(
-                    f"{team} have been solid in this fixture but {first_name}'s own form needs to back it up"
+                    f"{fixture_detail} but {first_name}'s own form needs to back it up"
                 )
             else:
                 reason_bits.append(
@@ -1159,9 +1290,14 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
         else:
             action = "Start" if injury_prob < 0.50 else "Bench"
             if action == "Start":
-                reason_bits.append(
-                    f"{opponent} are conceding enough to make {first_name} interesting, but the form needs to back it up"
-                )
+                if season_output_line:
+                    reason_bits.append(
+                        f"{season_output_line} {opponent} are giving teams chances, so there is enough here to start {first_name}"
+                    )
+                else:
+                    reason_bits.append(
+                        f"{opponent} are conceding enough to make {first_name} interesting, but the form needs to back it up"
+                    )
             else:
                 reason_bits.append(
                     f"{opponent} are beatable but {first_name}'s body is the bigger story right now"
@@ -1195,16 +1331,16 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
     context_chunks = retrieve_player_context(
         player_data,
         extra_context=extra_context,
-        query="fpl manager tip injury availability fixture",
+        query=f"{game_label} manager tip injury availability fixture",
         top_k=6,
         include_open_question=False,
     )
 
     polished = generate_grounded_narrative(
         task=(
-            f"Write a 2-3 sentence FPL manager tip for {first_name}. "
+            f"Write a 2-3 sentence {game_label} manager tip for {first_name}. "
             f"The decision is: {action}. Explain why using fixture, form, and matchup data. "
-            f"Talk like a sharp friend who manages a top-1k FPL team — confident, direct, no hedging. "
+            f"Talk like a sharp friend who manages a high-level fantasy team — confident, direct, no hedging. "
             f"Do not restate injury risk numbers already covered in the risk analysis."
         ),
         player_name=player_data.get("name", "This player"),
@@ -1254,7 +1390,25 @@ def calculate_scoring_odds(player_data: Dict, extra_context: Optional[Dict] = No
 
     base_score_prob = min(goals_per_90, 1.5)
     availability = 1 - (injury_prob * 0.5)
-    score_prob = max(0.02, min(0.85, base_score_prob * availability))
+    matchup_context = (extra_context or {}).get("matchup_context") or {}
+    opponent_defense = matchup_context.get("opponent_defense") or {}
+    fixture_edge_score = _safe_float(matchup_context.get("fixture_edge_score", 0.0), 0.0)
+    opp_conceded = _safe_float(opponent_defense.get("avg_goals_conceded_last5", 0.0), 0.0)
+
+    opponent_factor = 1.0
+    if opp_conceded >= 1.6:
+        opponent_factor *= 1.12
+    elif opp_conceded >= 1.2:
+        opponent_factor *= 1.06
+    elif 0 < opp_conceded <= 0.8:
+        opponent_factor *= 0.90
+
+    if fixture_edge_score >= 0.8:
+        opponent_factor *= 1.05
+    elif fixture_edge_score <= -0.8:
+        opponent_factor *= 0.94
+
+    score_prob = max(0.02, min(0.85, base_score_prob * availability * opponent_factor))
     involvement_prob = min((goals_per_90 + assists_per_90) * availability, 0.95)
     odds = _prob_to_odds(score_prob)
 
@@ -1320,6 +1474,7 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
     archetype = player_data.get("archetype", "Unknown")
     minutes = _safe_int(player_data.get("minutes", 0), 0)
     role = _position_group(position)
+    game_label = _fantasy_game_label(player_data)
 
     if minutes < 270 or price <= 0:
         return None
@@ -1526,7 +1681,7 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
     if archetype == "Currently Vulnerable" and days_since < 60:
         verdict = (
             f"{first_name} is back but it has only been {days_since} days. "
-            f"I would give it another week before trusting this in FPL. "
+            f"I would give it another week before trusting this in {game_label}. "
             f"{_pick_kicker('moderate_risk', first_name)}"
         )
     elif injury_prone and days_since < 120 and tier in {"Decent", "Strong", "Premium"}:
@@ -1583,10 +1738,29 @@ def calculate_clean_sheet_odds(player_data: Dict, extra_context: Optional[Dict] 
     fh_goals_against = _safe_float(fixture_history.get("goals_against", 0), 0.0)
     if fh_samples > 0 and fh_goals_against >= 0:
         goals_conceded_per_game = max(0.4, min(2.4, fh_goals_against / max(1, fh_samples)))
+    matchup_context = (extra_context or {}).get("matchup_context") or {}
+    opponent_form = matchup_context.get("opponent_form") or {}
+    opp_scoring_avg = _safe_float(opponent_form.get("avg_goals_for_last5", 0.0), 0.0)
+    if opp_scoring_avg > 0:
+        goals_conceded_per_game = round((goals_conceded_per_game * 0.55) + (opp_scoring_avg * 0.45), 2)
     base_cs_prob = math.exp(-goals_conceded_per_game)
     availability = 1 - (injury_prob * 0.5)
     cs_prob = max(0.05, min(0.7, base_cs_prob * availability))
     odds = _prob_to_odds(cs_prob)
+
+    opponent = _display_team_name(
+        matchup_context.get("opponent") or ((extra_context or {}).get("next_fixture") or {}).get("opponent") or "the opponent"
+    )
+    if opp_scoring_avg > 0:
+        analysis = (
+            f"Yara estimates clean-sheet probability at {round(cs_prob * 100)}% after injury adjustment. "
+            f"{opponent} are averaging about {opp_scoring_avg:.1f} goals a game lately, so the matchup still carries stress."
+        )
+    else:
+        analysis = (
+            f"Yara estimates clean-sheet probability at {round(cs_prob * 100)}% after injury adjustment. "
+            f"Fixture history sets the baseline at {goals_conceded_per_game:.2f} goals against per game."
+        )
 
     return {
         "clean_sheet_probability": round(cs_prob, 3),
@@ -1594,6 +1768,7 @@ def calculate_clean_sheet_odds(player_data: Dict, extra_context: Optional[Dict] 
         "american": odds["american"],
         "decimal": odds["decimal"],
         "availability_factor": round(availability, 2),
+        "analysis": analysis,
     }
 
 

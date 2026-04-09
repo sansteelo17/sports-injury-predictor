@@ -164,4 +164,59 @@ def add_match_features(team_matches_df: pd.DataFrame) -> pd.DataFrame:
         .reset_index(drop=True)
     )
 
+    # Opponent prematch context: what shape was the next opponent in before this fixture?
+    prematch_source = df[[
+        "team",
+        "match_date",
+        "form_avg_last_5",
+        "goal_diff_last_5",
+        "win_ratio_last_5",
+    ]].copy()
+    prematch_source = prematch_source.sort_values(["team", "match_date"]).reset_index(drop=True)
+    for col in ["form_avg_last_5", "goal_diff_last_5", "win_ratio_last_5"]:
+        prematch_source[f"opp_{col}"] = (
+            prematch_source.groupby("team")[col]
+            .shift(1)
+        )
+
+    prematch_source = prematch_source.rename(columns={"team": "opp_team"})
+    df = df.merge(
+        prematch_source[[
+            "opp_team",
+            "match_date",
+            "opp_form_avg_last_5",
+            "opp_goal_diff_last_5",
+            "opp_win_ratio_last_5",
+        ]],
+        on=["opp_team", "match_date"],
+        how="left",
+    )
+
+    # Team-v-team history before the current match.
+    df["match_goal_diff"] = df["goals_for"] - df["goals_against"]
+    pair_groups = df.groupby(["team", "opp_team"], sort=False)
+    df["h2h_matches_played"] = pair_groups.cumcount()
+    df["h2h_wins_prior"] = (
+        pair_groups["is_win"].transform(lambda s: s.cumsum().shift(1)).fillna(0)
+    )
+    df["h2h_points_prior"] = (
+        pair_groups["points"].transform(lambda s: s.cumsum().shift(1)).fillna(0)
+    )
+    df["h2h_goal_diff_prior"] = (
+        pair_groups["match_goal_diff"].transform(lambda s: s.cumsum().shift(1)).fillna(0)
+    )
+
+    denom = df["h2h_matches_played"].replace(0, pd.NA)
+    df["h2h_win_ratio"] = (df["h2h_wins_prior"] / denom).fillna(0)
+    df["h2h_points_per_match"] = (df["h2h_points_prior"] / denom).fillna(0)
+    df["h2h_goal_diff_avg"] = (df["h2h_goal_diff_prior"] / denom).fillna(0)
+
+    opp_form = df["opp_form_avg_last_5"].fillna(df["form_avg_last_5"].median())
+    opp_goal_diff = df["opp_goal_diff_last_5"].fillna(df["goal_diff_last_5"].median())
+    df["fixture_edge_score"] = (
+        (df["form_avg_last_5"] - opp_form)
+        + ((df["goal_diff_last_5"] - opp_goal_diff) * 0.15)
+        + (df["h2h_points_per_match"] * 0.25)
+    )
+
     return df
