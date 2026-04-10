@@ -58,6 +58,8 @@ from src.inference.story_generator import (
     generate_player_story,
     generate_risk_factors_list,
     get_recommendation_text,
+    generate_section_narrative,
+    generate_player_narrative_bundle,
     get_fpl_insight,
     calculate_scoring_odds,
     get_fpl_value_assessment,
@@ -65,7 +67,7 @@ from src.inference.story_generator import (
     generate_yara_response,
     generate_lab_notes,
 )
-from src.inference.llm_client import generate_grounded_narrative
+from src.inference.llm_client import generate_grounded_narrative, llm_enabled
 from src.data_loaders.fpl_api import FPLClient, get_fpl_insights
 from src.data_loaders.football_data_api import FootballDataClient, get_standings_summary
 from src.data_loaders.api_client import (
@@ -154,6 +156,7 @@ refresh_state_lock = threading.Lock()
 _pl_standings_cache: Dict[str, Any] = {"data": None, "expires": None}  # football-data.org PL standings
 _fpl_insights_cache: Dict[str, Any] = {"data": None, "expires": None}  # FPL insights (standings + fixtures + gw)
 _player_risk_cache: Dict[str, Dict[str, Any]] = {}  # player name (lower) -> {"data": ..., "expires": ...}
+_narrative_bundle_cache: Dict[str, Dict[str, Any]] = {}
 _la_liga_standings_cache: Dict[str, Any] = {"data": None, "expires": None}
 _la_liga_fixture_dataset_cache: Dict[str, Any] = {"season": None, "data": None, "expires": None}
 _la_liga_team_fixtures_cache: Dict[str, Dict[str, Any]] = {}
@@ -165,6 +168,7 @@ _tm_scraper_instance = None
 _PL_STANDINGS_TTL = timedelta(hours=6)   # team list barely changes mid-season
 _FPL_INSIGHTS_TTL = timedelta(minutes=15)  # GW fixture data refreshes each round
 _PLAYER_RISK_TTL = timedelta(minutes=10)  # odds + FPL data; stale-ish is fine for repeated views
+_NARRATIVE_BUNDLE_TTL = timedelta(hours=2)
 _LA_LIGA_STANDINGS_TTL = timedelta(minutes=12)
 _LA_LIGA_FIXTURE_DATASET_TTL = timedelta(minutes=12)
 _LA_LIGA_TEAM_FIXTURES_TTL = timedelta(minutes=10)
@@ -183,6 +187,29 @@ def _cache_entry_is_fresh(entry: Optional[Dict[str, Any]]) -> bool:
         return False
     expires = entry.get("expires")
     return bool(expires and expires > datetime.utcnow())
+
+
+def _narrative_cache_key(
+    player_row: Dict[str, Any],
+    next_fixture: Optional[Dict[str, Any]],
+    section_fallbacks: Dict[str, Any],
+) -> str:
+    """Stable cache key for bundled narrative text."""
+    payload = {
+        "name": str(player_row.get("name", "")).lower(),
+        "team": str(player_row.get("team", "")).lower(),
+        "league": str(player_row.get("league", "")),
+        "risk_score_pct": player_row.get("risk_score_pct"),
+        "acwr": round(_safe_float(player_row.get("acwr", 0.0), 0.0), 3),
+        "days_since_last_injury": _safe_int(player_row.get("days_since_last_injury", 365), 365),
+        "next_fixture": {
+            "opponent": (next_fixture or {}).get("opponent"),
+            "is_home": (next_fixture or {}).get("is_home"),
+            "difficulty": (next_fixture or {}).get("difficulty"),
+        },
+        "sections": {k: (v or "") for k, v in section_fallbacks.items()},
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=True, default=str)
 
 
 def _normalize_cache_key(value: Optional[str]) -> str:
@@ -253,12 +280,13 @@ def _load_models_blocking():
     global artifacts, inference_df, fpl_stats_cache, fpl_team_ids, fpl_team_name_to_id
     global fpl_team_names_by_id, fpl_team_meta, fpl_team_recent_defense
     global fpl_player_codes, fpl_players_by_team, fpl_element_lookup, historical_matches_df, fixture_history_cache, odds_client
-    global shirt_numbers_by_team, shirt_number_lookup_attempted, _startup_complete, _player_risk_cache
+    global shirt_numbers_by_team, shirt_number_lookup_attempted, _startup_complete, _player_risk_cache, _narrative_bundle_cache
     global _la_liga_standings_cache, _la_liga_fixture_dataset_cache, _la_liga_team_fixtures_cache
     global _la_liga_moneyline_cache, _la_liga_team_context_cache, _la_liga_public_stats_cache, _tm_player_profile_cache
     _startup_complete = False
     # Reset caches so manual/cron refreshes don't accumulate stale keys.
     _player_risk_cache = {}
+    _narrative_bundle_cache = {}
     _la_liga_standings_cache = {"data": None, "expires": None}
     _la_liga_fixture_dataset_cache = {"season": None, "data": None, "expires": None}
     _la_liga_team_fixtures_cache = {}
@@ -285,6 +313,9 @@ def _load_models_blocking():
         print(f"Loaded {len(inference_df)} player predictions")
     else:
         print("WARNING: No trained models found. API will return errors.")
+
+    narrative_provider = (os.environ.get("NARRATIVE_LLM_PROVIDER") or "none").strip().lower()
+    logger.info("Narrative LLM provider: %s", narrative_provider or "none")
 
     # Load FPL stats
     try:
@@ -1468,6 +1499,9 @@ LA_LIGA_BADGE_MAP: Dict[str, str] = {
     "celta vigo": "https://crests.football-data.org/558.png",
     "sevilla": "https://crests.football-data.org/559.png",
     "leganes": "https://crests.football-data.org/745.png",
+    "elche": "https://crests.football-data.org/285.png",
+    "levante": "https://crests.football-data.org/88.png",
+    "real oviedo": "https://crests.football-data.org/250.png",
 }
 
 
@@ -1478,6 +1512,19 @@ def get_team_badge_url(team_name: str) -> Optional[str]:
     # La Liga — check static map first (no API dependency)
     if team_lower in LA_LIGA_BADGE_MAP:
         return LA_LIGA_BADGE_MAP[team_lower]
+
+    # La Liga — fallback to cached live standings crest if available.
+    try:
+        if _cache_entry_is_fresh(_la_liga_standings_cache):
+            for row in (_la_liga_standings_cache.get("data") or []):
+                row_name = str(row.get("name", "") or "").strip().lower()
+                row_full = str(row.get("full_name", "") or "").strip().lower()
+                if team_lower in {row_name, row_full}:
+                    crest = row.get("badge_url")
+                    if crest:
+                        return crest
+    except Exception:
+        pass
 
     search = TEAM_BADGE_ALIASES.get(team_lower, team_lower)
 
@@ -3433,11 +3480,12 @@ def _build_la_liga_standings_rows(table: List[Dict[str, Any]]) -> List[Dict[str,
     for row in table:
         team = row.get("team", {})
         short_name = client._normalize_la_liga_team(team.get("shortName", team.get("name", "")))
+        crest = team.get("crest") or LA_LIGA_BADGE_MAP.get(short_name.lower())
         rows.append({
             "position": row.get("position"),
             "name": short_name,
             "full_name": team.get("name", ""),
-            "badge_url": LA_LIGA_BADGE_MAP.get(short_name.lower()),
+            "badge_url": crest,
             "played": row.get("playedGames", 0),
             "won": row.get("won", 0),
             "draw": row.get("draw", 0),
@@ -3863,6 +3911,7 @@ def enhance_yara_response(
     scoring_odds_data: Optional[Dict] = None,
     clean_sheet_data: Optional[Dict] = None,
     injury_records: Optional[List[Dict]] = None,
+    skip_llm: bool = False,
 ) -> Optional[Dict]:
     """Blend model narrative with fixture context and bookmaker consensus."""
     if not base_response and not market_consensus:
@@ -3937,43 +3986,43 @@ def enhance_yara_response(
         venue = "home" if is_home else "away"
         template_text += f" Next: {venue} vs {opponent}."
 
-    # Use RAG context for richer LLM enrichment
     response_text = template_text
-    try:
-        from src.inference.context_rag import retrieve_player_context
-        context_chunks = retrieve_player_context(
-            player_row,
-            extra_context={"next_fixture": {"opponent": opponent, "is_home": is_home}} if opponent else None,
-            query="scoring odds injury availability fixture market opponent goals assists",
-            top_k=10,
-            include_open_question=False,
-        )
-        # Add market data as a chunk if available
-        if market_consensus and market_probability is not None:
-            context_chunks.append({
-                "kind": "market",
-                "text": f"Bookmaker average: {round(float(market_probability) * 100)}% {market_type_label}. Yara model: {yara_pct}%.",
-                "tags": set(),
-                "weight": 1.5,
-            })
+    if not skip_llm:
+        try:
+            from src.inference.context_rag import retrieve_player_context
+            context_chunks = retrieve_player_context(
+                player_row,
+                extra_context={"next_fixture": {"opponent": opponent, "is_home": is_home}} if opponent else None,
+                query="scoring odds injury availability fixture market opponent goals assists",
+                top_k=10,
+                include_open_question=False,
+            )
+            # Add market data as a chunk if available
+            if market_consensus and market_probability is not None:
+                context_chunks.append({
+                    "kind": "market",
+                    "text": f"Bookmaker average: {round(float(market_probability) * 100)}% {market_type_label}. Yara model: {yara_pct}%.",
+                    "tags": set(),
+                    "weight": 1.5,
+                })
 
-        llm_task = (
-            f"Write Yara's market take on {first_name} in 2-3 sentences. "
-            f"Lead with the gap between your number and the bookmakers. "
-            f"Say whether the market is sleeping on him or has it right, and why. "
-            f"Reference scoring rate and the opponent. Confident, direct, no hedging."
-        )
-        enriched = generate_grounded_narrative(
-            task=llm_task,
-            player_name=name,
-            context_chunks=context_chunks,
-            fallback_text=template_text,
-            require_open_question=False,
-        )
-        if enriched and enriched != template_text:
-            response_text = enriched
-    except Exception:
-        pass  # Fall back to template text
+            llm_task = (
+                f"Write Yara's market take on {first_name} in 2-3 sentences. "
+                f"Lead with the gap between your number and the bookmakers. "
+                f"Say whether the market is sleeping on him or has it right, and why. "
+                f"Reference scoring rate and the opponent. Confident, direct, no hedging."
+            )
+            enriched = generate_grounded_narrative(
+                task=llm_task,
+                player_name=name,
+                context_chunks=context_chunks,
+                fallback_text=template_text,
+                require_open_question=False,
+            )
+            if enriched and enriched != template_text:
+                response_text = enriched
+        except Exception:
+            pass  # Fall back to template text
 
     fpl_tip = base_response.get("fpl_tip") if base_response else None
     if not fpl_tip:
@@ -4018,6 +4067,7 @@ def calculate_expected_points(
     injury_prob: float,
     scoring_odds_data: Optional[Dict] = None,
     clean_sheet_data: Optional[Dict] = None,
+    extra_context: Optional[Dict] = None,
 ) -> Optional[Dict]:
     """Calculate FPL expected points for next gameweek, discounted by injury risk."""
     position = str(enriched_row.get("position", "")).lower()
@@ -4102,17 +4152,39 @@ def calculate_expected_points(
     opponent = next_fixture.get("opponent", "opponent") if next_fixture else "their next opponent"
     venue = "at home" if next_fixture and next_fixture.get("is_home") else "away"
     if projection_source == "fpl":
-        breakdown = (
+        fallback_breakdown = (
             f"Base {base:.1f}pts (PPG {ppg:.1f}, form {form:.1f}). "
             f"Fixture vs {opponent} ({venue}, FDR {fdr}) gives {fixture_multiplier:.2f}x. "
             f"Injury risk {round(injury_prob * 100)}% applies {round(injury_discount * 100)}% discount."
         )
     else:
-        breakdown = (
+        fallback_breakdown = (
             f"Model baseline {base:.1f}pts from season output and role profile. "
             f"Fixture vs {opponent} ({venue}) applies {fixture_multiplier:.2f}x. "
             f"Injury risk {round(injury_prob * 100)}% applies {round(injury_discount * 100)}% discount."
         )
+
+    breakdown = fallback_breakdown
+    try:
+        breakdown = generate_section_narrative(
+            section="projected",
+            player_data=enriched_row,
+            extra_context=extra_context or {"next_fixture": next_fixture or {}},
+            fallback_text=fallback_breakdown,
+            task=(
+                f"Write a 2-3 sentence projected-points explanation for "
+                f"{str(enriched_row.get('story_name') or enriched_row.get('name') or 'this player')}. "
+                "Explain why the number lands here in football terms."
+            ),
+            query=(
+                "projected points baseline output minutes fixture multiplier injury discount "
+                "opponent form role importance"
+            ),
+            top_k=8,
+            include_open_question=False,
+        )
+    except Exception:
+        breakdown = fallback_breakdown
 
     return {
         "expected_points": max(0.5, expected),
@@ -4519,15 +4591,17 @@ def player_row_to_risk(row) -> PlayerRisk:
         "injury_records": injury_records,
         "player_importance": importance_data,
     }
-    clean_sheet_data = calculate_clean_sheet_odds(enriched_row, extra_context=narrative_context)
-    scoring_odds_data = calculate_scoring_odds(enriched_row, extra_context=narrative_context)
-    fpl_value_data = get_fpl_value_assessment(enriched_row, extra_context=narrative_context)
+    bundle_mode = llm_enabled()
+    section_context = {**narrative_context, "_skip_section_llm": True} if bundle_mode else narrative_context
+    clean_sheet_data = calculate_clean_sheet_odds(enriched_row, extra_context=section_context)
+    scoring_odds_data = calculate_scoring_odds(enriched_row, extra_context=section_context)
+    fpl_value_data = get_fpl_value_assessment(enriched_row, extra_context=section_context)
 
     # Use enriched_row for ALL generators so they see corrected injury history.
     # Story receives fixture + market context through the lightweight retrieval layer.
     story = generate_player_story(
         enriched_row,
-        extra_context=narrative_context,
+        extra_context=section_context,
     )
 
     # Yara's response: compare model projection with consensus market line
@@ -4551,12 +4625,13 @@ def player_row_to_risk(row) -> PlayerRisk:
         scoring_odds_data=scoring_odds_data,
         clean_sheet_data=clean_sheet_data,
         injury_records=injury_records,
+        skip_llm=bundle_mode,
     )
 
     # Yara's Lab Notes: explainability
-    lab_notes_data = generate_lab_notes(enriched_row, extra_context=narrative_context)
+    lab_notes_data = generate_lab_notes(enriched_row, extra_context=section_context)
 
-    fpl_insight_text = get_fpl_insight(enriched_row, extra_context=narrative_context)
+    fpl_insight_text = get_fpl_insight(enriched_row, extra_context=section_context)
 
     # FPL Points Projection
     fpl_points_data = calculate_expected_points(
@@ -4566,7 +4641,53 @@ def player_row_to_risk(row) -> PlayerRisk:
         injury_prob=prob,
         scoring_odds_data=scoring_odds_data,
         clean_sheet_data=clean_sheet_data,
+        extra_context=section_context,
     )
+
+    if bundle_mode:
+        section_fallbacks = {
+            "story": story,
+            "fpl_insight": fpl_insight_text,
+            "fpl_value_verdict": (fpl_value_data or {}).get("verdict"),
+            "scoring_analysis": (scoring_odds_data or {}).get("analysis"),
+            "clean_sheet_analysis": (clean_sheet_data or {}).get("analysis"),
+            "projected_breakdown": (fpl_points_data or {}).get("breakdown"),
+            "lab_summary": (lab_notes_data or {}).get("summary"),
+            "yara_response_text": (yara_data or {}).get("response_text"),
+            "yara_fpl_tip": (yara_data or {}).get("fpl_tip"),
+        }
+        bundle_cache_key = _narrative_cache_key(enriched_row, next_fixture_data, section_fallbacks)
+        bundle_entry = _narrative_bundle_cache.get(bundle_cache_key)
+        if _cache_entry_is_fresh(bundle_entry):
+            narrative_bundle = bundle_entry["data"]
+        else:
+            narrative_bundle = generate_player_narrative_bundle(
+                enriched_row,
+                extra_context=narrative_context,
+                section_fallbacks=section_fallbacks,
+            )
+            _narrative_bundle_cache[bundle_cache_key] = {
+                "data": narrative_bundle,
+                "expires": datetime.utcnow() + _NARRATIVE_BUNDLE_TTL,
+            }
+
+        story = narrative_bundle.get("story", story)
+        fpl_insight_text = narrative_bundle.get("fpl_insight", fpl_insight_text)
+        if fpl_value_data and narrative_bundle.get("fpl_value_verdict"):
+            fpl_value_data["verdict"] = narrative_bundle["fpl_value_verdict"]
+        if scoring_odds_data and narrative_bundle.get("scoring_analysis"):
+            scoring_odds_data["analysis"] = narrative_bundle["scoring_analysis"]
+        if clean_sheet_data and narrative_bundle.get("clean_sheet_analysis"):
+            clean_sheet_data["analysis"] = narrative_bundle["clean_sheet_analysis"]
+        if fpl_points_data and narrative_bundle.get("projected_breakdown"):
+            fpl_points_data["breakdown"] = narrative_bundle["projected_breakdown"]
+        if lab_notes_data and narrative_bundle.get("lab_summary"):
+            lab_notes_data["summary"] = narrative_bundle["lab_summary"]
+        if yara_data:
+            if narrative_bundle.get("yara_response_text"):
+                yara_data["response_text"] = narrative_bundle["yara_response_text"]
+            if narrative_bundle.get("yara_fpl_tip"):
+                yara_data["fpl_tip"] = narrative_bundle["yara_fpl_tip"]
 
     # Risk Comparison vs squad/position
     risk_comparison_data = calculate_risk_comparison(
@@ -5052,9 +5173,26 @@ def get_team_badges():
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
     teams = inference_df["team"].unique().tolist()
+    la_liga_rows: List[Dict[str, Any]] = []
+    try:
+        la_liga_rows = _get_la_liga_standings_cached()
+    except Exception:
+        la_liga_rows = []
+    la_liga_badges: Dict[str, str] = {}
+    for row in la_liga_rows:
+        crest = row.get("badge_url")
+        if not crest:
+            continue
+        short_name = str(row.get("name", "") or "").strip()
+        full_name = str(row.get("full_name", "") or "").strip()
+        if short_name:
+            la_liga_badges[short_name] = crest
+        if full_name and full_name not in la_liga_badges:
+            la_liga_badges[full_name] = crest
+
     badges = {}
     for team in teams:
-        url = get_team_badge_url(team)
+        url = la_liga_badges.get(team) or get_team_badge_url(team)
         if url:
             badges[team] = url
     return badges

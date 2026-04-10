@@ -8,10 +8,10 @@ that explain WHY a player has their specific risk level.
 import math
 import os
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .context_rag import build_dynamic_rag_line, retrieve_player_context
-from .llm_client import generate_grounded_narrative
+from .llm_client import generate_grounded_narrative, generate_grounded_section_bundle
 
 
 def _pl(n: int, word: str) -> str:
@@ -361,6 +361,11 @@ def _fixture_form_sentence(team_form: Dict, opponent_form: Dict, team: str, oppo
     return None
 
 
+def _show_fantasy_price(player_data: Dict, price: float) -> bool:
+    league = str(player_data.get("league", "Premier League") or "Premier League").strip()
+    return league == "Premier League" and price > 0
+
+
 # ── OptaJoe voice helpers ───────────────────────────────────────────────────
 
 _KICKER_POOLS = {
@@ -396,6 +401,299 @@ def _pick_kicker(category: str = "default", salt: str = "") -> str:
     pool = _KICKER_POOLS.get(category, _KICKER_POOLS["default"])
     idx = abs(hash(salt or "x")) % len(pool)
     return pool[idx]
+
+
+SECTION_QUERY_HINTS = {
+    "story": "risk analysis injury recency workload injury history fixture load role availability",
+    "fpl": "manager tip start bench minutes role route to points fixture swing opponent weakness h2h",
+    "value": "fantasy value squad building minutes security route to returns fixture role importance ownership",
+    "scoring": "scoring odds anytime scorer finishing route to goal opponent weakness h2h market price",
+    "clean_sheet": "clean sheet odds defensive control opponent scoring venue fixture history availability",
+    "projected": "projected points baseline output fixture multiplier injury discount role minutes security",
+    "lab": "lab notes explainability drivers workload recency injury history fixture context",
+    "yara": "market take value gap odds opponent route to returns availability scoring rate market line",
+}
+
+
+SECTION_PROMPT_GUIDANCE = {
+    "story": (
+        "Answer the injury-risk question in football language. Lead with the most distinctive player-specific driver. "
+        "Use workload, recency, injury history, and fixture pressure without sounding like a generic medical disclaimer."
+    ),
+    "fpl": (
+        "Answer the start-or-bench question directly. Lead with the most player-specific football fact available. "
+        "Talk route to points, minutes security, fixture swing, and opponent weakness. "
+        "Do not re-tell the full risk story or sound like a generic injury warning."
+    ),
+    "value": (
+        "Answer the squad-building value question, not the manager-tip question. "
+        "Talk slot efficiency, role importance, minutes certainty, and whether the upside justifies the hold or buy. "
+        "Do not recycle the same line from the risk or FPL sections."
+    ),
+    "scoring": (
+        "Answer the goal-threat question. Lead with finishing form, route to goal, set-piece or volume angle, or the opponent concession pattern. "
+        "Do not drift into a generic injury-history summary."
+    ),
+    "clean_sheet": (
+        "Answer the clean-sheet question. Focus on opponent scoring form, team control, venue, and recent defensive behaviour. "
+        "Do not talk about attacking upside unless it matters to the defensive call."
+    ),
+    "projected": (
+        "Explain why the projected-points number lands where it does. "
+        "Break it into base output, fixture lift, and injury drag in plain language. "
+        "Do not repeat the risk-analysis lead or the fantasy-value verdict."
+    ),
+    "lab": (
+        "Translate the model into plain football language for builders. "
+        "Name the biggest driver, the second driver, and one stabilising force if present. "
+        "Do not repeat the fan-facing verdict from other sections."
+    ),
+    "yara": (
+        "Answer the market-value question in Yara's voice. Lead with the gap between the number and the market if one exists. "
+        "Keep it punchy, specific, and tied to the exact player, price, and opponent."
+    ),
+}
+
+
+def _normalize_story_text(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "").strip().lower())
+
+
+def _build_section_context_chunks(
+    player_data: Dict[str, Any],
+    extra_context: Optional[Dict[str, Any]],
+    section: str,
+    query: str,
+    top_k: int = 10,
+    include_open_question: bool = False,
+    extra_seed_lines: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Build a more diverse context set for one section.
+
+    We prepend the section-planned lead fact, then keep mostly one chunk per kind so the
+    LLM sees variety instead of six near-duplicate injury/history lines.
+    """
+    section_key = (section or "story").strip().lower()
+    raw_chunks = retrieve_player_context(
+        player_data,
+        extra_context=extra_context,
+        query=query,
+        top_k=max(top_k + 4, 10),
+        include_open_question=include_open_question,
+    )
+
+    assembled: List[Dict[str, Any]] = []
+    seen_text: set[str] = set()
+    seen_kinds: Dict[str, int] = {}
+    repeatable_kinds = {"driver", "recent_form", "vs_opponent", "fixture_history", "fixture_latest"}
+
+    def push(chunk: Dict[str, Any]) -> None:
+        text = _as_sentence(chunk.get("text", ""))
+        if not text:
+            return
+        norm = _normalize_story_text(text)
+        if norm in seen_text:
+            return
+        kind = str(chunk.get("kind", "") or "fact").strip().lower()
+        seen_text.add(norm)
+        seen_kinds[kind] = seen_kinds.get(kind, 0) + 1
+        assembled.append({**chunk, "text": text})
+
+    lead_line = build_dynamic_rag_line(
+        player_data,
+        extra_context=extra_context,
+        section=section_key,
+        context_chunks=raw_chunks,
+    )
+    if lead_line:
+        push({"kind": "section_lead", "text": lead_line, "tags": set(), "weight": 3.4})
+
+    for line in extra_seed_lines or []:
+        seed = _as_sentence(line)
+        if seed:
+            push({"kind": "seed", "text": seed, "tags": set(), "weight": 2.8})
+
+    for chunk in raw_chunks:
+        kind = str(chunk.get("kind", "") or "fact").strip().lower()
+        if kind == "open_question" and not include_open_question:
+            continue
+        if kind != "section_lead" and seen_kinds.get(kind, 0) >= (2 if kind in repeatable_kinds else 1):
+            continue
+        push(chunk)
+        if len(assembled) >= top_k:
+            break
+
+    return assembled[:top_k]
+
+
+def generate_section_narrative(
+    section: str,
+    player_data: Dict[str, Any],
+    extra_context: Optional[Dict[str, Any]],
+    fallback_text: str,
+    task: str,
+    query: Optional[str] = None,
+    top_k: int = 10,
+    include_open_question: bool = False,
+    extra_seed_lines: Optional[List[str]] = None,
+) -> str:
+    """Generate section-specific grounded copy with better fact diversity and prompt separation."""
+    if (extra_context or {}).get("_skip_section_llm"):
+        return re.sub(r"\s{2,}", " ", (fallback_text or "")).strip()
+
+    section_key = (section or "story").strip().lower()
+    query_text = query or SECTION_QUERY_HINTS.get(section_key, SECTION_QUERY_HINTS["lab"])
+    prompt_guidance = SECTION_PROMPT_GUIDANCE.get(section_key, "")
+    full_task = f"{task} {prompt_guidance}".strip()
+    context_chunks = _build_section_context_chunks(
+        player_data,
+        extra_context=extra_context,
+        section=section_key,
+        query=query_text,
+        top_k=top_k,
+        include_open_question=include_open_question,
+        extra_seed_lines=extra_seed_lines,
+    )
+    narrative = generate_grounded_narrative(
+        task=full_task,
+        player_name=str(player_data.get("name") or "This player"),
+        context_chunks=context_chunks,
+        fallback_text=fallback_text,
+        require_open_question=include_open_question,
+    )
+    return re.sub(r"\s{2,}", " ", (narrative or fallback_text)).strip()
+
+
+def generate_player_narrative_bundle(
+    player_data: Dict[str, Any],
+    extra_context: Optional[Dict[str, Any]],
+    section_fallbacks: Dict[str, Optional[str]],
+) -> Dict[str, str]:
+    """
+    Rewrite all player-page narrative sections in one grounded LLM call.
+
+    The football math stays in the caller. This function only rewrites the text
+    payloads so the page can avoid repeated section-by-section LLM calls.
+    """
+    extra_context = extra_context or {}
+    player_name = str(player_data.get("name") or "This player")
+    first_name = _call_name(player_data)
+    game_label = _fantasy_game_label(player_data)
+
+    section_defs = [
+        {
+            "tag": "story",
+            "section": "story",
+            "fallback": section_fallbacks.get("story"),
+            "task": (
+                f"Write a 2-4 sentence injury-risk analysis for {first_name}. "
+                "Explain why the risk number lands here this week."
+            ),
+        },
+        {
+            "tag": "fpl_insight",
+            "section": "fpl",
+            "fallback": section_fallbacks.get("fpl_insight"),
+            "task": (
+                f"Write a 2-4 sentence {game_label} manager call for {first_name}. "
+                "Answer whether to start, bench, buy, hold, or fade based on this fixture."
+            ),
+        },
+        {
+            "tag": "fpl_value_verdict",
+            "section": "value",
+            "fallback": section_fallbacks.get("fpl_value_verdict"),
+            "task": (
+                f"Write a 2-4 sentence fantasy-value verdict for {first_name}. "
+                "Focus on squad-building value, price efficiency, and whether the role justifies the slot."
+            ),
+        },
+        {
+            "tag": "scoring_analysis",
+            "section": "scoring",
+            "fallback": section_fallbacks.get("scoring_analysis"),
+            "task": (
+                f"Write a 2-4 sentence scoring-odds take for {first_name}. "
+                "Answer how live the goal threat is in this fixture and whether the line feels fair."
+            ),
+        },
+        {
+            "tag": "clean_sheet_analysis",
+            "section": "clean_sheet",
+            "fallback": section_fallbacks.get("clean_sheet_analysis"),
+            "task": (
+                f"Write a 2-4 sentence clean-sheet view for {first_name}. "
+                "Answer whether the shutout chance is generous or demanding in football terms."
+            ),
+        },
+        {
+            "tag": "projected_breakdown",
+            "section": "projected",
+            "fallback": section_fallbacks.get("projected_breakdown"),
+            "task": (
+                f"Write a 2-4 sentence projected-points explanation for {first_name}. "
+                "Explain the baseline, the fixture swing, and the injury drag in plain language."
+            ),
+        },
+        {
+            "tag": "lab_summary",
+            "section": "lab",
+            "fallback": section_fallbacks.get("lab_summary"),
+            "task": (
+                f"Write a 2-4 sentence lab-notes summary for {first_name}. "
+                "Explain the biggest drivers behind the risk score without sounding like the fan-facing sections."
+            ),
+        },
+        {
+            "tag": "yara_response_text",
+            "section": "yara",
+            "fallback": section_fallbacks.get("yara_response_text"),
+            "task": (
+                f"Write Yara's 2-4 sentence market take on {first_name}. "
+                "Lead with the gap between the model view and the market if there is one."
+            ),
+        },
+        {
+            "tag": "yara_fpl_tip",
+            "section": "fpl",
+            "fallback": section_fallbacks.get("yara_fpl_tip"),
+            "task": (
+                f"Write a short fantasy manager tip for {first_name}. "
+                "Make it actionable and different from the main manager section."
+            ),
+        },
+    ]
+
+    bundle_sections: List[Dict[str, Any]] = []
+    for section_def in section_defs:
+        fallback_text = re.sub(r"\s{2,}", " ", str(section_def.get("fallback") or "").strip())
+        if not fallback_text:
+            continue
+        section_key = str(section_def["section"])
+        query_text = SECTION_QUERY_HINTS.get(section_key, SECTION_QUERY_HINTS["lab"])
+        prompt_guidance = SECTION_PROMPT_GUIDANCE.get(section_key, "")
+        context_chunks = _build_section_context_chunks(
+            player_data,
+            extra_context=extra_context,
+            section=section_key,
+            query=query_text,
+            top_k=8,
+            include_open_question=False,
+        )
+        bundle_sections.append(
+            {
+                "tag": section_def["tag"],
+                "task": f"{section_def['task']} {prompt_guidance}".strip(),
+                "context_chunks": context_chunks,
+                "fallback_text": fallback_text,
+            }
+        )
+
+    if not bundle_sections:
+        return {}
+
+    return generate_grounded_section_bundle(player_name=player_name, sections=bundle_sections)
 
 
 def _build_fpl_signal_stack(
@@ -937,17 +1235,22 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
     story = _as_sentence(story)
     fallback_story = story or f"{first_name} profiles at moderate injury risk."
 
-    return generate_grounded_narrative(
-        task=(
-            f"Write {first_name}'s injury risk story. You are a football analyst who watches every game. "
-            f"Lead with the single most telling number — minutes played, days since last injury, "
-            f"schedule density, whatever drives the risk. Then explain what it means in 1-2 more sentences. "
-            f"Sound like The Athletic, not a medical report. Active voice, punchy, specific."
-        ),
-        player_name=name,
-        context_chunks=context_chunks,
+    return generate_section_narrative(
+        section="story",
+        player_data=player_data,
+        extra_context=extra_context,
         fallback_text=fallback_story,
-        require_open_question=True,
+        task=(
+            f"Write {first_name}'s injury risk story. "
+            "Lead with the single most telling number or football fact, then explain why it matters in this fixture week."
+        ),
+        query=(
+            "injury risk story recency injury history severity workload minutes schedule density "
+            "fixture pressure opponent context"
+        ),
+        top_k=10,
+        include_open_question=True,
+        extra_seed_lines=[importance_line, season_output_line, fixture_form_line],
     )
 
 
@@ -1148,6 +1451,7 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
 
     importance_tier = str(player_importance.get("tier", "") or "").strip()
     importance_ownership = _safe_float(player_importance.get("ownership_pct", 0.0), 0.0)
+    importance_line = _build_importance_sentence(player_importance, first_name, risk_pct)
     season_output_line = _season_output_sentence(player_data, first_name, role)
     fixture_form_line = _fixture_form_sentence(
         team_form,
@@ -1328,28 +1632,26 @@ def get_fpl_insight(player_data: Dict, extra_context: Optional[Dict] = None) -> 
     primary_reason = reason_bits[0] if reason_bits else ""
     fallback_text = _as_sentence(primary_reason) if primary_reason else ""
 
-    context_chunks = retrieve_player_context(
-        player_data,
+    polished = generate_section_narrative(
+        section="fpl",
+        player_data=player_data,
         extra_context=extra_context,
-        query=f"{game_label} manager tip injury availability fixture",
-        top_k=6,
-        include_open_question=False,
-    )
-
-    polished = generate_grounded_narrative(
+        fallback_text=fallback_text,
         task=(
             f"Write a 2-3 sentence {game_label} manager tip for {first_name}. "
-            f"The decision is: {action}. Explain why using fixture, form, and matchup data. "
-            f"Talk like a sharp friend who manages a high-level fantasy team — confident, direct, no hedging. "
-            f"Do not restate injury risk numbers already covered in the risk analysis."
+            f"The decision is {action}. Make it feel tailored to this exact fixture and this exact player. "
+            f"Use form, role, matchup, and minutes security. Do not repeat the full injury-history story."
         ),
-        player_name=player_data.get("name", "This player"),
-        context_chunks=context_chunks,
-        fallback_text=fallback_text,
-        require_open_question=False,
+        query=(
+            f"{game_label} manager tip {action.lower()} fixture swing minutes role "
+            "opponent weakness h2h recent form"
+        ),
+        top_k=8,
+        include_open_question=False,
+        extra_seed_lines=[season_output_line, fixture_form_line, importance_line],
     )
 
-    return _as_sentence(re.sub(r"\s{2,}", " ", (polished or fallback_text)).strip())
+    return _as_sentence(polished or fallback_text)
 
 
 def _prob_to_odds(prob: float) -> dict:
@@ -1413,36 +1715,38 @@ def calculate_scoring_odds(player_data: Dict, extra_context: Optional[Dict] = No
     odds = _prob_to_odds(score_prob)
 
     player_call_name = _call_name(player_data)
-    scoring_context = retrieve_player_context(
-        player_data,
-        extra_context=extra_context,
-        query="scoring odds injury adjusted probability goals assists availability fixture market",
-        top_k=10,
-        include_open_question=False,
+    opponent = _display_team_name(
+        matchup_context.get("opponent") or ((extra_context or {}).get("next_fixture") or {}).get("opponent") or "the opponent"
     )
-    scoring_context_line = build_dynamic_rag_line(
-        player_data,
-        extra_context=extra_context,
-        section="scoring",
-        context_chunks=scoring_context,
-    )
+    if opp_conceded >= 1.5:
+        matchup_line = f"{opponent} have been giving up clear chances lately."
+    elif opp_conceded >= 1.0:
+        matchup_line = f"{opponent} are conceding steadily enough to keep the door open."
+    elif 0 < opp_conceded < 0.8:
+        matchup_line = f"{opponent} have been one of the tighter defences around lately."
+    else:
+        matchup_line = None
     fallback_analysis = (
-        f"Yara estimates {player_call_name}'s chance to score at {round(score_prob * 100)}% after injury adjustment. "
-        + (
-            f"{scoring_context_line}"
-            if scoring_context_line
-            else (
-                f"Baseline sits at {goals_per_90:.2f} goals/90 and {assists_per_90:.2f} assists/90 "
-                f"with availability {availability:.2f}."
-            )
-        )
+        f"I have {player_call_name} at {round(score_prob * 100)}% to score. "
+        f"Baseline finishing sits at {goals_per_90:.2f} goals per 90 with availability at {availability:.2f}. "
+        f"{matchup_line or 'This one comes down to whether the fixture gives enough volume back.'}"
     )
-    scoring_analysis = generate_grounded_narrative(
-        task=f"Write a 2-sentence scoring odds take for {player_data.get('name', 'this player')}. Lead with the key number — goals per 90, scoring rate, or opponent defensive record. Say whether the price is right.",
-        player_name=player_data.get("name", "This player"),
-        context_chunks=scoring_context,
+    scoring_analysis = generate_section_narrative(
+        section="scoring",
+        player_data=player_data,
+        extra_context=extra_context,
         fallback_text=fallback_analysis,
-        require_open_question=False,
+        task=(
+            f"Write a 2-3 sentence scoring-odds take for {player_data.get('name', 'this player')}. "
+            "Answer one thing: how live is the goal threat in this fixture, and does the price make sense?"
+        ),
+        query=(
+            "scoring odds anytime scorer finishing route to goal opponent weakness h2h "
+            "volume market price availability"
+        ),
+        top_k=8,
+        include_open_question=False,
+        extra_seed_lines=[matchup_line],
     )
 
     return {
@@ -1469,6 +1773,9 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
     goals_per_90 = _safe_float(player_data.get("goals_per_90", 0), 0.0)
     assists_per_90 = _safe_float(player_data.get("assists_per_90", 0), 0.0)
     price = _safe_float(player_data.get("price", 0), 0.0)
+    league = str(player_data.get("league", "Premier League") or "Premier League").strip()
+    show_price = _show_fantasy_price(player_data, price)
+    price_bit = f" at £{price:.1f}m" if show_price else ""
     injury_prob = _safe_float(player_data.get("ensemble_prob", 0.5), 0.5)
     position = str(player_data.get("position", "Unknown") or "Unknown")
     archetype = player_data.get("archetype", "Unknown")
@@ -1476,11 +1783,12 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
     role = _position_group(position)
     game_label = _fantasy_game_label(player_data)
 
-    if minutes < 270 or price <= 0:
+    if minutes < 270 or (league == "Premier League" and price <= 0):
         return None
 
     extra_context = extra_context or {}
     matchup_context = extra_context.get("matchup_context") or {}
+    next_fixture = extra_context.get("next_fixture") or {}
     recent_form = matchup_context.get("recent_form") or {}
     recent_samples = _safe_int(recent_form.get("samples", 0), 0)
     recent_goals = _safe_int(recent_form.get("goals", 0), 0)
@@ -1533,15 +1841,23 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
     high_risk = injury_prob >= 0.40
     low_output = output_signal < 0.18
     durability_signal = days_since >= 240 and prev_injuries <= 2
+    risk_pct = int(player_data["risk_score_pct"]) if player_data.get("risk_score_pct") is not None else round(injury_prob * 100)
 
     # Player importance context
     player_importance = _extract_player_importance(extra_context)
     importance_tier = str(player_importance.get("tier", "") or "").strip()
     importance_ownership = _safe_float(player_importance.get("ownership_pct", 0.0), 0.0)
     is_key_player = importance_tier in {"Core", "High"} or importance_ownership >= 15
+    importance_line = _build_importance_sentence(player_importance, first_name, risk_pct)
+    season_output_line = _season_output_sentence(player_data, first_name, role)
+    fixture_form_line = _fixture_form_sentence(
+        matchup_context.get("team_form") or {},
+        matchup_context.get("opponent_form") or {},
+        str(player_data.get("team", "") or ""),
+        _display_team_name(matchup_context.get("opponent") or next_fixture.get("opponent") or ""),
+    )
 
     # Matchup context for value override
-    next_fixture = extra_context.get("next_fixture") or {}
     opponent_defense = matchup_context.get("opponent_defense") or {}
     opp_conceded = _safe_float(
         opponent_defense.get("avg_goals_conceded_last5",
@@ -1577,8 +1893,6 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
     elif tier == "Avoid" and is_key_player and val_has_form and val_has_good_fixture and not low_output:
         tier, emoji = "Rotation", "rotate-cw"
 
-    risk_pct = int(player_data["risk_score_pct"]) if player_data.get("risk_score_pct") is not None else round(injury_prob * 100)
-
     if tier == "Avoid":
         if low_output and high_risk:
             verdict = (
@@ -1589,12 +1903,12 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
         elif low_output and durability_signal:
             verdict = (
                 f"The body is fine for {first_name}, that is not the issue. "
-                f"It is the {ga_per_90:.2f} G+A per 90 at £{price:.1f}m. "
+                f"It is the {ga_per_90:.2f} G+A per 90{price_bit}. "
                 f"That money works harder somewhere else. {_pick_kicker('avoid', first_name)}"
             )
         elif low_output:
             verdict = (
-                f"{ga_per_90:.2f} G+A per 90 at £{price:.1f}m. "
+                f"{ga_per_90:.2f} G+A per 90{price_bit}. "
                 f"{first_name} needs to do more to justify the spot. {_pick_kicker('avoid', first_name)}"
             )
         elif high_risk:
@@ -1604,7 +1918,7 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
             )
         else:
             verdict = (
-                f"Hard to make the numbers work for {first_name} at £{price:.1f}m right now. "
+                f"Hard to make the numbers work for {first_name}{price_bit} right now. "
                 f"That budget does more elsewhere. {_pick_kicker('avoid', first_name)}"
             )
     elif tier == "Rotation":
@@ -1649,7 +1963,7 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
             )
         else:
             verdict = (
-                f"{ga_per_90:.2f} G+A per 90 at £{price:.1f}m. "
+                f"{ga_per_90:.2f} G+A per 90{price_bit}. "
                 f"{first_name} gives a reliable floor without breaking the bank. "
                 f"{_pick_kicker('default', first_name)}"
             )
@@ -1663,7 +1977,7 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
         else:
             verdict = (
                 f"Quietly one of the better value picks in the game right now. "
-                f"{ga_per_90:.2f} G+A per 90 at £{price:.1f}m for {first_name}. "
+                f"{ga_per_90:.2f} G+A per 90{price_bit} for {first_name}. "
                 f"{_pick_kicker('premium', first_name)}"
             )
     else:  # Premium
@@ -1675,7 +1989,7 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
         else:
             verdict = (
                 f"Set and forget {first_name}. Output ceiling and floor both "
-                f"look elite at £{price:.1f}m. {_pick_kicker('premium', first_name)}"
+                f"look elite{price_bit}. {_pick_kicker('premium', first_name)}"
             )
 
     if archetype == "Currently Vulnerable" and days_since < 60:
@@ -1709,6 +2023,23 @@ def get_fpl_value_assessment(player_data: Dict, extra_context: Optional[Dict] = 
         )
 
     verdict = _as_sentence(verdict)
+    verdict = generate_section_narrative(
+        section="value",
+        player_data=player_data,
+        extra_context=extra_context,
+        fallback_text=verdict,
+        task=(
+            f"Write a 2-3 sentence {game_label} value verdict for {first_name}. "
+            "Answer whether this is a smart squad slot right now, not just whether the player is good."
+        ),
+        query=(
+            f"{game_label} value squad slot minutes security route to returns fixture difficulty "
+            "opponent weakness h2h player importance"
+        ),
+        top_k=9,
+        include_open_question=False,
+        extra_seed_lines=[season_output_line, fixture_form_line, importance_line],
+    )
 
     return {
         "tier": tier,
@@ -1752,15 +2083,31 @@ def calculate_clean_sheet_odds(player_data: Dict, extra_context: Optional[Dict] 
         matchup_context.get("opponent") or ((extra_context or {}).get("next_fixture") or {}).get("opponent") or "the opponent"
     )
     if opp_scoring_avg > 0:
-        analysis = (
-            f"Yara estimates clean-sheet probability at {round(cs_prob * 100)}% after injury adjustment. "
-            f"{opponent} are averaging about {opp_scoring_avg:.1f} goals a game lately, so the matchup still carries stress."
+        fallback_analysis = (
+            f"I have the clean-sheet chance at {round(cs_prob * 100)}% after injury adjustment. "
+            f"{opponent} are averaging about {opp_scoring_avg:.1f} goals a game lately, so there is real stress on the clean-sheet line."
         )
     else:
-        analysis = (
-            f"Yara estimates clean-sheet probability at {round(cs_prob * 100)}% after injury adjustment. "
-            f"Fixture history sets the baseline at {goals_conceded_per_game:.2f} goals against per game."
+        fallback_analysis = (
+            f"I have the clean-sheet chance at {round(cs_prob * 100)}% after injury adjustment. "
+            f"Fixture history leaves a baseline of {goals_conceded_per_game:.2f} goals conceded per game."
         )
+    analysis = generate_section_narrative(
+        section="clean_sheet",
+        player_data=player_data,
+        extra_context=extra_context,
+        fallback_text=fallback_analysis,
+        task=(
+            f"Write a 2-3 sentence clean-sheet odds take for {_call_name(player_data)}. "
+            "Answer whether the clean-sheet line is generous or demanding in football terms."
+        ),
+        query=(
+            "clean sheet odds opponent scoring form defensive control venue h2h fixture history "
+            "availability team form"
+        ),
+        top_k=8,
+        include_open_question=False,
+    )
 
     return {
         "clean_sheet_probability": round(cs_prob, 3),
@@ -2185,24 +2532,23 @@ def generate_lab_notes(player_data: Dict, extra_context: Optional[Dict] = None) 
     else:
         summary = f"{first_name}'s profile is steady right now, without strong risk spikes."
 
-    llm_context = list(lab_context)
-    for d in drivers[:4]:
-        llm_context.append({
-            "kind": "driver",
-            "text": f"{d['name']}: {d['explanation']}",
-            "tags": set(),
-            "weight": 1.0,
-        })
-    summary = generate_grounded_narrative(
+    driver_seed_lines = [f"{d['name']}: {d['explanation']}" for d in drivers[:4]]
+    summary = generate_section_narrative(
+        section="lab",
+        player_data=player_data,
+        extra_context=extra_context,
+        fallback_text=summary,
         task=(
             f"Write a 2-3 sentence lab notes summary for {name}. "
-            "Explain what is driving the risk number in plain football language. "
-            "Name the top driver and say why it matters. Direct and specific, no jargon."
+            "Explain what is actually driving the number this week in plain football language."
         ),
-        player_name=name,
-        context_chunks=llm_context,
-        fallback_text=summary,
-        require_open_question=False,
+        query=(
+            "lab notes explainability drivers workload recency injury history fixture context "
+            "stabiliser model reasoning"
+        ),
+        top_k=9,
+        include_open_question=False,
+        extra_seed_lines=driver_seed_lines,
     )
 
     # Build technical section
