@@ -31,6 +31,9 @@ VOICE:
 - Use football language naturally: "clean sheet", "set-piece threat", "running on fumes", "nailed on", "bench cover".
 - You ARE the model. Say "I have him at 62%" not "the model predicts". Say "I see" not "analysis suggests".
 - Short sentences. Vary rhythm. One long, one short. Punch at the end.
+- Lead with the most distinctive player-specific or fixture-specific fact available. If a line could fit 20 players, rewrite it.
+- Avoid stock phrases like "worth watching", "fixture-dependent", "the body is a concern", or "good week to start" unless the facts make that exact point unavoidable.
+- For non-risk sections, do not re-tell the full injury story unless the injury context directly changes the football decision.
 - 2 to 4 sentences. Never more. Every word earns its place.
 - No markdown. No bullets. No lists. No emojis. No quotation marks around your output.
 - Never invent stats, injuries, fixtures, or odds. Use ONLY the provided facts.
@@ -88,6 +91,42 @@ def _build_grounded_prompt(
     )
 
 
+def _build_bundle_prompt(
+    player_name: str,
+    sections: List[Dict[str, Any]],
+) -> str:
+    blocks: List[str] = []
+    tag_names = ", ".join(section["tag"] for section in sections)
+    for section in sections:
+        facts = section.get("context_chunks") or []
+        fact_lines: List[str] = []
+        for chunk in facts[:10]:
+            text = (chunk.get("text") or "").strip()
+            if text:
+                fact_lines.append(f"- {text}")
+        fact_block = "\n".join(fact_lines) if fact_lines else "- No additional context chunks."
+        fallback_text = (section.get("fallback_text") or "").strip()
+        blocks.append(
+            f"SECTION: {section['tag']}\n"
+            f"TASK: {section['task']}\n"
+            "FACTS (use ONLY these — never invent):\n"
+            f"{fact_block}\n"
+            "FALLBACK DRAFT:\n"
+            f"{fallback_text or 'No fallback draft provided.'}\n"
+        )
+
+    return (
+        f"PLAYER: {player_name}\n"
+        "You are writing multiple independent narrative sections for the same player.\n"
+        "Each section must sound distinct and answer only its own question.\n"
+        "Do not repeat the same opening, the same injury-history line, or the same closing across sections.\n"
+        "Keep every section to 2 to 4 sentences. Hard limit.\n"
+        "Return ONLY tagged sections. No markdown. No explanations outside the tags.\n"
+        f"Use exactly these tags once each: {tag_names}.\n\n"
+        + "\n".join(blocks)
+    )
+
+
 # ── LLM calls ───────────────────────────────────────────────────────────────
 
 def _provider() -> str:
@@ -121,7 +160,7 @@ def _enforce_sentence_limit(text: str, max_sentences: int = 4) -> str:
     return " ".join(parts[:max_sentences]).strip()
 
 
-def _call_ollama(system_prompt: str, user_prompt: str) -> Optional[str]:
+def _call_ollama(system_prompt: str, user_prompt: str, max_output_tokens: int = 300) -> Optional[str]:
     base_url = (os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434") or "").rstrip("/")
     model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
     temperature = float(os.getenv("NARRATIVE_LLM_TEMPERATURE", "0.6"))
@@ -135,7 +174,7 @@ def _call_ollama(system_prompt: str, user_prompt: str) -> Optional[str]:
                 "system": system_prompt,
                 "prompt": user_prompt,
                 "stream": False,
-                "options": {"temperature": temperature, "num_predict": 300},
+                "options": {"temperature": temperature, "num_predict": max_output_tokens},
             },
             timeout=timeout,
         )
@@ -149,7 +188,7 @@ def _call_ollama(system_prompt: str, user_prompt: str) -> Optional[str]:
         return None
 
 
-def _call_openai_compatible(system_prompt: str, user_prompt: str) -> Optional[str]:
+def _call_openai_compatible(system_prompt: str, user_prompt: str, max_output_tokens: int = 300) -> Optional[str]:
     base_url = (os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") or "").rstrip("/")
     api_key = os.getenv("OPENAI_API_KEY", "")
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -170,7 +209,7 @@ def _call_openai_compatible(system_prompt: str, user_prompt: str) -> Optional[st
             json={
                 "model": model,
                 "temperature": temperature,
-                "max_tokens": 300,
+                "max_tokens": max_output_tokens,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -221,3 +260,67 @@ def generate_grounded_narrative(
     if not output:
         return _enforce_sentence_limit(fallback_text)
     return _enforce_sentence_limit(output)
+
+
+def _extract_tagged_section(text: str, tag: str) -> Optional[str]:
+    pattern = rf"<{re.escape(tag)}>\s*(.*?)\s*</{re.escape(tag)}>"
+    match = re.search(pattern, text or "", flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+    return _clean_output(match.group(1))
+
+
+def generate_grounded_section_bundle(
+    player_name: str,
+    sections: List[Dict[str, Any]],
+) -> Dict[str, str]:
+    """
+    Generate multiple grounded narrative sections in one model call.
+
+    Each input section must include:
+    - tag: stable output tag name
+    - task: section-specific instruction
+    - context_chunks: grounded fact chunks
+    - fallback_text: deterministic fallback for that section
+    """
+    bundle: Dict[str, str] = {}
+    if not sections:
+        return bundle
+
+    for section in sections:
+        tag = str(section.get("tag") or "").strip()
+        if tag:
+            bundle[tag] = _enforce_sentence_limit(str(section.get("fallback_text") or "").strip())
+
+    if not llm_enabled():
+        return bundle
+
+    system_prompt = (
+        YARA_SYSTEM_PROMPT
+        + "\n\nSTRUCTURE:\n"
+        + "- Follow the requested XML-like tags exactly.\n"
+        + "- Keep each section self-contained and distinct from the others.\n"
+        + "- If two sections share a fact, phrase it differently and use it for different football decisions.\n"
+    )
+    user_prompt = _build_bundle_prompt(player_name=player_name, sections=sections)
+
+    provider = _provider()
+    output: Optional[str] = None
+    max_output_tokens = max(700, 180 * len(sections))
+    if provider == "ollama":
+        output = _call_ollama(system_prompt, user_prompt, max_output_tokens=max_output_tokens)
+    elif provider == "openai_compatible":
+        output = _call_openai_compatible(system_prompt, user_prompt, max_output_tokens=max_output_tokens)
+
+    if not output:
+        return bundle
+
+    for section in sections:
+        tag = str(section.get("tag") or "").strip()
+        if not tag:
+            continue
+        extracted = _extract_tagged_section(output, tag)
+        if extracted:
+            bundle[tag] = _enforce_sentence_limit(extracted)
+
+    return bundle

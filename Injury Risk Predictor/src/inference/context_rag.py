@@ -1322,6 +1322,9 @@ SECTION_RAG_QUERIES = {
     "story": DEFAULT_STORY_QUERY,
     "scoring": "scoring odds injury adjusted probability goals assists availability fixture market form player importance ownership",
     "fpl": "fpl value minutes availability rotation injury risk goals assists fixture form player importance ownership captaincy",
+    "value": "fantasy value squad building minutes security route to returns fixture form opponent weakness h2h player importance ownership",
+    "clean_sheet": "clean sheet odds defender goalkeeper opponent scoring form team control defensive trend venue fixture history availability",
+    "projected": "projected points baseline output minutes fixture multiplier injury discount availability role opponent form player importance",
     "lab": "model drivers explainability workload recency injury history fixture context",
 }
 
@@ -1376,6 +1379,47 @@ SECTION_RAG_PRIORITIES = {
         "workload",
         "history",
     ],
+    "value": [
+        "importance_summary",
+        "importance_exposure",
+        "importance_role",
+        "recent_form",
+        "output",
+        "team_form",
+        "opponent_form",
+        "fixture_edge",
+        "vs_opponent",
+        "fixture_history",
+        "recency",
+        "workload",
+        "history",
+    ],
+    "clean_sheet": [
+        "defensive_form",
+        "opponent_form",
+        "team_form",
+        "fixture_edge",
+        "fixture_history",
+        "fixture_latest",
+        "opponent_defense",
+        "venue",
+        "recency",
+        "workload",
+        "market",
+    ],
+    "projected": [
+        "importance_summary",
+        "recent_form",
+        "output",
+        "team_form",
+        "opponent_form",
+        "fixture_edge",
+        "fixture",
+        "opponent_defense",
+        "recency",
+        "workload",
+        "market",
+    ],
     "lab": [
         "risk_headline",
         "importance_summary",
@@ -1389,11 +1433,15 @@ SECTION_RAG_PRIORITIES = {
     ],
 }
 
-SECTION_PLAN_ORDER = ["story", "fpl", "scoring", "lab"]
+SECTION_PLAN_ORDER = ["story", "fpl", "value", "scoring", "clean_sheet", "projected", "lab"]
 
 SECTION_BLOCKED_PHRASES = {
     "scoring": [
         "attacking output sits at",
+        "goals/90",
+        "assists/90",
+    ],
+    "clean_sheet": [
         "goals/90",
         "assists/90",
     ],
@@ -1411,6 +1459,21 @@ SECTION_RAG_PREFIXES = {
         "{fact}",
     ],
     "fpl": [
+        "{fact}",
+        "{fact}",
+        "{fact}",
+    ],
+    "value": [
+        "{fact}",
+        "{fact}",
+        "{fact}",
+    ],
+    "clean_sheet": [
+        "{fact}",
+        "{fact}",
+        "{fact}",
+    ],
+    "projected": [
         "{fact}",
         "{fact}",
         "{fact}",

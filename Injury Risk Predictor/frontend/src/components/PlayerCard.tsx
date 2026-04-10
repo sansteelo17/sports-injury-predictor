@@ -113,6 +113,8 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
 
   const storyLines = player.story ? formatStoryLines(player.story) : [];
   const isLaLiga = player.league === "La Liga";
+  const leagueShortLabel = isLaLiga ? "La Liga" : "PL";
+  const trackedLeagueLabel = player.league || "league";
 
   const tabs = [
     { id: "overview" as const, label: "Risk", icon: <BarChart3 size={14} /> },
@@ -231,8 +233,8 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
               <p
                 className={`text-xs mt-2 ${darkMode ? "text-gray-500" : "text-gray-400"}`}
               >
-                Higher risk than {Math.round(player.risk_percentile * 100)}% of
-                Premier League players tracked
+                Higher risk than {Math.round(player.risk_percentile * 100)}% of{" "}
+                {trackedLeagueLabel} players tracked
               </p>
             )}
           </>
@@ -400,7 +402,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                   }
                   label="Position Rank"
                   value={posLabel}
-                  description={`${rc.position_rank}/${rc.position_total} PL ${rc.position_group}s`}
+                  description={`${rc.position_rank}/${rc.position_total} ${leagueShortLabel} ${rc.position_group}s`}
                   darkMode={darkMode}
                 />
                 <StatCard
@@ -492,7 +494,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                   Upcoming Fixture Outlook
                 </span>
               </div>
-              <div className="flex gap-2">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
                 {player.upcoming_fixtures.map((fix, i) => {
                   const fdrColors: Record<number, string> = {
                     1: "bg-[#01FC7A] text-[#0a0a0a]",
@@ -504,16 +506,20 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                   return (
                     <div
                       key={i}
-                      className={`flex-1 rounded-lg p-2 text-center ${fdrColors[fix.difficulty] || fdrColors[3]}`}
+                      className={`min-h-[72px] rounded-lg px-2 py-2.5 text-center flex flex-col items-center justify-center ${fdrColors[fix.difficulty] || fdrColors[3]}`}
                     >
-                      <div className="text-xs font-bold">{fix.opponent}</div>
-                      <div className="text-[10px] opacity-80">{fix.is_home ? "H" : "A"}</div>
+                      <div className="text-[11px] font-bold leading-tight break-words line-clamp-2">
+                        {fix.opponent}
+                      </div>
+                      <div className="mt-1 text-[10px] uppercase tracking-wide opacity-80">
+                        {fix.is_home ? "Home" : "Away"}
+                      </div>
                     </div>
                   );
                 })}
               </div>
-              <div className={`flex justify-between mt-2 text-[10px] ${darkMode ? "text-gray-600" : "text-gray-400"}`}>
-                <span>Scale: 1 (easier) → 5 (harder)</span>
+              <div className={`mt-2 text-[10px] leading-relaxed ${darkMode ? "text-gray-600" : "text-gray-400"}`}>
+                Scale: 1 easier, 5 harder.
               </div>
             </div>
           )}
@@ -709,7 +715,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
                       >
                         Fantasy Value: {player.fpl_value.tier}
                       </span>
-                      {player.fpl_value.price > 0 && (
+                      {!isLaLiga && player.fpl_value.price > 0 && (
                         <span
                           className={`text-xs px-2 py-0.5 rounded-full ${
                             darkMode
@@ -1402,13 +1408,20 @@ function InjuryHeatmap({ player, darkMode }: { player: PlayerRisk; darkMode: boo
   > = {};
 
   for (const injury of records) {
-    const part = resolvePart(injury.body_area);
+    const injuryDescriptor = [
+      injury.body_area || "",
+      injury.injury_type || "",
+      injury.injury_raw || "",
+    ]
+      .join(" ")
+      .trim();
+    const part = resolvePart(injuryDescriptor);
     if (part === "unknown") continue;
-    const inferredSide = inferSide(injury.body_area);
+    const inferredSide = inferSide(injuryDescriptor);
     const anchorSide = resolveAnchorSide(
       part,
       inferredSide,
-      `${injury.body_area || ""}|${injury.injury_type || ""}|${injury.date || ""}|${injury.injury_raw || ""}`,
+      `${injuryDescriptor}|${injury.date || ""}`,
     );
     const anchor = getAnchor(part, anchorSide);
     if (!anchorData[anchor.key]) {
@@ -1435,8 +1448,9 @@ function InjuryHeatmap({ player, darkMode }: { player: PlayerRisk; darkMode: boo
     );
     if (days >= 60) anchorData[anchor.key].severeHits += 1;
     if (days >= 21) anchorData[anchor.key].moderateHits += 1;
-    const label = injury.body_area
-      ? injury.body_area.charAt(0).toUpperCase() + injury.body_area.slice(1)
+    const labelSource = injury.body_area || injury.injury_type || injury.injury_raw || "Unknown";
+    const label = labelSource
+      ? labelSource.charAt(0).toUpperCase() + labelSource.slice(1)
       : "Unknown";
     if (!anchorData[anchor.key].types.includes(label)) {
       anchorData[anchor.key].types.push(label);
