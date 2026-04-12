@@ -4,6 +4,7 @@ import { FPLSquadSync, FPLSquadPlayer } from '@/types/api';
 import { RiskBadge } from './RiskBadge';
 import { User, RefreshCw, AlertTriangle, LayoutGrid, List } from 'lucide-react';
 import { useState } from 'react';
+import { toAbsoluteApiUrl } from '@/lib/api';
 
 interface FPLSquadViewProps {
   squad: FPLSquadSync;
@@ -27,7 +28,12 @@ function PlayerImage({ url, name, darkMode, size = 'sm' }: { url: string | null;
     );
   }
   return (
-    <img src={url} alt={name} className={`${dim} rounded-full object-cover flex-shrink-0`} onError={() => setErrored(true)} />
+    <img
+      src={toAbsoluteApiUrl(url)}
+      alt={name}
+      className={`${dim} rounded-full object-cover flex-shrink-0`}
+      onError={() => setErrored(true)}
+    />
   );
 }
 
