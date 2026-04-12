@@ -5573,9 +5573,9 @@ def get_fpl_squad(team_id: int):
 
     # 6. Risk counts
     probs = [p.risk_probability for p in players]
-    high = sum(1 for p in probs if p >= 0.6)
-    medium = sum(1 for p in probs if 0.4 <= p < 0.6)
-    low = sum(1 for p in probs if p < 0.4)
+    high = sum(1 for p in players if p.risk_level == "High")
+    medium = sum(1 for p in players if p.risk_level == "Medium")
+    low = sum(1 for p in players if p.risk_level == "Low")
     avg = round(sum(probs) / len(probs), 3) if probs else 0.0
 
     return FPLSquadSync(
