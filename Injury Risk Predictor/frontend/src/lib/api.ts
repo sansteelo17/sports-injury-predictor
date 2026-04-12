@@ -20,7 +20,14 @@ export function toAbsoluteApiUrl(path: string): string {
 async function fetchAPI<T>(endpoint: string): Promise<T> {
   const res = await fetch(`${API_BASE}${endpoint}`);
   if (!res.ok) {
-    throw new Error(`API error: ${res.status}`);
+    let detail = '';
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = String(body.detail);
+    } catch {
+      // Ignore non-JSON error bodies
+    }
+    throw new Error(detail ? `API error: ${res.status} ${detail}` : `API error: ${res.status}`);
   }
   return res.json();
 }

@@ -183,11 +183,14 @@ export default function Home() {
         trackYaraFplSquadSyncCompleted(teamId, data.players.length);
       })
       .catch((err) => {
-        const msg = err.message?.includes("404")
+        const raw = String(err?.message || "");
+        const msg = raw.includes("404")
           ? "FPL team not found. Check your Team ID."
-          : err.message?.includes("503")
-            ? "FPL servers are currently unavailable. Try again shortly."
-            : "Failed to sync squad. Try again.";
+          : raw.includes("temporarily unavailable")
+            ? raw.replace(/^API error:\s*\d+\s*/, "")
+            : raw.includes("503")
+              ? "FPL servers are currently unavailable. Try again shortly."
+              : raw || "Failed to sync squad. Try again.";
         setSquadError(msg);
       })
       .finally(() => setSquadLoading(false));

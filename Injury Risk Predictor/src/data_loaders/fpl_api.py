@@ -8,6 +8,7 @@ import requests
 from typing import Dict, List, Optional
 from datetime import datetime
 import json
+import time
 
 from ..utils.logger import get_logger
 
@@ -23,6 +24,8 @@ class FPLClient:
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+            "Accept": "application/json",
+            "Referer": "https://fantasy.premierleague.com/",
         })
         self._bootstrap_cache = None
         self._team_lookup = None
@@ -32,13 +35,24 @@ class FPLClient:
     def _fetch(self, endpoint: str) -> Dict:
         """Fetch data from FPL API."""
         url = f"{FPL_BASE_URL}/{endpoint}"
-        try:
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            logger.warning(f"FPL API error: {e}")
-            return {}
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = self.session.get(url, timeout=30)
+                if response.status_code in {429, 500, 502, 503, 504}:
+                    last_error = f"HTTP {response.status_code}"
+                    if attempt < 2:
+                        time.sleep(0.6 * (attempt + 1))
+                        continue
+                response.raise_for_status()
+                return response.json()
+            except (requests.RequestException, json.JSONDecodeError) as e:
+                last_error = str(e)
+                if attempt < 2:
+                    time.sleep(0.6 * (attempt + 1))
+                    continue
+        logger.warning(f"FPL API error for {endpoint}: {last_error}")
+        return {}
 
     def get_bootstrap(self) -> Dict:
         """Get the main bootstrap-static data (teams, players, events)."""
