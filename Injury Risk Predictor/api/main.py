@@ -5449,14 +5449,28 @@ def get_fpl_squad(team_id: int):
     manager_name = f"{entry_data.get('player_first_name', '')} {entry_data.get('player_last_name', '')}".strip()
     team_name = entry_data.get("name", "Unknown")
 
-    # 3. Fetch picks for current gameweek (fall back to previous if empty)
-    picks_data = client.get_picks(team_id, current_gw)
+    # 3. Fetch picks for current gameweek with broader nearby-GW fallback.
+    # FPL can briefly return empty/404 picks around gameweek rollovers.
+    candidate_gws = []
+    for gw in (current_gw, current_gw - 1, current_gw - 2):
+        if gw >= 1 and gw not in candidate_gws:
+            candidate_gws.append(gw)
+
+    picks_data = {}
+    resolved_gw = current_gw
+    for gw in candidate_gws:
+        candidate = client.get_picks(team_id, gw)
+        if candidate and candidate.get("picks"):
+            picks_data = candidate
+            resolved_gw = gw
+            break
+    current_gw = resolved_gw
+
     if not picks_data or not picks_data.get("picks"):
-        if current_gw > 1:
-            picks_data = client.get_picks(team_id, current_gw - 1)
-            current_gw -= 1
-    if not picks_data or not picks_data.get("picks"):
-        raise HTTPException(status_code=404, detail="No picks found for this gameweek.")
+        raise HTTPException(
+            status_code=503,
+            detail=f"FPL squad picks are temporarily unavailable for entry {team_id}. Tried gameweeks {candidate_gws}.",
+        )
 
     picks = picks_data["picks"]
     entry_history = picks_data.get("entry_history", {})
