@@ -311,9 +311,11 @@ def _load_models_blocking():
     if artifacts and "inference_df" in artifacts:
         inference_df = artifacts["inference_df"]
         print(f"Loaded {len(inference_df)} player predictions")
-        # Drop large DataFrames from artifacts once extracted — they live in their
-        # own globals and keeping duplicate references wastes ~50-100MB at runtime.
-        for _key in ("inference_df", "df_clusters", "player_history"):
+        # Drop everything from artifacts except inference_df and severity_clf.
+        # The ensemble is the heaviest artifact (~100-200MB) and is only needed
+        # for the /what-if endpoint — lazy-load it there instead of holding it
+        # in memory for every request. severity_clf is small and used per-player.
+        for _key in ("ensemble", "inference_df", "df_clusters", "player_history"):
             artifacts.pop(_key, None)
     else:
         print("WARNING: No trained models found. API will return errors.")
@@ -5618,10 +5620,17 @@ def get_fpl_squad(team_id: int):
 @app.get("/api/players/{player_name}/what-if", response_model=WhatIfProjection)
 def what_if_projection(player_name: str, rest_next: bool = False, play_all: bool = False):
     """Project how resting or playing all matches affects a player's injury risk."""
-    if inference_df is None or artifacts is None:
+    if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
-    ensemble = artifacts.get("ensemble")
+    # Lazy-load the ensemble from disk — it's only needed here and is the
+    # heaviest artifact (~150MB). Keeping it in memory at all times causes OOM.
+    try:
+        import joblib
+        _ensemble_path = os.path.join(PROJECT_ROOT, "models", "stacking_ensemble.pkl")
+        ensemble = joblib.load(_ensemble_path)
+    except Exception as _e:
+        raise HTTPException(status_code=503, detail=f"Ensemble model not available: {_e}")
     if ensemble is None:
         raise HTTPException(status_code=503, detail="Ensemble model not loaded")
 
