@@ -311,11 +311,28 @@ def _load_models_blocking():
     if artifacts and "inference_df" in artifacts:
         inference_df = artifacts["inference_df"]
         print(f"Loaded {len(inference_df)} player predictions")
+        # Drop large DataFrames from artifacts once extracted — they live in their
+        # own globals and keeping duplicate references wastes ~50-100MB at runtime.
+        for _key in ("inference_df", "df_clusters", "player_history"):
+            artifacts.pop(_key, None)
     else:
         print("WARNING: No trained models found. API will return errors.")
 
     narrative_provider = (os.environ.get("NARRATIVE_LLM_PROVIDER") or "none").strip().lower()
     logger.info("Narrative LLM provider: %s", narrative_provider or "none")
+    if narrative_provider == "openai_compatible":
+        logger.info(
+            "Narrative OpenAI config: model=%s base_url=%s api_key_present=%s",
+            (os.environ.get("OPENAI_MODEL") or "gpt-4o-mini").strip(),
+            (os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/"),
+            "yes" if bool(os.environ.get("OPENAI_API_KEY", "")) else "no",
+        )
+    elif narrative_provider == "ollama":
+        logger.info(
+            "Narrative Ollama config: model=%s base_url=%s",
+            (os.environ.get("OLLAMA_MODEL") or "llama3.1:8b").strip(),
+            (os.environ.get("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").rstrip("/"),
+        )
 
     # Load FPL stats
     try:
@@ -632,6 +649,8 @@ def _load_models_blocking():
         archetype_counts = inference_df["archetype"].value_counts().to_dict()
         print(f"Hybrid archetypes: {archetype_counts}")
 
+    import gc
+    gc.collect()
     _startup_complete = True
 
 
