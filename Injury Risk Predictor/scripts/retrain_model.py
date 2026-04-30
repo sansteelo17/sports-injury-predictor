@@ -256,6 +256,36 @@ def main():
         print(f"  WARNING: Missing injury history features: {missing}")
 
     # ================================================================
+    # STEP 6b: Probability calibration (isotonic regression)
+    # ================================================================
+    # The stacking meta-learner pushes probabilities toward 0/1, creating a
+    # bimodal distribution with a cliff around 0.45. Isotonic regression
+    # fitted on a temporal hold-out reshapes the output so thresholds are
+    # meaningful and recall can be tuned without flagging 70%+ of players.
+    print("\n" + "=" * 60)
+    print("STEP 6b: Fitting probability calibrator (isotonic regression)")
+    print("=" * 60)
+
+    from sklearn.isotonic import IsotonicRegression
+
+    # Use last 20% of data (by date) as calibration set — never seen during training
+    cal_cutoff = injury_risk_df["event_date"].quantile(0.80)
+    cal_mask = injury_risk_df["event_date"] >= cal_cutoff
+    X_cal = injury_risk_df[cal_mask].drop(columns=["injury_label", "event_date"], errors="ignore")
+    y_cal = injury_risk_df[cal_mask]["injury_label"]
+    X_cal = X_cal[[c for c in ensemble.feature_names_ if c in X_cal.columns]]
+
+    raw_probs = ensemble.predict_proba(X_cal)[:, 1]
+    calibrator = IsotonicRegression(out_of_bounds="clip")
+    calibrator.fit(raw_probs, y_cal)
+
+    # Sanity check: calibrated distribution should spread across [0, 1]
+    cal_probs = calibrator.predict(raw_probs)
+    print(f"  Calibration set: {len(y_cal)} samples ({y_cal.mean():.1%} positive)")
+    print(f"  Raw prob range:  [{raw_probs.min():.3f}, {raw_probs.max():.3f}]  mean={raw_probs.mean():.3f}")
+    print(f"  Cal prob range:  [{cal_probs.min():.3f}, {cal_probs.max():.3f}]  mean={cal_probs.mean():.3f}")
+
+    # ================================================================
     # STEP 7: Train severity classifier
     # ================================================================
     print("\n" + "=" * 60)
@@ -361,6 +391,14 @@ def main():
             player_history=player_history,
             inference_df=pd.DataFrame(),  # Will be rebuilt by refresh_predictions
         )
+        # Save calibrator separately so it can be applied at inference time
+        # without loading the full ensemble into memory.
+        import pickle as _pickle
+        _models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+        cal_path = os.path.join(_models_dir, "probability_calibrator.pkl")
+        with open(cal_path, "wb") as _f:
+            _pickle.dump(calibrator, _f)
+        print(f"  Probability calibrator saved → {cal_path}")
         print("  Artifacts saved successfully")
 
         # Write model card with walk-forward CV metrics
