@@ -511,6 +511,98 @@ def build_player_history_lookup(historical_injury_df):
     return player_stats
 
 
+def build_injury_pattern_features(detail_df, reference_date=None):
+    """
+    Compute injury pattern features from per-injury detail records.
+
+    These features capture temporal and structural patterns that
+    build_player_history_lookup misses — specifically whether a player is
+    historically "due" for an injury, whether they re-injure the same area,
+    and how injury-dense their recent history has been.
+
+    Args:
+        detail_df: DataFrame with per-injury records (player_injuries_detail.pkl).
+                   Required columns: name, injury_datetime, severity_days,
+                   body_area, injury_type.
+        reference_date: Date to compute recency relative to. Defaults to
+                        the latest injury date in the dataset.
+
+    Returns:
+        DataFrame with one row per player containing:
+            - avg_inter_injury_gap:  Mean days between consecutive injuries
+            - min_inter_injury_gap:  Shortest gap (re-injury speed)
+            - same_area_recurrence:  1 if 2+ injuries to same body area
+            - recurring_injury_type: 1 if same injury type appears 2+ times
+            - dominant_body_area:    Most common injury body area
+            - injuries_last_12m:     Injury count in last 12 months
+            - injuries_last_24m:     Injury count in last 24 months
+            - days_lost_last_12m:    Days lost in last 12 months
+    """
+    import pandas as _pd
+    import numpy as _np
+
+    df = detail_df.copy()
+    df["injury_datetime"] = _pd.to_datetime(df["injury_datetime"], errors="coerce")
+    df = df.dropna(subset=["injury_datetime", "name"])
+
+    if reference_date is None:
+        reference_date = df["injury_datetime"].max()
+    reference_date = _pd.Timestamp(reference_date)
+
+    cutoff_12m = reference_date - _pd.DateOffset(months=12)
+    cutoff_24m = reference_date - _pd.DateOffset(months=24)
+
+    rows = []
+    for name, grp in df.groupby("name"):
+        grp = grp.sort_values("injury_datetime")
+        dates = grp["injury_datetime"].tolist()
+        days_list = grp["severity_days"].fillna(0).tolist()
+        areas = grp["body_area"].fillna("unknown").str.lower().tolist()
+        types = grp["injury_type"].fillna("unknown").str.lower().tolist()
+
+        # Inter-injury gaps
+        gaps = []
+        for i in range(1, len(dates)):
+            gap = (dates[i] - dates[i - 1]).days
+            if gap > 0:
+                gaps.append(gap)
+        avg_gap = float(_np.mean(gaps)) if gaps else 0.0
+        min_gap = float(_np.min(gaps)) if gaps else 0.0
+
+        # Body area and type recurrence
+        non_unknown_areas = [a for a in areas if a not in ("unknown", "other", "")]
+        area_counts = _pd.Series(non_unknown_areas).value_counts()
+        same_area = int(area_counts.max() >= 2) if len(area_counts) > 0 else 0
+        dominant_area = area_counts.index[0] if len(area_counts) > 0 else "unknown"
+
+        non_unknown_types = [t for t in types if t not in ("unknown", "other", "")]
+        type_counts = _pd.Series(non_unknown_types).value_counts()
+        recurring_type = int(type_counts.max() >= 2) if len(type_counts) > 0 else 0
+
+        # Recency counts
+        inj_12m = int((grp["injury_datetime"] >= cutoff_12m).sum())
+        inj_24m = int((grp["injury_datetime"] >= cutoff_24m).sum())
+        days_lost_12m = float(
+            grp.loc[grp["injury_datetime"] >= cutoff_12m, "severity_days"].fillna(0).sum()
+        )
+
+        rows.append({
+            "name": name,
+            "avg_inter_injury_gap": round(avg_gap, 1),
+            "min_inter_injury_gap": round(min_gap, 1),
+            "same_area_recurrence": same_area,
+            "recurring_injury_type": recurring_type,
+            "dominant_body_area": dominant_area,
+            "injuries_last_12m": inj_12m,
+            "injuries_last_24m": inj_24m,
+            "days_lost_last_12m": round(days_lost_12m, 1),
+        })
+
+    result = _pd.DataFrame(rows)
+    logger.info(f"Built injury pattern features for {len(result)} players")
+    return result
+
+
 def add_player_history_features(df, player_history_lookup):
     """
     Merge pre-computed player history features into inference dataframe.

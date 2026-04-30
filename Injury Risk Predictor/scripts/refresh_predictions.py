@@ -1874,6 +1874,31 @@ def run_inference(snapshots_df, ensemble, severity_clf, player_history, archetyp
         df["days_since_last_injury"] = 365  # 1 year default for unknown
     df["days_since_last_injury"] = df["days_since_last_injury"].fillna(365)
 
+    # --- Derived injury pattern features ---
+    # overdue_ratio: how far past the player's average inter-injury gap they are.
+    # > 1.0 means they are statistically "due" for another injury.
+    if "avg_inter_injury_gap" in df.columns:
+        gap = df["avg_inter_injury_gap"].replace(0, np.nan)
+        df["overdue_ratio"] = (df["days_since_last_injury"] / gap).clip(0, 5).fillna(0)
+    else:
+        df["overdue_ratio"] = 0.0
+
+    # age_x_injury_count: amplifies risk for older players with high injury burden
+    if "player_injury_count" in df.columns and "age" in df.columns:
+        df["age_x_injury_count"] = (
+            df["age"].fillna(25) * df["player_injury_count"].fillna(0)
+        ).clip(0, 500)
+    else:
+        df["age_x_injury_count"] = 0.0
+
+    # acwr_x_play_ratio: high workload spike + high playing time = amplified risk
+    if "acwr" in df.columns and "playing_time_ratio" in df.columns:
+        df["acwr_x_play_ratio"] = (
+            df["acwr"].fillna(1.0) * df["playing_time_ratio"].fillna(0.5)
+        ).clip(0, 5)
+    else:
+        df["acwr_x_play_ratio"] = 0.0
+
     # Assign archetypes using heuristic (instead of just merging old assignments)
     print("   Assigning player archetypes...")
     df["archetype"] = df.apply(assign_archetype_heuristic, axis=1)
@@ -1913,6 +1938,16 @@ def run_inference(snapshots_df, ensemble, severity_clf, player_history, archetyp
         "days_since_last_injury_capped": 180,
         "recent_injury_pressure": 0.0,
         "injury_burden_index": 0.0,
+        "overdue_ratio": 0.0,
+        "age_x_injury_count": 0.0,
+        "acwr_x_play_ratio": 0.0,
+        "avg_inter_injury_gap": 0.0,
+        "min_inter_injury_gap": 0.0,
+        "same_area_recurrence": 0,
+        "recurring_injury_type": 0,
+        "injuries_last_12m": 0,
+        "injuries_last_24m": 0,
+        "days_lost_last_12m": 0.0,
     }
 
     if missing_features:
