@@ -250,6 +250,36 @@ def main():
         detail = pd.read_pickle(DETAIL_FILE)
         print(f"Per-injury detail: {len(detail)} records for KMeans clustering")
 
+    # Enrich player_history.pkl with injury pattern features derived from
+    # the full per-injury detail records (inter-injury gap, area recurrence, etc.)
+    if DETAIL_FILE.exists():
+        try:
+            from src.inference.inference_pipeline import build_injury_pattern_features
+            detail_df = pd.read_pickle(DETAIL_FILE)
+            pattern_features = build_injury_pattern_features(detail_df)
+
+            history = pd.read_pickle(HISTORY_FILE)
+            # Merge pattern features in, dropping old versions if re-running
+            for col in pattern_features.columns:
+                if col != "name" and col in history.columns:
+                    history = history.drop(columns=[col])
+            history = history.merge(pattern_features, on="name", how="left")
+
+            # Fill defaults for players with no detail records
+            history["avg_inter_injury_gap"] = history["avg_inter_injury_gap"].fillna(0.0)
+            history["min_inter_injury_gap"] = history["min_inter_injury_gap"].fillna(0.0)
+            history["same_area_recurrence"] = history["same_area_recurrence"].fillna(0).astype(int)
+            history["recurring_injury_type"] = history["recurring_injury_type"].fillna(0).astype(int)
+            history["dominant_body_area"] = history["dominant_body_area"].fillna("unknown")
+            history["injuries_last_12m"] = history["injuries_last_12m"].fillna(0).astype(int)
+            history["injuries_last_24m"] = history["injuries_last_24m"].fillna(0).astype(int)
+            history["days_lost_last_12m"] = history["days_lost_last_12m"].fillna(0.0)
+
+            pd.to_pickle(history, HISTORY_FILE)
+            print(f"Injury pattern features merged into player_history.pkl ({len(history)} players)")
+        except Exception as e:
+            print(f"WARNING: Failed to enrich pattern features: {e}")
+
 
 def _save_progress(existing: pd.DataFrame, new_results: list, meta: dict):
     """Merge new results with existing and save."""
