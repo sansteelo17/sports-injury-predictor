@@ -1,140 +1,88 @@
 """Inference pipeline for injury risk prediction."""
 
+# All inference_pipeline symbols are lazy-loaded on first access.
+# This keeps the API startup footprint small — importing story_generator or
+# context_rag no longer pulls in shap, sklearn, hdbscan, numba, optuna,
+# matplotlib, and the full training stack (~150-200MB).
+# Training scripts that need these symbols import inference_pipeline directly.
+
 _PIPELINE_IMPORT_ERROR = None
 _RISK_CARD_IMPORT_ERROR = None
 
-try:
-    from .inference_pipeline import (
-        # Feature engineering
-        apply_all_feature_engineering,
-        build_inference_features,
-        add_model_predictions,
-        add_ensemble_predictions,
-        # Severity prediction (recommended)
-        predict_severity_class,
-        add_archetype,
-        # Player history (for inference-time features)
-        build_player_history_lookup,
-        add_player_history_features,
-        # Legacy (deprecated - uses ground truth)
-        add_severity_and_archetype,
-        add_shap_values,
-        build_full_inference_df,
-        build_inference_df_with_ensemble,
-        build_inference_df_legacy
-    )
-except ModuleNotFoundError as e:
-    # Keep lightweight modules (e.g., story_generator) importable even when
-    # optional heavy deps like shap are not installed in runtime environments.
-    _PIPELINE_IMPORT_ERROR = e
-
-try:
-    from .risk_card import build_risk_card
-except ModuleNotFoundError as e:
-    _RISK_CARD_IMPORT_ERROR = e
-
-
-def get_latest_snapshot(inference_df, player_name):
-    """
-    Get the most recent data snapshot for a player from the inference DataFrame.
-
-    This is a convenience re-export from src.dashboard.player_dashboard.
-    For the full dashboard functionality, import directly from src.dashboard.
-
-    Args:
-        inference_df: DataFrame with inference results
-        player_name: Name of the player to look up
-
-    Returns:
-        pandas.Series: The most recent row for the player
-
-    Example:
-        >>> from src.inference import get_latest_snapshot
-        >>> row = get_latest_snapshot(inference_df, "Mohamed Salah")
-    """
-    # Lazy import to avoid circular dependency
-    from ..dashboard.player_dashboard import get_latest_snapshot as _get_latest_snapshot
-    return _get_latest_snapshot(inference_df, player_name)
-
-
-def build_player_dashboard(inference_df, player_name):
-    """
-    Build a comprehensive player dashboard from the inference DataFrame.
-
-    This is a convenience re-export from src.dashboard.player_dashboard.
-    For individual panel functions, import directly from src.dashboard.
-
-    Args:
-        inference_df: DataFrame with inference results
-        player_name: Name of the player to look up
-
-    Returns:
-        dict: Dashboard with overview, risk, severity, archetype, and recommendation panels
-
-    Example:
-        >>> from src.inference import build_player_dashboard
-        >>> dashboard = build_player_dashboard(inference_df, "Mohamed Salah")
-    """
-    # Lazy import to avoid circular dependency
-    from ..dashboard.player_dashboard import build_player_dashboard as _build_player_dashboard
-    return _build_player_dashboard(inference_df, player_name)
-
-
-__all__ = [
-    # Feature engineering
+_PIPELINE_SYMBOLS = {
     "apply_all_feature_engineering",
     "build_inference_features",
-    # Risk predictions
     "add_model_predictions",
     "add_ensemble_predictions",
-    # Severity prediction (recommended)
     "predict_severity_class",
     "add_archetype",
-    # Player history (for inference-time features)
     "build_player_history_lookup",
     "add_player_history_features",
-    # Legacy (deprecated - uses ground truth)
     "add_severity_and_archetype",
     "add_shap_values",
-    # Full pipelines
     "build_full_inference_df",
     "build_inference_df_with_ensemble",
     "build_inference_df_legacy",
-    # Risk card
+}
+
+_pipeline_cache: dict = {}
+
+
+def __getattr__(name: str):
+    if name in _PIPELINE_SYMBOLS:
+        if name not in _pipeline_cache:
+            try:
+                import importlib
+                mod = importlib.import_module(".inference_pipeline", package=__name__)
+                for sym in _PIPELINE_SYMBOLS:
+                    if hasattr(mod, sym):
+                        _pipeline_cache[sym] = getattr(mod, sym)
+            except Exception as e:
+                raise ModuleNotFoundError(
+                    f"Failed to import '{name}' from src.inference: {e}. "
+                    "Install training extras (shap, imbalanced-learn, etc.) to use the full pipeline."
+                ) from e
+        if name in _pipeline_cache:
+            return _pipeline_cache[name]
+        raise AttributeError(name)
+
+    if name == "build_risk_card":
+        try:
+            from .risk_card import build_risk_card
+            return build_risk_card
+        except Exception as e:
+            raise ModuleNotFoundError(
+                f"Failed to import 'build_risk_card': {e}."
+            ) from e
+
+    raise AttributeError(name)
+
+
+def get_latest_snapshot(inference_df, player_name):
+    from ..dashboard.player_dashboard import get_latest_snapshot as _fn
+    return _fn(inference_df, player_name)
+
+
+def build_player_dashboard(inference_df, player_name):
+    from ..dashboard.player_dashboard import build_player_dashboard as _fn
+    return _fn(inference_df, player_name)
+
+
+__all__ = [
+    "apply_all_feature_engineering",
+    "build_inference_features",
+    "add_model_predictions",
+    "add_ensemble_predictions",
+    "predict_severity_class",
+    "add_archetype",
+    "build_player_history_lookup",
+    "add_player_history_features",
+    "add_severity_and_archetype",
+    "add_shap_values",
+    "build_full_inference_df",
+    "build_inference_df_with_ensemble",
+    "build_inference_df_legacy",
     "build_risk_card",
-    # Dashboard utilities (convenience re-exports)
     "get_latest_snapshot",
     "build_player_dashboard",
 ]
-
-
-def __getattr__(name):
-    """Raise a clear error when pipeline symbols are requested without deps."""
-    pipeline_symbols = {
-        "apply_all_feature_engineering",
-        "build_inference_features",
-        "add_model_predictions",
-        "add_ensemble_predictions",
-        "predict_severity_class",
-        "add_archetype",
-        "build_player_history_lookup",
-        "add_player_history_features",
-        "add_severity_and_archetype",
-        "add_shap_values",
-        "build_full_inference_df",
-        "build_inference_df_with_ensemble",
-        "build_inference_df_legacy",
-    }
-    if name in pipeline_symbols and _PIPELINE_IMPORT_ERROR is not None:
-        raise ModuleNotFoundError(
-            f"Failed to import '{name}' from src.inference because optional "
-            f"dependency is missing: {_PIPELINE_IMPORT_ERROR}. "
-            "Install API/runtime extras (e.g., shap) to use full inference pipeline."
-        ) from _PIPELINE_IMPORT_ERROR
-    if name == "build_risk_card" and _RISK_CARD_IMPORT_ERROR is not None:
-        raise ModuleNotFoundError(
-            "Failed to import 'build_risk_card' from src.inference because optional "
-            f"dependency is missing: {_RISK_CARD_IMPORT_ERROR}. "
-            "Install training/runtime extras (e.g., imbalanced-learn) to use risk-card helpers."
-        ) from _RISK_CARD_IMPORT_ERROR
-    raise AttributeError(name)
