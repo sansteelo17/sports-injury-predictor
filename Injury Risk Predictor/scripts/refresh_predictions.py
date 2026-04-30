@@ -1940,6 +1940,20 @@ def run_inference(snapshots_df, ensemble, severity_clf, player_history, archetyp
         df["catboost_prob"] = base_preds["catboost_prob"]
 
     raw_mean = df["ensemble_prob"].mean()
+
+    # Apply isotonic calibrator if available — reshapes the bimodal output
+    # into a proper probability distribution before heuristic mean-correction.
+    _cal_path = os.path.join(PROJECT_ROOT, "models", "probability_calibrator.pkl")
+    if os.path.exists(_cal_path):
+        try:
+            import pickle as _pkl
+            with open(_cal_path, "rb") as _f:
+                _calibrator = _pkl.load(_f)
+            df["ensemble_prob"] = _calibrator.predict(df["ensemble_prob"].values).clip(0.01, 0.99)
+            print(f"   Isotonic calibration applied: mean {raw_mean:.1%} → {df['ensemble_prob'].mean():.1%}")
+        except Exception as _cal_e:
+            print(f"   WARNING: Calibrator load failed ({_cal_e}), using raw probs")
+
     df = calibrate_live_probabilities(df)
     print(f"   Post-calibration probs: mean={df['ensemble_prob'].mean():.1%}, "
           f"range=[{df['ensemble_prob'].min():.1%}, {df['ensemble_prob'].max():.1%}]")
