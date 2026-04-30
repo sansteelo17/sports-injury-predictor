@@ -4795,6 +4795,72 @@ def get_model_metrics():
         return _json.load(f)
 
 
+@app.get("/api/model-metrics/drift")
+def get_drift_snapshot():
+    """Live prediction distribution snapshot for drift detection.
+
+    Compares current inference_df score distribution against the training
+    baseline. Flags if the distribution has shifted significantly.
+    """
+    if inference_df is None:
+        raise HTTPException(status_code=503, detail="Models not loaded")
+
+    import json as _json
+    import numpy as _np
+
+    prob_col = "ensemble_prob"
+    if prob_col not in inference_df.columns:
+        raise HTTPException(status_code=500, detail=f"Column '{prob_col}' missing from inference_df")
+
+    probs = inference_df[prob_col].dropna()
+
+    # Per-league breakdown
+    league_stats = {}
+    if "league" in inference_df.columns:
+        for lg, grp in inference_df.groupby("league"):
+            lp = grp[prob_col].dropna()
+            league_stats[lg] = {
+                "count": int(len(lp)),
+                "mean_prob": round(float(lp.mean()), 4),
+                "pct_high_risk": round(float((lp >= 0.60).mean()), 4),
+            }
+
+    mean_prob = float(probs.mean())
+    pct_high = float((probs >= 0.60).mean())
+    pct_low  = float((probs < 0.25).mean())
+
+    # Training baseline: ~24% positive rate, mean prob ~0.55 (pre-normalisation)
+    # Flag if mean prob drifts >0.15 from baseline or >80% land in one tier
+    warnings = []
+    if mean_prob > 0.75:
+        warnings.append("Mean probability very high — workload features may be inflated (e.g. acute_load spike)")
+    if mean_prob < 0.35:
+        warnings.append("Mean probability very low — possible stale predictions or feature collapse")
+    if pct_high > 0.80:
+        warnings.append("Over 80% of players flagged high-risk — likely a feature distribution issue")
+    if pct_low > 0.70:
+        warnings.append("Over 70% of players flagged low-risk — model may be under-predicting")
+
+    return {
+        "snapshot_date": _utc_now_iso(),
+        "player_count": int(len(probs)),
+        "mean_prob": round(mean_prob, 4),
+        "median_prob": round(float(probs.median()), 4),
+        "p25": round(float(probs.quantile(0.25)), 4),
+        "p75": round(float(probs.quantile(0.75)), 4),
+        "pct_high_risk": round(pct_high, 4),
+        "pct_low_risk": round(pct_low, 4),
+        "by_league": league_stats,
+        "drift_warnings": warnings,
+        "baseline": {
+            "roc_auc": 0.9435,
+            "recall": 0.4508,
+            "positive_rate": 0.2419,
+            "note": "From model_card.json — retrain to update"
+        }
+    }
+
+
 @app.get("/api/health", response_model=HealthCheck)
 async def health_check():
     """Check API health and model status."""
