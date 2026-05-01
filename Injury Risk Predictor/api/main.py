@@ -622,22 +622,11 @@ def _load_models_blocking():
             print(f"WARNING: Failed to enrich injury history: {e}")
 
     # Apply isotonic probability calibrator if available.
-    # Reshapes the bimodal ensemble output into a proper distribution so
-    # thresholds are meaningful without flagging 70%+ of players.
+    # Calibration is applied by refresh_predictions.py before saving inference_df.pkl.
+    # Do NOT re-apply here — double calibration maps 0.78-0.80 inputs to 0.99 for everyone.
     if inference_df is not None and "ensemble_prob" in inference_df.columns:
-        try:
-            import pickle as _pkl
-            _cal_path = os.path.join(PROJECT_ROOT, "models", "probability_calibrator.pkl")
-            if os.path.exists(_cal_path):
-                with open(_cal_path, "rb") as _f:
-                    _prob_calibrator = _pkl.load(_f)
-                _raw = inference_df["ensemble_prob"].values
-                inference_df["ensemble_prob"] = _prob_calibrator.predict(_raw).clip(0.01, 0.99)
-                print(f"Isotonic calibration applied: mean {_raw.mean():.1%} → {inference_df['ensemble_prob'].mean():.1%}")
-            else:
-                print("INFO: probability_calibrator.pkl not found — run retrain_model.py to generate")
-        except Exception as e:
-            print(f"WARNING: Failed to apply probability calibrator: {e}")
+        print(f"Loaded inference_df: mean prob={inference_df['ensemble_prob'].mean():.1%}, "
+              f"range=[{inference_df['ensemble_prob'].min():.1%}, {inference_df['ensemble_prob'].max():.1%}]")
 
     # Load per-injury detail records for narrative enrichment
     global injury_detail_df
