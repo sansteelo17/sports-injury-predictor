@@ -36,3 +36,6 @@ playwright
 notion-client
 airtable-python-wrapper
 pandas
+fastapi
+notion-client
+uvicorn
