@@ -239,6 +239,15 @@ def build_classification_dataset(final_df: pd.DataFrame,
         "monotony", "strain", "fatigue_index",
         "workload_slope", "spike_flag",
 
+        # Injury pattern features (from TM scraper detail records)
+        "avg_inter_injury_gap", "min_inter_injury_gap",
+        "same_area_recurrence", "recurring_injury_type",
+        "dominant_body_area",
+        "injuries_last_12m", "injuries_last_24m", "days_lost_last_12m",
+
+        # Derived interaction features
+        "overdue_ratio", "age_x_injury_count",
+
         # Target
         "injury_label"
     ]
@@ -256,6 +265,12 @@ def build_classification_dataset(final_df: pd.DataFrame,
         "player_worst_injury", "player_severity_std",
         "is_injury_prone", "total_days_lost",
         "min", "mp", "starts", "90s", "gls", "ast", "sh/90", "sca90", "pos",
+        # Injury pattern features — inherited by negative samples per player
+        "avg_inter_injury_gap", "min_inter_injury_gap",
+        "same_area_recurrence", "recurring_injury_type",
+        "dominant_body_area",
+        "injuries_last_12m", "injuries_last_24m", "days_lost_last_12m",
+        "overdue_ratio", "age_x_injury_count",
     ]
     player_info_cols = [c for c in player_info_cols if c in final_positive.columns]
 

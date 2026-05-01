@@ -112,6 +112,40 @@ def main():
     final_df = add_injury_history_features(final_df)
     print(f"  Final injury dataset: {len(final_df)}")
 
+    # Merge injury pattern features from TM scraper detail records.
+    # These capture temporal patterns (inter-injury gap, area recurrence,
+    # recent density) that the training CSV alone cannot provide.
+    import pandas as pd
+    _detail_path = ROOT / "models" / "player_injuries_detail.pkl"
+    if _detail_path.exists() and "name" in final_df.columns:
+        from src.inference.inference_pipeline import build_injury_pattern_features
+        _detail_df = pd.read_pickle(_detail_path)
+        _pattern = build_injury_pattern_features(_detail_df)
+        _pattern["_name_key"] = _pattern["name"].str.lower().str.strip()
+        final_df["_name_key"] = final_df["name"].str.lower().str.strip()
+        final_df = final_df.merge(_pattern.drop(columns=["name"]), on="_name_key", how="left")
+        final_df = final_df.drop(columns=["_name_key"])
+        final_df["avg_inter_injury_gap"] = final_df["avg_inter_injury_gap"].fillna(0.0)
+        final_df["min_inter_injury_gap"] = final_df["min_inter_injury_gap"].fillna(0.0)
+        final_df["same_area_recurrence"] = final_df["same_area_recurrence"].fillna(0).astype(int)
+        final_df["recurring_injury_type"] = final_df["recurring_injury_type"].fillna(0).astype(int)
+        final_df["dominant_body_area"] = final_df["dominant_body_area"].fillna("unknown")
+        final_df["injuries_last_12m"] = final_df["injuries_last_12m"].fillna(0).astype(int)
+        final_df["injuries_last_24m"] = final_df["injuries_last_24m"].fillna(0).astype(int)
+        final_df["days_lost_last_12m"] = final_df["days_lost_last_12m"].fillna(0.0)
+        # Derived features computable at training time
+        _gap = final_df["avg_inter_injury_gap"].replace(0, float("nan"))
+        final_df["overdue_ratio"] = (
+            final_df["days_since_last_injury"].fillna(365) / _gap
+        ).clip(0, 5).fillna(0)
+        final_df["age_x_injury_count"] = (
+            final_df["age"].fillna(25) * final_df["player_injury_count"].fillna(0)
+        ).clip(0, 500)
+        matched = _pattern["name"].str.lower().isin(final_df["name"].str.lower()).sum()
+        print(f"  Pattern features merged: {matched}/{len(_pattern)} players matched")
+    else:
+        print("  INFO: player_injuries_detail.pkl not found — pattern features skipped")
+
     # Generate negative samples
     negative_samples = generate_negative_samples(
         team_matches, injury_df, sample_frac=0.3, strategy="stratified"
