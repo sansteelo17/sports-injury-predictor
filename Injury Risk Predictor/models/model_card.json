@@ -12,48 +12,48 @@
     "n_folds": 5,
     "test_window_months": 6,
     "evaluated_at": "2026-05-01",
-    "roc_auc": 0.9628,
-    "roc_auc_std": 0.0223,
+    "roc_auc": 0.963,
+    "roc_auc_std": 0.0238,
     "precision": 1.0,
     "precision_std": 0.0,
-    "recall": 0.7355,
-    "recall_std": 0.0419,
-    "f1": 0.847,
-    "f1_std": 0.0271,
+    "recall": 0.72,
+    "recall_std": 0.0497,
+    "f1": 0.8363,
+    "f1_std": 0.0325,
     "per_fold": [
       {
-        "roc_auc": 0.9387,
+        "roc_auc": 0.9332,
         "precision": 1.0,
-        "recall": 0.7356,
-        "f1": 0.8477
+        "recall": 0.6818,
+        "f1": 0.8108
       },
       {
-        "roc_auc": 1.0,
+        "roc_auc": 0.997,
         "precision": 1.0,
         "recall": 0.725,
         "f1": 0.8406
       },
       {
-        "roc_auc": 0.9486,
+        "roc_auc": 0.9537,
         "precision": 1.0,
-        "recall": 0.6977,
-        "f1": 0.8219
+        "recall": 0.6897,
+        "f1": 0.8163
       },
       {
-        "roc_auc": 0.9508,
+        "roc_auc": 0.947,
         "precision": 1.0,
-        "recall": 0.7045,
-        "f1": 0.8267
+        "recall": 0.6889,
+        "f1": 0.8158
       },
       {
-        "roc_auc": 0.9759,
+        "roc_auc": 0.9841,
         "precision": 1.0,
         "recall": 0.8148,
         "f1": 0.898
       }
     ],
-    "positive_rate": 0.4315,
-    "train_size": 6730,
+    "positive_rate": 0.4319,
+    "train_size": 6735,
     "leagues": [
       "Premier League",
       "La Liga"
@@ -61,8 +61,8 @@
   },
   "severity_model": {
     "model": "CatBoost",
-    "accuracy": 0.6034,
-    "adjacent_accuracy": 0.919
+    "accuracy": 0.6007,
+    "adjacent_accuracy": 0.926
   },
   "notes": [
     "league is a categorical feature \u2014 model sees EPL vs La Liga.",
