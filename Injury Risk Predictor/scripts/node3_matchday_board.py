@@ -1,5 +1,5 @@
 import sys; sys.path.insert(0,'/home/user/yara')
-from node3_matchday_board import build_ufc_card
+from scripts.node3_matchday_board import build_ufc_card
 
 ufc_data = {
     "gw": 36, "league": "Premier League",
