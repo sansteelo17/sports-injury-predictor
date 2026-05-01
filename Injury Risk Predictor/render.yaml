@@ -9,7 +9,7 @@ services:
     region: oregon
     plan: free
     rootDir: Injury Risk Predictor
-    buildCommand: pip install -r api/requirements.txt
+    buildCommand: pip install --no-cache-dir -r api/requirements.txt
     startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
@@ -41,7 +41,7 @@ services:
     plan: starter
     rootDir: Injury Risk Predictor
     schedule: "0 */12 * * *"
-    buildCommand: pip install -r api/requirements.txt
+    buildCommand: pip install --no-cache-dir -r api/requirements.txt
     startCommand: python scripts/trigger_refresh.py
     envVars:
       - key: PYTHON_VERSION
