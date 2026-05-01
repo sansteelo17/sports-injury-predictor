@@ -135,11 +135,13 @@ def main():
         final_df["days_lost_last_12m"] = final_df["days_lost_last_12m"].fillna(0.0)
         # Derived features computable at training time
         _gap = final_df["avg_inter_injury_gap"].replace(0, float("nan"))
-        final_df["overdue_ratio"] = (
-            final_df["days_since_last_injury"].fillna(365) / _gap
-        ).clip(0, 5).fillna(0)
+        _days_since = final_df["days_since_last_injury"].fillna(365) if "days_since_last_injury" in final_df.columns else pd.Series(365, index=final_df.index)
+        final_df["overdue_ratio"] = (_days_since / _gap).clip(0, 5).fillna(0)
+        # age_x_injury_count uses previous_injuries as proxy since player_injury_count
+        # is added later by build_classification_dataset
+        _inj_count = final_df["previous_injuries"].fillna(0) if "previous_injuries" in final_df.columns else pd.Series(0, index=final_df.index)
         final_df["age_x_injury_count"] = (
-            final_df["age"].fillna(25) * final_df["player_injury_count"].fillna(0)
+            final_df["age"].fillna(25) * _inj_count
         ).clip(0, 500)
         matched = _pattern["name"].str.lower().isin(final_df["name"].str.lower()).sum()
         print(f"  Pattern features merged: {matched}/{len(_pattern)} players matched")
