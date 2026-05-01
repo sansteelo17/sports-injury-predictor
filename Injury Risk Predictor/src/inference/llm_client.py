@@ -218,13 +218,25 @@ def _call_openai_compatible(system_prompt: str, user_prompt: str, max_output_tok
             timeout=timeout,
         )
         if resp.status_code != 200:
-            logger.warning(f"openai_compatible returned HTTP {resp.status_code}")
+            body_preview = (resp.text or "").strip().replace("\n", " ")[:400]
+            logger.warning(
+                "openai_compatible returned HTTP %s for model=%s base_url=%s body=%s",
+                resp.status_code,
+                model,
+                base_url,
+                body_preview,
+            )
             return None
         data = resp.json()
         content = (((data.get("choices") or [{}])[0]).get("message") or {}).get("content", "")
         return _clean_output(content)
     except Exception as e:
-        logger.warning(f"openai_compatible narrative generation failed: {e}")
+        logger.warning(
+            "openai_compatible narrative generation failed for model=%s base_url=%s: %s",
+            model,
+            base_url,
+            e,
+        )
         return None
 
 
@@ -313,6 +325,12 @@ def generate_grounded_section_bundle(
         output = _call_openai_compatible(system_prompt, user_prompt, max_output_tokens=max_output_tokens)
 
     if not output:
+        logger.warning(
+            "Narrative bundle generation fell back to deterministic copy for %s (provider=%s, sections=%s)",
+            player_name,
+            provider,
+            [str(section.get("tag") or "") for section in sections],
+        )
         return bundle
 
     for section in sections:

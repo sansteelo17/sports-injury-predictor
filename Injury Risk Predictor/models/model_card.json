@@ -1,22 +1,59 @@
 {
   "model": "StackingEnsemble",
   "description": "Binary injury risk classifier for EPL + La Liga players over a 2-week horizon.",
-  "version": "2.0",
+  "version": "3.0",
   "leagues": [
     "Premier League",
     "La Liga"
   ],
-  "trained_on": "Historical player stats, injury records, and match data. Temporal train/val/test split (60/20/20).",
+  "trained_on": "All available data. Walk-forward CV (5 folds, 6-month test windows) used for honest evaluation.",
   "evaluation": {
-    "evaluated_at": "2026-04-09",
-    "roc_auc": 0.9435,
-    "avg_precision": 0.8947,
-    "precision": 0.9725,
-    "recall": 0.4508,
-    "f1": 0.616,
-    "threshold": 0.5,
-    "test_size": 3567,
-    "positive_rate": 0.2419,
+    "method": "walk_forward_cv",
+    "n_folds": 5,
+    "test_window_months": 6,
+    "evaluated_at": "2026-05-01",
+    "roc_auc": 0.9628,
+    "roc_auc_std": 0.0223,
+    "precision": 1.0,
+    "precision_std": 0.0,
+    "recall": 0.7355,
+    "recall_std": 0.0419,
+    "f1": 0.847,
+    "f1_std": 0.0271,
+    "per_fold": [
+      {
+        "roc_auc": 0.9387,
+        "precision": 1.0,
+        "recall": 0.7356,
+        "f1": 0.8477
+      },
+      {
+        "roc_auc": 1.0,
+        "precision": 1.0,
+        "recall": 0.725,
+        "f1": 0.8406
+      },
+      {
+        "roc_auc": 0.9486,
+        "precision": 1.0,
+        "recall": 0.6977,
+        "f1": 0.8219
+      },
+      {
+        "roc_auc": 0.9508,
+        "precision": 1.0,
+        "recall": 0.7045,
+        "f1": 0.8267
+      },
+      {
+        "roc_auc": 0.9759,
+        "precision": 1.0,
+        "recall": 0.8148,
+        "f1": 0.898
+      }
+    ],
+    "positive_rate": 0.4315,
+    "train_size": 6730,
     "leagues": [
       "Premier League",
       "La Liga"
@@ -24,11 +61,13 @@
   },
   "severity_model": {
     "model": "CatBoost",
-    "accuracy": 0.5862,
-    "adjacent_accuracy": 0.9172
+    "accuracy": 0.6034,
+    "adjacent_accuracy": 0.919
   },
   "notes": [
     "league is a categorical feature \u2014 model sees EPL vs La Liga.",
-    "ROC-AUC is the most reliable metric given class imbalance."
+    "ROC-AUC is the most reliable metric given class imbalance.",
+    "Walk-forward CV trains on past data and tests on future windows \u2014 no temporal leakage.",
+    "Final model trained on all available data after CV evaluation."
   ]
 }
