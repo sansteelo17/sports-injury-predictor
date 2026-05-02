@@ -5465,9 +5465,12 @@ def proxy_tm_player_photo(name: str):
         return Response(content=_tm_photo_bytes_cache[photo_url], media_type="image/jpeg")
 
     try:
-        from src.data_loaders.transfermarkt_scraper import TransfermarktScraper
-        scraper = TransfermarktScraper(cache_hours=168)
-        resp = scraper.session.get(photo_url, timeout=8)
+        import requests as _requests
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.transfermarkt.com/",
+        }
+        resp = _requests.get(photo_url, headers=headers, timeout=8)
         if resp.status_code != 200:
             raise HTTPException(status_code=404, detail="Photo unavailable")
         _tm_photo_bytes_cache[photo_url] = resp.content
