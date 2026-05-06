@@ -3640,11 +3640,7 @@ def _estimate_la_liga_fixture_difficulty(
 
 def _fetch_la_liga_fixture_dataset_live() -> Dict[str, Any]:
     started = time.perf_counter()
-    try:
-        client = MatchHistoryApiClient()
-    except ValueError:
-        logger.warning("FOOTBALL_DATA_API_KEY not set — La Liga fixtures unavailable")
-        return {"season": _current_season_year(), "matches": []}
+    client = MatchHistoryApiClient()
     season = _current_season_year()
     data = client._get(f"competitions/{LA_LIGA_ID}/matches", {"season": season})
     matches = data.get("matches", [])
@@ -3685,7 +3681,11 @@ def _get_la_liga_fixture_dataset_cached() -> Dict[str, Any]:
     ):
         return {"season": season, "matches": cache_entry["data"]}
 
-    live_dataset = _fetch_la_liga_fixture_dataset_live()
+    try:
+        live_dataset = _fetch_la_liga_fixture_dataset_live()
+    except Exception as e:
+        logger.error("La Liga fixture fetch failed: %s", e)
+        raise HTTPException(status_code=503, detail=f"La Liga fixture data unavailable: {e}")
     _la_liga_fixture_dataset_cache = {
         "season": live_dataset["season"],
         "data": live_dataset["matches"],
