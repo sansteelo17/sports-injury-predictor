@@ -1662,8 +1662,17 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
             ref_now=now,
         )
     except Exception as e:
-        print(f"   Warning: could not fetch La Liga data ({e}). Skipping.")
-        la_liga_rows = []
+        print(f"   Warning: could not fetch La Liga data ({e}). Falling back to existing La Liga predictions.")
+        # Preserve existing La Liga rows from the last good pkl so the saved
+        # artifact is never EPL-only. Without this, a transient API failure
+        # wipes all La Liga players from the live inference_df.
+        existing_df = artifacts.get("inference_df")
+        if existing_df is not None and "league" in existing_df.columns:
+            existing_la_liga = existing_df[existing_df["league"] == "La Liga"]
+            la_liga_rows = existing_la_liga.to_dict("records") if not existing_la_liga.empty else []
+            print(f"   Preserved {len(la_liga_rows)} existing La Liga predictions.")
+        else:
+            la_liga_rows = []
 
     all_rows = epl_rows + la_liga_rows
     snapshots_df = pd.DataFrame(all_rows)

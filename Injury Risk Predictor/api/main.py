@@ -900,11 +900,12 @@ def assign_hybrid_archetypes(df):
             trend = float(row.get("severity_trend", 0) or 0)
 
             scores = {
-                "Fragile": (avg_sev * 1.5) + (max_sev * 0.8) + (high_sev * 35) - (injuries * 1.4),
-                "Injury Prone": (injuries * 7.0) + (high_sev * 12) + (max(0, 140 - avg_gap) * 0.06),
-                "Recurring Issues": (reinjury * 110) + (injuries * 3.5) + (max(0, 120 - avg_gap) * 0.05) + (max(0, trend) * 8),
-                "Unpredictable": (variability * 32) + (entropy * 8) + (abs(trend) * 4) + (injuries * 2),
-                "Durable": (max(0, 28 - avg_sev) * 1.2) + (max(0, 4 - injuries) * 8) + (avg_gap * 0.08) + (max(0, 0.35 - reinjury) * 40),
+                # max_sev removed — a single outlier injury was dominating all clusters
+                "Fragile":          (avg_sev * 1.8) + (high_sev * 30) - (injuries * 1.5),
+                "Injury Prone":     (injuries * 8.0) + (high_sev * 8) + max(0, 100 - avg_gap) * 0.05,
+                "Recurring Issues": (reinjury * 90) + (injuries * 3.5) + max(0, 100 - avg_gap) * 0.04,
+                "Unpredictable":    (variability * 32) + (entropy * 8) + (abs(trend) * 4) + (injuries * 2),
+                "Durable":          max(0, 25 - avg_sev) * 1.5 + max(0, 3 - injuries) * 12 + (avg_gap * 0.07) + max(0, 0.35 - reinjury) * 35,
             }
             return max(scores, key=scores.get)
 
