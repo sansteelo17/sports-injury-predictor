@@ -2166,6 +2166,19 @@ def main():
         acwr_str = f"ACWR={row.get('acwr', 'N/A')}" if pd.notna(row.get('acwr')) else ""
         print(f"  {row['ensemble_prob']:.1%} - {row['name']} ({row.get('player_team', 'Unknown')}) {acwr_str}")
 
+    # Guard: never overwrite the pkl with an EPL-only result.
+    # If La Liga fetch failed, the snapshots_df has no La Liga rows.
+    # Saving it would wipe La Liga from the live inference_df permanently
+    # until the next successful refresh. Skip the save instead.
+    has_la_liga = (
+        "league" in inference_df.columns
+        and "La Liga" in inference_df["league"].values
+    )
+    if not has_la_liga and not args.dry_run:
+        print("\nWARNING: La Liga players missing from result — skipping save to preserve existing pkl.")
+        print("La Liga fetch must have failed. Existing predictions remain unchanged.")
+        sys.exit(0)
+
     # Save
     if args.dry_run:
         print("\n[DRY RUN - not saving]")
