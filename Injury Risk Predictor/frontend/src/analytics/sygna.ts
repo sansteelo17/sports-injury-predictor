@@ -1,6 +1,12 @@
 "use client";
 
+/**
+ * When unset, events POST to same-origin `/api/sygna-ingest` (see app/api/sygna-ingest/route.ts),
+ * which forwards to Sygna server-side — avoids CORS on ingest.usesygna.com.
+ * For legacy direct browser calls only, set NEXT_PUBLIC_SYGNA_API_URL (not recommended in prod).
+ */
 const SYGNA_API_URL = process.env.NEXT_PUBLIC_SYGNA_API_URL?.trim() || "";
+/** Only used when posting directly to an external SYGNA_API_URL (local debugging). */
 const SYGNA_INGEST_KEY = process.env.NEXT_PUBLIC_SYGNA_INGEST_KEY?.trim() || "";
 const VISITOR_KEY = "__sygna_yara_visitor_id";
 const SESSION_KEY = "__sygna_yara_session_id";
@@ -10,7 +16,14 @@ const SESSION_TTL_MS = 30 * 60 * 1000;
 type EventPayload = Record<string, unknown>;
 
 function isEnabled(): boolean {
-  return typeof window !== "undefined" && SYGNA_API_URL.length > 0;
+  if (typeof window === "undefined") {
+    return false;
+  }
+  // Same-origin proxy is always available when this bundle is served from Next.
+  if (!SYGNA_API_URL) {
+    return true;
+  }
+  return SYGNA_API_URL.length > 0;
 }
 
 function makeId(): string {
@@ -51,16 +64,20 @@ function getIdentity(): { visitorId: string; sessionId: string } {
 }
 
 function resolveIngestUrl(): string {
+  if (!SYGNA_API_URL) {
+    return "/api/sygna-ingest";
+  }
   const base = SYGNA_API_URL.replace(/\/+$/, "");
   return base.endsWith("/api") ? `${base}/ingest` : `${base}/api/ingest`;
 }
 
-function buildHeaders(): Record<string, string> {
+function buildHeaders(ingestUrl: string): Record<string, string> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json"
   };
 
-  if (SYGNA_INGEST_KEY) {
+  // Secret key must not be required in the browser when using the same-origin proxy.
+  if (ingestUrl.startsWith("http") && SYGNA_INGEST_KEY) {
     headers["x-sygna-key"] = SYGNA_INGEST_KEY;
   }
 
@@ -87,18 +104,19 @@ function send(type: "pageview" | "event", name: string, payload: EventPayload = 
     payload
   });
 
+  const url = resolveIngestUrl();
   const sendBeaconFallback = (): boolean => {
     if (SYGNA_INGEST_KEY || typeof navigator.sendBeacon !== "function") {
       return false;
     }
 
-    return navigator.sendBeacon(resolveIngestUrl(), new Blob([body], { type: "application/json" }));
+    return navigator.sendBeacon(url, new Blob([body], { type: "application/json" }));
   };
 
   try {
-    void fetch(resolveIngestUrl(), {
+    void fetch(url, {
       method: "POST",
-      headers: buildHeaders(),
+      headers: buildHeaders(url),
       body,
       keepalive: true,
       credentials: "omit"

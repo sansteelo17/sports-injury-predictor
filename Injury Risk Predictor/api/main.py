@@ -6,6 +6,8 @@ Serves predictions from the trained ML models to the React frontend.
 
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.requests import Request
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any, Set
 import sys
@@ -86,21 +88,41 @@ app = FastAPI(
 )
 
 # CORS for React frontend (local dev + Render deployment)
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://epl-injury-frontend.onrender.com",
+    "https://injurywatch.onrender.com",
+    "https://yara-sports-frontend.onrender.com",
+    "https://yaraspeaks.com",
+    "https://www.yaraspeaks.com",
+]
+_CORS_ORIGIN_REGEX_STR = r"https://([a-zA-Z0-9-]+\.)?yaraspeaks\.com"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://epl-injury-frontend.onrender.com",
-        "https://injurywatch.onrender.com",
-        "https://yara-sports-frontend.onrender.com",
-        "https://yaraspeaks.com",
-        "https://www.yaraspeaks.com",
-    ],
+    allow_origins=CORS_ALLOWED_ORIGINS,
+    # Covers apex/www and future app subdomains without redeploying when browsers send Origin.
+    allow_origin_regex=_CORS_ORIGIN_REGEX_STR,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def catch_unhandled_exceptions(request: Request, call_next):
+    """Return JSON 500s through the stack so CORSMiddleware can attach CORS headers (browser-visible errors)."""
+    try:
+        return await call_next(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Unhandled server error", exc_info=exc)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"},
+        )
 
 # FPL team names -> display names mapping
 FPL_TEAM_DISPLAY_NAMES = {
