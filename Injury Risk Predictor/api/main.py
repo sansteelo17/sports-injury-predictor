@@ -175,6 +175,7 @@ _LA_LIGA_TEAM_FIXTURES_TTL = timedelta(minutes=10)
 _LA_LIGA_MONEYLINE_TTL = timedelta(minutes=7)
 _LA_LIGA_TEAM_CONTEXT_TTL = timedelta(minutes=5)
 _LA_LIGA_PUBLIC_STATS_TTL = timedelta(hours=6)
+_LA_LIGA_FIXTURE_FALLBACK_TTL = timedelta(minutes=3)
 _TM_PLAYER_PROFILE_TTL = timedelta(hours=24)
 
 
@@ -214,6 +215,12 @@ def _narrative_cache_key(
 
 def _normalize_cache_key(value: Optional[str]) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _normalize_team_lookup_key(value: Optional[str]) -> str:
+    """Match URL/API team names to inference_df rows (accent- and case-insensitive)."""
+    raw = str(value or "").strip()
+    return _normalize_cache_key(_strip_accents(raw))
 
 
 def _require_refresh_token(x_refresh_token: Optional[str]) -> None:
@@ -307,7 +314,9 @@ def _load_models_blocking():
     shirt_number_lookup_attempted = set()
     fixture_history_cache = {}
 
-    artifacts = load_artifacts()
+    # Skip loading stacking ensemble into RAM: predictions live in inference_df.pkl;
+    # ensemble is ~100–200MB and only needed for /what-if (lazy-loaded there).
+    artifacts = load_artifacts(skip_load_keys=("ensemble",))
     if artifacts and "inference_df" in artifacts:
         inference_df = artifacts["inference_df"]
         print(f"Loaded {len(inference_df)} player predictions")
@@ -3685,8 +3694,17 @@ def _get_la_liga_fixture_dataset_cached() -> Dict[str, Any]:
     try:
         live_dataset = _fetch_la_liga_fixture_dataset_live()
     except Exception as e:
-        logger.error("La Liga fixture fetch failed: %s", e)
-        raise HTTPException(status_code=503, detail=f"La Liga fixture data unavailable: {e}")
+        # Never fail team overview / cards when football-data.org is down or the API
+        # key is missing on the host — degrade to empty fixtures and retry soon.
+        logger.error("La Liga fixture fetch failed (using empty fallback): %s", e)
+        _la_liga_fixture_dataset_cache = {
+            "season": season,
+            "data": [],
+            "expires": datetime.utcnow() + _LA_LIGA_FIXTURE_FALLBACK_TTL,
+        }
+        _la_liga_team_fixtures_cache = {}
+        _la_liga_team_context_cache = {}
+        return {"season": season, "matches": []}
     _la_liga_fixture_dataset_cache = {
         "season": live_dataset["season"],
         "data": live_dataset["matches"],
@@ -5304,9 +5322,9 @@ def get_team_overview(team_name: str):
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
-    team_df = inference_df[
-        inference_df["team"].str.lower() == team_name.lower()
-    ]
+    lookup_key = _normalize_team_lookup_key(team_name)
+    team_norm = inference_df["team"].apply(_normalize_team_lookup_key)
+    team_df = inference_df[team_norm == lookup_key]
     if team_df.empty:
         raise HTTPException(status_code=404, detail=f"Team '{team_name}' not found")
 
@@ -5314,7 +5332,7 @@ def get_team_overview(team_name: str):
     team_df["risk_level"] = team_df.apply(lambda r: get_risk_level(r.get("ensemble_prob", 0.5), r), axis=1)
     actual_team = team_df.iloc[0]["team"]
     team_league = team_df.iloc[0].get("league", "Premier League")
-    is_la_liga = team_league == "La Liga"
+    is_la_liga = str(team_league or "").strip().lower() == "la liga"
 
     high_risk = len(team_df[team_df["risk_level"] == "High"])
     medium_risk = len(team_df[team_df["risk_level"] == "Medium"])
@@ -5356,7 +5374,13 @@ def get_team_overview(team_name: str):
 
     # Get next fixture for the team
     if is_la_liga:
-        next_fixture_data = _get_la_liga_team_context_cached(actual_team, count=1).get("next_fixture_data")
+        try:
+            next_fixture_data = _get_la_liga_team_context_cached(actual_team, count=1).get(
+                "next_fixture_data"
+            )
+        except Exception as ctx_err:
+            logger.warning("La Liga team context unavailable for %s: %s", actual_team, ctx_err)
+            next_fixture_data = None
     else:
         next_fixture_data = get_next_fixture_for_team(actual_team, team_df["ensemble_prob"].mean())
 
