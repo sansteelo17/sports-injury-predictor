@@ -30,6 +30,9 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "20"
+      # Reduce Next.js webpack build OOM on small Render builders
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=4096"
       - key: NEXT_PUBLIC_API_URL
         value: "https://yara-sports-api.onrender.com"
 
