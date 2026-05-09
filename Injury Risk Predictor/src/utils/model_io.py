@@ -21,6 +21,7 @@ import pickle
 import joblib
 import numpy as np
 import pandas as pd
+from typing import Iterable, Optional
 
 from .logger import get_logger
 
@@ -150,12 +151,15 @@ def save_artifacts(
     return models_dir
 
 
-def load_artifacts(models_dir=None):
+def load_artifacts(models_dir=None, skip_load_keys: Optional[Iterable[str]] = None):
     """
     Load all trained model artifacts from disk.
 
     Args:
         models_dir: Directory to load from (default: project_root/models/)
+        skip_load_keys: Artifact keys to skip loading (saves RAM). The API skips
+            ``ensemble`` because predictions are precomputed in inference_df.pkl;
+            the stacking ensemble is lazy-loaded only for /what-if.
 
     Returns:
         dict with keys: ensemble, severity_clf, df_clusters, player_history, inference_df
@@ -163,6 +167,8 @@ def load_artifacts(models_dir=None):
     """
     if models_dir is None:
         models_dir = os.path.abspath(DEFAULT_MODELS_DIR)
+
+    skip_load_keys = set(skip_load_keys or [])
 
     if not os.path.exists(models_dir):
         logger.info(f"Models directory not found: {models_dir}")
@@ -175,17 +181,30 @@ def load_artifacts(models_dir=None):
         if not os.path.exists(path):
             missing.append(filename)
 
-    # Require at least the ensemble model; inference_df can be regenerated
     ensemble_file = ARTIFACT_FILES.get("ensemble", "stacking_ensemble.pkl")
-    if ensemble_file in missing:
+    inference_df_file = ARTIFACT_FILES.get("inference_df", "inference_df.pkl")
+
+    if "ensemble" in skip_load_keys:
+        # Serving API from precomputed inference_df — ensemble file may exist but we
+        # never load it here (what-if lazy-loads from disk). Require inference_df.
+        if inference_df_file in missing:
+            logger.warning(
+                f"inference_df.pkl required when skipping ensemble load (not found in {models_dir})"
+            )
+            return None
+    elif ensemble_file in missing:
         logger.warning(f"Ensemble model not found in {models_dir}")
         return None
+
     if missing:
         logger.warning(f"Some artifact files missing (non-critical): {missing}")
 
     # Load all artifacts (skip failures for non-essential ones)
     artifacts = {}
     for name, filename in ARTIFACT_FILES.items():
+        if name in skip_load_keys:
+            logger.info(f"Skipped loading {name} (skip_load_keys) — not held in memory")
+            continue
         path = os.path.join(models_dir, filename)
         try:
             if filename.endswith(".pkl"):
