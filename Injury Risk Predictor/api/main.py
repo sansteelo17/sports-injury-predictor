@@ -1457,7 +1457,28 @@ TEAM_BADGE_ALIASES = {
 }
 
 
-def _league_prob_series(league: Optional[str] = None):
+def _safe_league_label(league: Any) -> Optional[str]:
+    """Return a stripped league name, or None if missing/NaN.
+
+    ``float('nan')`` is truthy in Python — never use ``if league:`` before ``.lower()``.
+    """
+    if league is None:
+        return None
+    try:
+        import pandas as pd
+        if pd.isna(league):
+            return None
+    except Exception:
+        pass
+    if isinstance(league, float) and math.isnan(league):
+        return None
+    text = str(league).strip()
+    if not text or text.lower() == "nan":
+        return None
+    return text
+
+
+def _league_prob_series(league: Optional[Any] = None):
     """Return the ensemble_prob series for percentile calculation.
 
     Normalises within the player's own league so that EPL and La Liga
@@ -1468,8 +1489,10 @@ def _league_prob_series(league: Optional[str] = None):
     """
     if inference_df is None or "ensemble_prob" not in inference_df.columns:
         return None
-    if league and "league" in inference_df.columns:
-        sub = inference_df[inference_df["league"].str.lower() == league.lower()]
+    league_key = _safe_league_label(league)
+    if league_key and "league" in inference_df.columns:
+        norm = inference_df["league"].map(lambda v: (_safe_league_label(v) or "").lower())
+        sub = inference_df[norm == league_key.lower()]
         if len(sub) >= 10:
             return sub["ensemble_prob"]
     return inference_df["ensemble_prob"]
@@ -1483,10 +1506,21 @@ def get_risk_level(prob: float, row=None) -> str:
     - Medium: 40th-80th percentile
     - Low: bottom 40%
     """
-    league = row.get("league") if isinstance(row, dict) else (getattr(row, "get", lambda k, d=None: d)("league") if row is not None else None)
-    series = _league_prob_series(league)
+    league_raw = (
+        row.get("league")
+        if isinstance(row, dict)
+        else (row.get("league") if row is not None and hasattr(row, "get") else None)
+    )
+    league_key = _safe_league_label(league_raw)
+    try:
+        p = float(prob)
+        if math.isnan(p) or math.isinf(p):
+            p = 0.5
+    except (TypeError, ValueError):
+        p = 0.5
+    series = _league_prob_series(league_key)
     if series is not None:
-        percentile = float((series <= prob).mean())
+        percentile = float((series <= p).mean())
         if percentile >= 0.80:
             return "High"
         elif percentile >= 0.40:
@@ -1494,25 +1528,32 @@ def get_risk_level(prob: float, row=None) -> str:
         else:
             return "Low"
     else:
-        if prob >= 0.20:
+        if p >= 0.20:
             return "High"
-        elif prob >= 0.10:
+        elif p >= 0.10:
             return "Medium"
         else:
             return "Low"
 
 
-def normalize_risk_score(prob: float, league: Optional[str] = None) -> float:
+def normalize_risk_score(prob: float, league: Optional[Any] = None) -> float:
     """Convert raw model probability to a 0-100 score based on within-league percentile rank.
 
     Normalises within the player's own league so La Liga and EPL each span 0-100.
     50 = average risk for that league, 90 = top 10% in that league.
     """
-    series = _league_prob_series(league)
+    try:
+        p = float(prob)
+        if math.isnan(p) or math.isinf(p):
+            p = 0.5
+    except (TypeError, ValueError):
+        p = 0.5
+    league_key = _safe_league_label(league)
+    series = _league_prob_series(league_key)
     if series is not None:
-        percentile = float((series <= prob).mean())
+        percentile = float((series <= p).mean())
         return round(min(99.0, percentile * 100), 1)
-    return round(max(0, min(99, (prob - 0.04) / (0.92 - 0.04) * 100)), 1)
+    return round(max(0, min(99, (p - 0.04) / (0.92 - 0.04) * 100)), 1)
 
 
 # La Liga team badge URLs from football-data.org crests (static — IDs are stable)
@@ -2104,8 +2145,8 @@ def _resolve_display_minutes(
     if minutes > 0:
         return minutes
 
-    league = str(row.get("league", "") or "")
-    if league == "La Liga":
+    league = _safe_league_label(row.get("league")) or ""
+    if league.lower() == "la liga":
         profile = _get_laliga_public_player_profile(
             str(row.get("name", "")).strip(),
             team_hint=str(row.get("team", "")).strip(),
@@ -5238,7 +5279,9 @@ def list_teams(league: Optional[str] = None):
         raise HTTPException(status_code=503, detail="Models not loaded")
 
     if league and "league" in inference_df.columns:
-        league_df = inference_df[inference_df["league"].str.lower() == league.lower()]
+        target = league.lower().strip()
+        norm = inference_df["league"].map(lambda v: (_safe_league_label(v) or "").lower())
+        league_df = inference_df[norm == target]
         our_teams = league_df["team"].unique().tolist()
     else:
         our_teams = inference_df["team"].unique().tolist()
@@ -5331,8 +5374,8 @@ def get_team_overview(team_name: str):
     team_df = team_df.copy()
     team_df["risk_level"] = team_df.apply(lambda r: get_risk_level(r.get("ensemble_prob", 0.5), r), axis=1)
     actual_team = team_df.iloc[0]["team"]
-    team_league = team_df.iloc[0].get("league", "Premier League")
-    is_la_liga = str(team_league or "").strip().lower() == "la liga"
+    team_league = _safe_league_label(team_df.iloc[0].get("league")) or "Premier League"
+    is_la_liga = team_league.lower() == "la liga"
 
     high_risk = len(team_df[team_df["risk_level"] == "High"])
     medium_risk = len(team_df[team_df["risk_level"] == "Medium"])
@@ -5384,13 +5427,21 @@ def get_team_overview(team_name: str):
     else:
         next_fixture_data = get_next_fixture_for_team(actual_team, team_df["ensemble_prob"].mean())
 
+    _mean_ensemble = team_df["ensemble_prob"].mean()
+    try:
+        avg_prob = float(_mean_ensemble)
+        if math.isnan(avg_prob) or math.isinf(avg_prob):
+            avg_prob = 0.5
+    except (TypeError, ValueError):
+        avg_prob = 0.5
+
     response = TeamOverview(
         team=actual_team,
         total_players=len(team_df),
         high_risk_count=high_risk,
         medium_risk_count=medium_risk,
         low_risk_count=low_risk,
-        avg_risk=round(normalize_risk_score(team_df["ensemble_prob"].mean(), team_league) / 100, 3),
+        avg_risk=round(normalize_risk_score(avg_prob, team_league) / 100, 3),
         players=players,
         team_badge_url=get_team_badge_url(actual_team),
         next_fixture=next_fixture_data,
