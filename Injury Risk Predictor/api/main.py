@@ -144,7 +144,7 @@ def _fpl_team_to_df_team(fpl_team: str) -> str:
 artifacts = None
 inference_df = None
 # Memo for within-league percentile series (keyed by inference_df object id); cleared on reload.
-_league_prob_series_cache: Dict[Tuple, Any] = {}
+_league_prob_series_cache: Dict[tuple, Any] = {}
 injury_detail_df = None  # Per-injury records from player_injuries_detail.pkl
 fpl_stats_cache = {}  # FPL stats indexed by name
 fpl_team_ids = {}  # Team name -> FPL team ID (for badges)
