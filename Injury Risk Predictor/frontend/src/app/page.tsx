@@ -30,12 +30,6 @@ import { LaLigaStandingsCards } from "@/components/LaLigaStandingsCards";
 import { FPLSquadInput } from "@/components/FPLSquadInput";
 import { FPLSquadView } from "@/components/FPLSquadView";
 import {
-  trackYaraFplSquadSyncCompleted,
-  trackYaraLabNotesOpened,
-  trackYaraPlayerSelected,
-  trackYaraTeamSelected,
-} from "@/analytics/sygna";
-import {
   Activity,
   Shield,
   Info,
@@ -180,7 +174,6 @@ export default function Home() {
         setLastSyncedId(teamId);
         setSelectedPlayer(null);
         setPlayerRisk(null);
-        trackYaraFplSquadSyncCompleted(teamId, data.players.length);
       })
       .catch((err) => {
         const raw = String(err?.message || "");
@@ -198,15 +191,10 @@ export default function Home() {
 
   const handleTeamSelected = (team: string) => {
     setSelectedTeam(team);
-    trackYaraTeamSelected(team);
   };
 
   const handlePlayerSelected = (playerName: string) => {
     setSelectedPlayer(playerName);
-    trackYaraPlayerSelected(playerName, {
-      team: mode === "browse" ? selectedTeam : fplSquad?.entry.team_name || null,
-      mode,
-    });
   };
 
   const handleModeSwitch = (newMode: "browse" | "squad") => {
@@ -508,12 +496,6 @@ export default function Home() {
                     <button
                       onClick={() => {
                         setView("lab");
-                        if (playerRisk) {
-                          trackYaraLabNotesOpened(playerRisk.name, {
-                            team: playerRisk.team,
-                            mode,
-                          });
-                        }
                       }}
                       className={`flex-1 flex items-center justify-center gap-2 px-2.5 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors ${
                         view === "lab"
