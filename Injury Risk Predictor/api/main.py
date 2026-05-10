@@ -143,6 +143,8 @@ def _fpl_team_to_df_team(fpl_team: str) -> str:
 # Load models at startup
 artifacts = None
 inference_df = None
+# Memo for within-league percentile series (keyed by inference_df object id); cleared on reload.
+_league_prob_series_cache: Dict[Tuple, Any] = {}
 injury_detail_df = None  # Per-injury records from player_injuries_detail.pkl
 fpl_stats_cache = {}  # FPL stats indexed by name
 fpl_team_ids = {}  # Team name -> FPL team ID (for badges)
@@ -312,10 +314,12 @@ def _load_models_blocking():
     global shirt_numbers_by_team, shirt_number_lookup_attempted, _startup_complete, _player_risk_cache, _narrative_bundle_cache
     global _la_liga_standings_cache, _la_liga_fixture_dataset_cache, _la_liga_team_fixtures_cache
     global _la_liga_moneyline_cache, _la_liga_team_context_cache, _la_liga_public_stats_cache, _tm_player_profile_cache
+    global _league_prob_series_cache
     _startup_complete = False
     # Reset caches so manual/cron refreshes don't accumulate stale keys.
     _player_risk_cache = {}
     _narrative_bundle_cache = {}
+    _league_prob_series_cache = {}
     _la_liga_standings_cache = {"data": None, "expires": None}
     _la_liga_fixture_dataset_cache = {"season": None, "data": None, "expires": None}
     _la_liga_team_fixtures_cache = {}
@@ -529,8 +533,7 @@ def _load_models_blocking():
         pre_count = len(inference_df)
         valid_rows = []
         for idx, row in inference_df.iterrows():
-            row_league = row.get("league", "Premier League")
-            if row_league != "Premier League":
+            if not _is_premier_league_bucket(row.get("league")):
                 # Non-EPL leagues: no FPL validation, keep as-is
                 valid_rows.append(idx)
                 continue
@@ -1500,6 +1503,31 @@ def _safe_league_label(league: Any) -> Optional[str]:
     return text
 
 
+def _league_bucket(league: Any) -> str:
+    """Coarse league bucket for routing (FPL vs La Liga) and percentile grouping.
+
+    Refresh / retrain pipelines sometimes emit variants (spacing, casing, Spanish labels).
+    """
+    text = (_safe_league_label(league) or "").strip().lower()
+    if not text:
+        return "unknown"
+    if text in ("premier league", "epl", "english premier league"):
+        return "premier_league"
+    if "la liga" in text:
+        return "la_liga"
+    if text in ("laliga", "primera división", "primera division"):
+        return "la_liga"
+    return "other"
+
+
+def _is_la_liga_league(league: Any) -> bool:
+    return _league_bucket(league) == "la_liga"
+
+
+def _is_premier_league_bucket(league: Any) -> bool:
+    return _league_bucket(league) == "premier_league"
+
+
 def _league_prob_series(league: Optional[Any] = None):
     """Return the ensemble_prob series for percentile calculation.
 
@@ -1509,15 +1537,40 @@ def _league_prob_series(league: Optional[Any] = None):
     Falls back to all players if league is unknown or inference_df has no
     league column.
     """
+    global _league_prob_series_cache
     if inference_df is None or "ensemble_prob" not in inference_df.columns:
         return None
+    inf_id = id(inference_df)
     league_key = _safe_league_label(league)
+    bucket = _league_bucket(league_key) if league_key else None
+
+    if bucket in ("premier_league", "la_liga") and "league" in inference_df.columns:
+        ck = (inf_id, "bucket", bucket)
+        if ck not in _league_prob_series_cache:
+            norms = inference_df["league"].map(_league_bucket)
+            sub = inference_df[norms == bucket]
+            if len(sub) >= 10:
+                _league_prob_series_cache[ck] = sub["ensemble_prob"]
+            else:
+                _league_prob_series_cache[ck] = inference_df["ensemble_prob"]
+        return _league_prob_series_cache[ck]
+
     if league_key and "league" in inference_df.columns:
-        norm = inference_df["league"].map(lambda v: (_safe_league_label(v) or "").lower())
-        sub = inference_df[norm == league_key.lower()]
-        if len(sub) >= 10:
-            return sub["ensemble_prob"]
-    return inference_df["ensemble_prob"]
+        lowered = league_key.lower()
+        ck = (inf_id, "exact", lowered)
+        if ck not in _league_prob_series_cache:
+            norm = inference_df["league"].map(lambda v: (_safe_league_label(v) or "").lower())
+            sub = inference_df[norm == lowered]
+            if len(sub) >= 10:
+                _league_prob_series_cache[ck] = sub["ensemble_prob"]
+            else:
+                _league_prob_series_cache[ck] = inference_df["ensemble_prob"]
+        return _league_prob_series_cache[ck]
+
+    ck = (inf_id, "all")
+    if ck not in _league_prob_series_cache:
+        _league_prob_series_cache[ck] = inference_df["ensemble_prob"]
+    return _league_prob_series_cache[ck]
 
 
 def get_risk_level(prob: float, row=None) -> str:
@@ -2167,8 +2220,7 @@ def _resolve_display_minutes(
     if minutes > 0:
         return minutes
 
-    league = _safe_league_label(row.get("league")) or ""
-    if league.lower() == "la liga":
+    if _is_la_liga_league(row.get("league")):
         profile = _get_laliga_public_player_profile(
             str(row.get("name", "")).strip(),
             team_hint=str(row.get("team", "")).strip(),
@@ -4552,7 +4604,7 @@ def player_row_to_risk(row) -> PlayerRisk:
     player_name = row.get("name", "Unknown")
     team = row.get("team", row.get("player_team", "Unknown"))
     player_league = row.get("league", "Premier League")
-    is_la_liga = player_league == "La Liga"
+    is_la_liga = _is_la_liga_league(player_league)
 
     # Build enriched row with corrected injury fields + FPL stats
     # inference_df is now enriched at startup with real Transfermarkt data,
@@ -4633,7 +4685,7 @@ def player_row_to_risk(row) -> PlayerRisk:
     enriched_row["risk_percentile"] = risk_percentile
 
     player_league = enriched_row.get("league", "Premier League")
-    if player_league == "La Liga":
+    if _is_la_liga_league(player_league):
         next_fixture_data = _get_la_liga_team_context_cached(team, count=1).get("next_fixture_data")
     else:
         next_fixture_data = get_next_fixture_for_team(team, prob)
@@ -4859,7 +4911,7 @@ def player_row_to_risk(row) -> PlayerRisk:
         injury_news=fpl_stats.get("news") or None if fpl_stats else None,
         chance_of_playing=fpl_stats.get("chance_of_playing") if fpl_stats else None,
         upcoming_fixtures=[UpcomingFixture(**uf) for uf in (
-            get_upcoming_fixtures_la_liga(team, count=5) if player_league == "La Liga"
+            get_upcoming_fixtures_la_liga(team, count=5) if _is_la_liga_league(player_league)
             else get_upcoming_fixtures(team, count=5)
         )] or None,
         injury_records=[InjuryRecord(**ir) for ir in injury_records],
@@ -5059,7 +5111,7 @@ def list_players(team: Optional[str] = None, risk_level: Optional[str] = None):
         prob = row.get("ensemble_prob", 0.5)
         name = row.get("name", "Unknown")
         row_league = row.get("league", "Premier League")
-        is_la_liga = row_league == "La Liga"
+        is_la_liga = _is_la_liga_league(row_league)
         fpl = None if is_la_liga else get_fpl_stats_for_player(name, team_hint=row.get("team", ""))
         minutes = _resolve_display_minutes(row, fpl)
         fpl_status = fpl.get("status", "a") if fpl else "a"
@@ -5397,7 +5449,7 @@ def get_team_overview(team_name: str):
     team_df["risk_level"] = team_df.apply(lambda r: get_risk_level(r.get("ensemble_prob", 0.5), r), axis=1)
     actual_team = team_df.iloc[0]["team"]
     team_league = _safe_league_label(team_df.iloc[0].get("league")) or "Premier League"
-    is_la_liga = team_league.lower() == "la liga"
+    is_la_liga = _is_la_liga_league(team_df.iloc[0].get("league"))
 
     high_risk = len(team_df[team_df["risk_level"] == "High"])
     medium_risk = len(team_df[team_df["risk_level"] == "Medium"])
