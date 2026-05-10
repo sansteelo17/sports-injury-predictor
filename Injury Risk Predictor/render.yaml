@@ -35,11 +35,6 @@ services:
         value: "--max-old-space-size=4096"
       - key: NEXT_PUBLIC_API_URL
         value: "https://yara-sports-api.onrender.com"
-      # Server-side Sygna proxy (see frontend/src/app/api/sygna-ingest/route.ts)
-      - key: SYGNA_UPSTREAM_INGEST_URL
-        value: "https://ingest.usesygna.com/api/ingest"
-      - key: SYGNA_INGEST_KEY
-        sync: false
 
   # Scheduled predictions refresh (runs separately; +$1/mo minimum billing)
   - type: cron
