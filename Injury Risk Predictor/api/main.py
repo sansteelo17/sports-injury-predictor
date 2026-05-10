@@ -2166,7 +2166,23 @@ def _get_laliga_public_stats_df_cached():
     ):
         return cache_entry["data"]
 
-    from src.data_loaders.laliga_public_stats import LaLigaPublicStatsLoader
+    try:
+        from src.data_loaders.laliga_public_stats import LaLigaPublicStatsLoader
+    except Exception as e:
+        logger.warning(f"La Liga public stats loader import failed: {e}")
+        data = cache_entry.get("data")
+        if data is None:
+            try:
+                import pandas as pd
+                data = pd.DataFrame()
+            except Exception:
+                data = None
+        _la_liga_public_stats_cache = {
+            "season": season,
+            "data": data,
+            "expires": datetime.utcnow() + _LA_LIGA_PUBLIC_STATS_TTL,
+        }
+        return data
 
     started = time.perf_counter()
     loader = LaLigaPublicStatsLoader(cache_hours=6)
@@ -2196,7 +2212,11 @@ def _get_laliga_public_stats_df_cached():
 
 def _get_laliga_public_player_profile(player_name: str, team_hint: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Resolve a La Liga player against the cached public official stat dataset."""
-    from src.data_loaders.laliga_public_stats import resolve_public_player_stats
+    try:
+        from src.data_loaders.laliga_public_stats import resolve_public_player_stats
+    except Exception as e:
+        logger.warning(f"La Liga public player resolver import failed: {e}")
+        return None
 
     stats_df = _get_laliga_public_stats_df_cached()
     if stats_df is None or getattr(stats_df, "empty", True):
