@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from starlette.requests import Request
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any, Set
+from collections import OrderedDict
 import sys
 import os
 import json
@@ -140,11 +141,74 @@ def _fpl_team_to_df_team(fpl_team: str) -> str:
     return FPL_TEAM_DISPLAY_NAMES.get(fpl_team, fpl_team)
 
 
+class BoundedTTLCache(OrderedDict):
+    """Thread-safe LRU dict with a max entry count and optional byte budget.
+
+    Behaves like a dict so existing call sites are unchanged, but evicts the
+    least-recently-used entries once a cap is hit. This is what stops the API
+    from slowly leaking memory under high-distinct-key traffic (e.g. a World Cup
+    spike, where many distinct players/teams get queried) on a 512MB box. The
+    plain dicts used previously kept every key ever seen forever, since the TTL
+    only gated reads and nothing ever deleted stale entries.
+    """
+
+    def __init__(self, maxsize: int = 512, max_bytes: Optional[int] = None):
+        super().__init__()
+        self._maxsize = maxsize
+        self._max_bytes = max_bytes
+        self._bytes = 0
+        self._lock = threading.RLock()
+
+    @staticmethod
+    def _sizeof(value) -> int:
+        return len(value) if isinstance(value, (bytes, bytearray)) else 0
+
+    def __setitem__(self, key, value):
+        with self._lock:
+            if key in self:
+                self._bytes -= self._sizeof(super().__getitem__(key))
+                super().__delitem__(key)
+            super().__setitem__(key, value)
+            self._bytes += self._sizeof(value)
+            self._evict()
+
+    def __getitem__(self, key):
+        with self._lock:
+            value = super().__getitem__(key)
+            self.move_to_end(key)
+            return value
+
+    def __delitem__(self, key):
+        with self._lock:
+            self._bytes -= self._sizeof(super().__getitem__(key))
+            super().__delitem__(key)
+
+    def get(self, key, default=None):
+        with self._lock:
+            if key in self:
+                return self.__getitem__(key)
+            return default
+
+    def clear(self):
+        with self._lock:
+            super().clear()
+            self._bytes = 0
+
+    def _evict(self):
+        if self._max_bytes is not None:
+            while self._bytes > self._max_bytes and len(self) > 1:
+                _k, _v = super().popitem(last=False)
+                self._bytes -= self._sizeof(_v)
+        while len(self) > self._maxsize:
+            _k, _v = super().popitem(last=False)
+            self._bytes -= self._sizeof(_v)
+
+
 # Load models at startup
 artifacts = None
 inference_df = None
 # Memo for within-league percentile series (keyed by inference_df object id); cleared on reload.
-_league_prob_series_cache: Dict[tuple, Any] = {}
+_league_prob_series_cache: Dict[tuple, Any] = BoundedTTLCache(maxsize=32)
 injury_detail_df = None  # Per-injury records from player_injuries_detail.pkl
 fpl_stats_cache = {}  # FPL stats indexed by name
 fpl_team_ids = {}  # Team name -> FPL team ID (for badges)
@@ -157,12 +221,12 @@ fpl_player_team = {}  # Player name -> team name (for photo disambiguation)
 fpl_players_by_team = {}  # Team name -> set of FPL player names (for filtering)
 fpl_element_lookup: Dict[int, Dict] = {}  # FPL element ID -> player stats dict
 _tm_photo_map: Dict[str, str] = {}  # Normalised player name -> Transfermarkt photo URL
-_tm_photo_bytes_cache: Dict[str, bytes] = {}  # photo URL -> raw image bytes (in-memory, avoids repeat fetches)
+_tm_photo_bytes_cache: Dict[str, bytes] = BoundedTTLCache(maxsize=400, max_bytes=32 * 1024 * 1024)  # photo URL -> raw image bytes (byte-capped)
 shirt_numbers_by_team: Dict[str, Dict[str, int]] = {}  # Normalized team -> normalized player name -> shirt number
 shirt_number_lookup_attempted: Set[str] = set()  # Teams we already tried loading for shirt numbers
 _startup_complete: bool = False  # Set True after load_models finishes; suppresses API calls during startup
 historical_matches_df = None  # Local historical PL fixtures from csv
-fixture_history_cache = {}  # (team, opponent, years) -> summary
+fixture_history_cache = BoundedTTLCache(maxsize=1024)  # (team, opponent, years) -> summary
 odds_client = None
 refresh_state = {
     "running": False,
@@ -179,15 +243,15 @@ refresh_state_lock = threading.Lock()
 # TTL caches for expensive per-request external API calls
 _pl_standings_cache: Dict[str, Any] = {"data": None, "expires": None}  # football-data.org PL standings
 _fpl_insights_cache: Dict[str, Any] = {"data": None, "expires": None}  # FPL insights (standings + fixtures + gw)
-_player_risk_cache: Dict[str, Dict[str, Any]] = {}  # player name (lower) -> {"data": ..., "expires": ...}
-_narrative_bundle_cache: Dict[str, Dict[str, Any]] = {}
+_player_risk_cache: Dict[str, Dict[str, Any]] = BoundedTTLCache(maxsize=512)  # player name (lower) -> {"data": ..., "expires": ...}
+_narrative_bundle_cache: Dict[str, Dict[str, Any]] = BoundedTTLCache(maxsize=512)
 _la_liga_standings_cache: Dict[str, Any] = {"data": None, "expires": None}
 _la_liga_fixture_dataset_cache: Dict[str, Any] = {"season": None, "data": None, "expires": None}
-_la_liga_team_fixtures_cache: Dict[str, Dict[str, Any]] = {}
-_la_liga_moneyline_cache: Dict[str, Dict[str, Any]] = {}
-_la_liga_team_context_cache: Dict[str, Dict[str, Any]] = {}
+_la_liga_team_fixtures_cache: Dict[str, Dict[str, Any]] = BoundedTTLCache(maxsize=128)
+_la_liga_moneyline_cache: Dict[str, Dict[str, Any]] = BoundedTTLCache(maxsize=128)
+_la_liga_team_context_cache: Dict[str, Dict[str, Any]] = BoundedTTLCache(maxsize=128)
 _la_liga_public_stats_cache: Dict[str, Any] = {"season": None, "data": None, "expires": None}
-_tm_player_profile_cache: Dict[str, Dict[str, Any]] = {}
+_tm_player_profile_cache: Dict[str, Dict[str, Any]] = BoundedTTLCache(maxsize=512)
 _tm_scraper_instance = None
 _PL_STANDINGS_TTL = timedelta(hours=6)   # team list barely changes mid-season
 _FPL_INSIGHTS_TTL = timedelta(minutes=15)  # GW fixture data refreshes each round
@@ -317,16 +381,18 @@ def _load_models_blocking():
     global _league_prob_series_cache
     _startup_complete = False
     # Reset caches so manual/cron refreshes don't accumulate stale keys.
-    _player_risk_cache = {}
-    _narrative_bundle_cache = {}
-    _league_prob_series_cache = {}
+    # .clear() preserves the BoundedTTLCache instances (reassigning to {} would
+    # swap them for unbounded plain dicts and reintroduce the memory leak).
+    _player_risk_cache.clear()
+    _narrative_bundle_cache.clear()
+    _league_prob_series_cache.clear()
     _la_liga_standings_cache = {"data": None, "expires": None}
     _la_liga_fixture_dataset_cache = {"season": None, "data": None, "expires": None}
-    _la_liga_team_fixtures_cache = {}
-    _la_liga_moneyline_cache = {}
-    _la_liga_team_context_cache = {}
+    _la_liga_team_fixtures_cache.clear()
+    _la_liga_moneyline_cache.clear()
+    _la_liga_team_context_cache.clear()
     _la_liga_public_stats_cache = {"season": None, "data": None, "expires": None}
-    _tm_player_profile_cache = {}
+    _tm_player_profile_cache.clear()
     fpl_stats_cache = {}
     fpl_team_ids = {}
     fpl_team_name_to_id = {}
@@ -338,7 +404,7 @@ def _load_models_blocking():
     fpl_element_lookup = {}
     shirt_numbers_by_team = {}
     shirt_number_lookup_attempted = set()
-    fixture_history_cache = {}
+    fixture_history_cache.clear()
 
     # Skip loading stacking ensemble into RAM: predictions live in inference_df.pkl;
     # ensemble is ~100–200MB and only needed for /what-if (lazy-loaded there).
@@ -501,7 +567,7 @@ def _load_models_blocking():
     # Run API refresh/backfill in the background so startup remains fast.
     try:
         historical_matches_df = _load_fixture_history_live_cached_first()
-        fixture_history_cache = {}
+        fixture_history_cache.clear()
         if historical_matches_df is not None and not historical_matches_df.empty:
             latest_date = historical_matches_df["Date"].max()
             latest_str = str(latest_date.date()) if hasattr(latest_date, "date") else str(latest_date)[:10]
@@ -2830,7 +2896,7 @@ def _backfill_fixture_history_async():
         full_df = _load_fixture_history_dataset()
         if full_df is not None and not full_df.empty:
             historical_matches_df = full_df
-            fixture_history_cache = {}  # Clear cache so new data is used
+            fixture_history_cache.clear()  # Clear cache so new data is used
             latest_date = full_df["Date"].max()
             latest_str = str(latest_date.date()) if hasattr(latest_date, "date") else str(latest_date)[:10]
             print(
@@ -3837,16 +3903,16 @@ def _get_la_liga_fixture_dataset_cached() -> Dict[str, Any]:
             "data": [],
             "expires": datetime.utcnow() + _LA_LIGA_FIXTURE_FALLBACK_TTL,
         }
-        _la_liga_team_fixtures_cache = {}
-        _la_liga_team_context_cache = {}
+        _la_liga_team_fixtures_cache.clear()
+        _la_liga_team_context_cache.clear()
         return {"season": season, "matches": []}
     _la_liga_fixture_dataset_cache = {
         "season": live_dataset["season"],
         "data": live_dataset["matches"],
         "expires": datetime.utcnow() + _LA_LIGA_FIXTURE_DATASET_TTL,
     }
-    _la_liga_team_fixtures_cache = {}
-    _la_liga_team_context_cache = {}
+    _la_liga_team_fixtures_cache.clear()
+    _la_liga_team_context_cache.clear()
     return live_dataset
 
 
