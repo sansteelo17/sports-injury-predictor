@@ -43,6 +43,7 @@ from src.data_loaders.international_squads import (  # noqa: E402
     build_groups_map,
     next_fixture_for_country,
 )
+from src.data_loaders.national_team_caps import build_caps_lookup  # noqa: E402
 from src.utils.logger import get_logger  # noqa: E402
 
 logger = get_logger(__name__)
@@ -201,6 +202,12 @@ def main() -> int:
         help="Reuse on-disk fixtures + squads pickles instead of hitting the API. "
              "Useful while iterating on the join/overlay logic.",
     )
+    parser.add_argument(
+        "--enrich-caps",
+        action="store_true",
+        help="Scrape Wikipedia 'Current squad' tables for caps + international "
+             "goals (~30s for 48 countries, cached 24h). Adds caps / intl_goals.",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -256,6 +263,23 @@ def main() -> int:
         return 0
 
     combined = pd.concat([intl_df, baseline_df], ignore_index=True, sort=False)
+
+    if args.enrich_caps and not combined.empty:
+        countries = sorted(combined["team"].dropna().unique().tolist())
+        logger.info("Enriching caps from Wikipedia (%d countries)...", len(countries))
+        caps_lookup = build_caps_lookup(countries)
+        if caps_lookup:
+            def _lookup(row):
+                key = (row["team"], _norm_name(row["name"]))
+                return caps_lookup.get(key, {})
+            stats = combined.apply(_lookup, axis=1)
+            combined["caps"] = [s.get("caps") for s in stats]
+            combined["intl_goals"] = [s.get("intl_goals") for s in stats]
+            matched = int(combined["caps"].notna().sum())
+            logger.info("Caps enrichment matched %d/%d players", matched, len(combined))
+        else:
+            logger.warning("Caps lookup is empty — skipping enrichment columns")
+
     out_path = out_dir / f"inference_international_world_cup_{args.season}.pkl"
     combined.to_pickle(out_path)
     with_risk = int(combined["has_risk_features"].sum()) if "has_risk_features" in combined.columns else len(intl_df)
