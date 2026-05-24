@@ -1744,10 +1744,14 @@ def _league_prob_series(league: Optional[Any] = None):
         ck = (inf_id, "comp", comp.id)
         if ck not in _league_prob_series_cache:
             sub = inference_df[inference_df["competition_id"] == comp.id]
+            # Drop baseline (identity-only) WC rows from the cohort — their
+            # NaN ensemble_prob would skew percentiles and make every real
+            # WC player look like top 50%.
+            sub = sub[sub["ensemble_prob"].notna()]
             if len(sub) >= 10:
                 _league_prob_series_cache[ck] = sub["ensemble_prob"]
             else:
-                _league_prob_series_cache[ck] = inference_df["ensemble_prob"]
+                _league_prob_series_cache[ck] = inference_df["ensemble_prob"].dropna()
         return _league_prob_series_cache[ck]
 
     if league_key and "league" in inference_df.columns:
@@ -1785,9 +1789,12 @@ def get_risk_level(prob: float, row=None) -> str:
     try:
         p = float(prob)
         if math.isnan(p) or math.isinf(p):
-            p = 0.5
+            # Baseline (identity-only) WC rows carry NaN ensemble_prob — the
+            # model has no signal for non-tracked-league players. Surface the
+            # state honestly instead of inventing a percentile.
+            return "Unknown"
     except (TypeError, ValueError):
-        p = 0.5
+        return "Unknown"
     series = _league_prob_series(league_key)
     if series is not None:
         percentile = float((series <= p).mean())
@@ -1811,13 +1818,14 @@ def normalize_risk_score(prob: float, league: Optional[Any] = None) -> float:
 
     Normalises within the player's own league so La Liga and EPL each span 0-100.
     50 = average risk for that league, 90 = top 10% in that league.
+    Returns 0.0 for baseline (NaN-prob) WC rows — surfaced as "Unknown" upstream.
     """
     try:
         p = float(prob)
         if math.isnan(p) or math.isinf(p):
-            p = 0.5
+            return 0.0
     except (TypeError, ValueError):
-        p = 0.5
+        return 0.0
     league_key = _safe_league_label(league)
     series = _league_prob_series(league_key)
     if series is not None:

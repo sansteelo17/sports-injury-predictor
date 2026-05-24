@@ -179,9 +179,16 @@ def next_fixture_for_country(
     if fixtures_df is None or fixtures_df.empty:
         return None
     now = now or datetime.utcnow()
+    # football-data.org returns tz-aware (UTC) timestamps; match the dtype so
+    # the comparison doesn't blow up.
+    fixture_dates = fixtures_df["utc_date"]
+    if hasattr(fixture_dates.dtype, "tz") and fixture_dates.dtype.tz is not None:
+        now_ts = pd.Timestamp(now, tz="UTC") if now.tzinfo is None else pd.Timestamp(now)
+    else:
+        now_ts = pd.Timestamp(now)
     upcoming = fixtures_df[
         ((fixtures_df["home_team"] == country) | (fixtures_df["away_team"] == country))
-        & (fixtures_df["utc_date"] >= pd.Timestamp(now))
+        & (fixture_dates >= now_ts)
     ].sort_values("utc_date")
     if upcoming.empty:
         return None

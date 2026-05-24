@@ -29,7 +29,7 @@ import json
 import sys
 import unicodedata
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -124,10 +124,62 @@ def build_international_inference(
         out["next_intl_is_home"] = nxt.get("is_home")
         out["next_intl_utc_date"] = nxt.get("utc_date")
         out["next_intl_stage"] = nxt.get("stage")
+        out["has_risk_features"] = True
         rows.append(out)
 
     df = pd.DataFrame(rows)
-    logger.info("Built %d international inference rows", len(df))
+    logger.info("Built %d international inference rows (with risk features)", len(df))
+    return df
+
+
+def build_baseline_rows(
+    squads_df: pd.DataFrame,
+    joined_names: set,
+    groups: Dict[str, str],
+    fixtures_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Identity-only rows for squad players with no club inference row.
+
+    These let WC team views render every player on the announced 26-man squad
+    instead of only the ones playing in PL/La Liga. Risk features are NaN —
+    the model has no signal for an MLS or Saudi Pro League player — and the
+    API surfaces ``risk_level="Unknown"`` for these rows.
+    """
+    if squads_df.empty:
+        return pd.DataFrame()
+    unmatched = squads_df[~squads_df["name"].apply(_norm_name).isin(joined_names)]
+    rows = []
+    for _, p in unmatched.iterrows():
+        national_team = p.get("national_team")
+        nxt = next_fixture_for_country(fixtures_df, national_team) or {}
+        rows.append(
+            {
+                "name": p.get("name"),
+                "team": national_team,
+                "player_team": national_team,
+                "club_team": None,
+                "club_league": None,
+                "league": WORLD_CUP_2026.name,
+                "competition_id": WORLD_CUP_2026.id,
+                "competition_type": WORLD_CUP_2026.type,
+                "position": p.get("position") or "Unknown",
+                "shirt_number": p.get("shirt_number"),
+                "age": p.get("age"),
+                "nationality": p.get("nationality"),
+                "national_group": groups.get(national_team),
+                "next_intl_opponent": nxt.get("opponent"),
+                "next_intl_is_home": nxt.get("is_home"),
+                "next_intl_utc_date": nxt.get("utc_date"),
+                "next_intl_stage": nxt.get("stage"),
+                # Mark the row so the API knows to surface "Unknown" risk and
+                # skip these from the percentile cohort.
+                "has_risk_features": False,
+                "ensemble_prob": float("nan"),
+                "archetype": "Unknown",
+            }
+        )
+    df = pd.DataFrame(rows)
+    logger.info("Built %d baseline (identity-only) WC rows for unmatched squad players", len(df))
     return df
 
 
@@ -143,25 +195,47 @@ def main() -> int:
         "--output-dir",
         default=str(ROOT / "data" / "processed"),
     )
+    parser.add_argument(
+        "--reuse-cache",
+        action="store_true",
+        help="Reuse on-disk fixtures + squads pickles instead of hitting the API. "
+             "Useful while iterating on the join/overlay logic.",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    client = WorldCupClient()
-    logger.info("Fetching World Cup %s fixtures...", args.season)
-    fixtures_df = client.get_fixtures(season=args.season)
-    groups = build_groups_map(fixtures_df)
     fixtures_path = out_dir / f"world_cup_{args.season}_fixtures.pkl"
-    fixtures_df.to_pickle(fixtures_path)
-    logger.info("Wrote %s (%d fixtures)", fixtures_path, len(fixtures_df))
-
     groups_path = out_dir / f"world_cup_{args.season}_groups.json"
-    groups_path.write_text(json.dumps(groups, indent=2, ensure_ascii=False))
-    logger.info("Wrote %s (%d teams placed in groups)", groups_path, len(groups))
+    squads_path = out_dir / f"world_cup_{args.season}_squads.pkl"
 
-    logger.info("Fetching World Cup squads...")
-    squads_df = client.get_squads(season=args.season)
+    client: Optional[WorldCupClient] = None
+
+    if args.reuse_cache and fixtures_path.exists():
+        fixtures_df = pd.read_pickle(fixtures_path)
+        groups = json.loads(groups_path.read_text()) if groups_path.exists() else build_groups_map(fixtures_df)
+        logger.info("Reusing cached fixtures (%d rows) + groups (%d teams)", len(fixtures_df), len(groups))
+    else:
+        client = WorldCupClient()
+        logger.info("Fetching World Cup %s fixtures...", args.season)
+        fixtures_df = client.get_fixtures(season=args.season)
+        groups = build_groups_map(fixtures_df)
+        fixtures_df.to_pickle(fixtures_path)
+        logger.info("Wrote %s (%d fixtures)", fixtures_path, len(fixtures_df))
+        groups_path.write_text(json.dumps(groups, indent=2, ensure_ascii=False))
+        logger.info("Wrote %s (%d teams placed in groups)", groups_path, len(groups))
+
+    if args.reuse_cache and squads_path.exists():
+        squads_df = pd.read_pickle(squads_path)
+        logger.info("Reusing cached squads (%d players)", len(squads_df))
+    else:
+        if client is None:
+            client = WorldCupClient()
+        logger.info("Fetching World Cup squads (rate-limited ~6.5s per team)...")
+        squads_df = client.get_squads(season=args.season)
+        if not squads_df.empty:
+            squads_df.to_pickle(squads_path)
+            logger.info("Cached squads to %s", squads_path)
     if squads_df.empty:
         logger.warning(
             "No squad rows returned. Tournament squads typically lock 7 days "
@@ -174,15 +248,25 @@ def main() -> int:
     logger.info("Loaded club inference_df: %d rows", len(club_df))
     merged = join_squads_to_club_rows(squads_df, club_df)
     intl_df = build_international_inference(merged, groups, fixtures_df)
+    joined_names = set(intl_df["name"].apply(_norm_name)) if not intl_df.empty else set()
+    baseline_df = build_baseline_rows(squads_df, joined_names, groups, fixtures_df)
 
-    if intl_df.empty:
-        logger.warning("Joined frame is empty; nothing to write.")
+    if intl_df.empty and baseline_df.empty:
+        logger.warning("No rows produced; nothing to write.")
         return 0
 
+    combined = pd.concat([intl_df, baseline_df], ignore_index=True, sort=False)
     out_path = out_dir / f"inference_international_world_cup_{args.season}.pkl"
-    intl_df.to_pickle(out_path)
-    logger.info("Wrote %s (%d players, %d national teams)",
-                out_path, len(intl_df), intl_df["team"].nunique())
+    combined.to_pickle(out_path)
+    with_risk = int(combined["has_risk_features"].sum()) if "has_risk_features" in combined.columns else len(intl_df)
+    logger.info(
+        "Wrote %s (%d total players, %d national teams, %d with risk features, %d baseline)",
+        out_path,
+        len(combined),
+        combined["team"].nunique(),
+        with_risk,
+        len(combined) - with_risk,
+    )
     return 0
 
 
