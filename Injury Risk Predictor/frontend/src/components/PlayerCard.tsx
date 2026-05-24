@@ -112,8 +112,15 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
       null);
 
   const storyLines = player.story ? formatStoryLines(player.story) : [];
-  const isLaLiga = player.league === "La Liga";
-  const leagueShortLabel = isLaLiga ? "La Liga" : "PL";
+  // Route on competition_id rather than the free-text ``league`` so adding a
+  // new competition does not require touching this component.
+  const isLaLiga = player.competition_id === "la-liga";
+  const isInternational = player.competition_type === "international";
+  const leagueShortLabel = isInternational
+    ? (player.league || "Int'l")
+    : isLaLiga
+    ? "La Liga"
+    : "PL";
   const trackedLeagueLabel = player.league || "league";
 
   const tabs = [

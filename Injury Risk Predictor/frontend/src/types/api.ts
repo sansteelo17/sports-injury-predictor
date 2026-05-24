@@ -1,3 +1,22 @@
+export type CompetitionType = 'club' | 'international';
+
+export interface CompetitionCapabilities {
+  has_fpl: boolean;
+  has_club_acwr_thresholds: boolean;
+  has_team_badges: boolean;
+  standings_kind: 'league_table' | 'group_stage' | 'none';
+  risk_calibration_cohort: string;
+  acwr_spike_threshold: number;
+  fixture_label: string;
+}
+
+export interface Competition {
+  id: string;
+  name: string;
+  type: CompetitionType;
+  capabilities: CompetitionCapabilities;
+}
+
 export interface PlayerSummary {
   name: string;
   team: string;
@@ -13,6 +32,8 @@ export interface PlayerSummary {
   is_currently_injured: boolean;
   injury_news: string | null;
   chance_of_playing: number | null;
+  competition_id: string;
+  competition_type: CompetitionType;
 }
 
 export interface InjuryRecord {
@@ -212,6 +233,8 @@ export interface PlayerRisk {
   fpl_points_projection: FPLPointsProjection | null;
   risk_comparison: RiskComparison | null;
   player_importance: PlayerImportance | null;
+  competition_id: string;
+  competition_type: CompetitionType;
 }
 
 export interface TeamNextFixture {
@@ -242,6 +265,8 @@ export interface TeamOverview {
   players: PlayerSummary[];
   team_badge_url: string | null;
   next_fixture: TeamNextFixture | null;
+  competition_id: string;
+  competition_type: CompetitionType;
 }
 
 // FPL Types

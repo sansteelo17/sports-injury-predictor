@@ -79,6 +79,16 @@ from src.data_loaders.api_client import (
     PREMIER_LEAGUE_ID,
 )
 from src.data_loaders.odds_api import OddsClient, get_clean_sheet_insight
+from src.competitions import (
+    Competition,
+    PREMIER_LEAGUE,
+    LA_LIGA,
+    WORLD_CUP_2026,
+    all_competitions,
+    for_id as competition_for_id,
+    from_league_label as competition_from_league_label,
+    resolve as resolve_competition,
+)
 # Archetype clustering imports are done lazily inside assign_hybrid_archetypes()
 # to avoid importing all of src.models (which pulls in lightgbm, xgboost, etc.)
 
@@ -721,6 +731,23 @@ def _load_models_blocking():
         except Exception as e:
             print(f"WARNING: Failed to enrich injury history: {e}")
 
+    # Derive competition_id from the legacy free-text ``league`` column so the
+    # rest of the API can route on Competition without a pkl migration. Rows
+    # whose league is missing/unrecognised default to Premier League (the only
+    # safe legacy assumption).
+    if inference_df is not None:
+        try:
+            if "league" in inference_df.columns:
+                inference_df["competition_id"] = inference_df["league"].apply(
+                    lambda v: (competition_from_league_label(v) or PREMIER_LEAGUE).id
+                )
+            else:
+                inference_df["competition_id"] = PREMIER_LEAGUE.id
+            counts = inference_df["competition_id"].value_counts().to_dict()
+            print(f"Competition routing: {counts}")
+        except Exception as comp_err:
+            logger.warning(f"Failed to derive competition_id: {comp_err}")
+
     # Apply isotonic probability calibrator if available.
     # Calibration is applied by refresh_predictions.py before saving inference_df.pkl.
     # Do NOT re-apply here — double calibration maps 0.78-0.80 inputs to 0.99 for everyone.
@@ -1143,6 +1170,8 @@ class PlayerSummary(BaseModel):
     is_currently_injured: bool = False
     injury_news: Optional[str] = None
     chance_of_playing: Optional[int] = None
+    competition_id: str = PREMIER_LEAGUE.id
+    competition_type: str = PREMIER_LEAGUE.type
 
 
 class RiskFactors(BaseModel):
@@ -1356,6 +1385,8 @@ class PlayerRisk(BaseModel):
     fpl_points_projection: Optional[FPLPointsProjection] = None
     risk_comparison: Optional[RiskComparison] = None
     player_importance: Optional[PlayerImportance] = None
+    competition_id: str = PREMIER_LEAGUE.id
+    competition_type: str = PREMIER_LEAGUE.type
 
 
 class WhatIfProjection(BaseModel):
@@ -1379,6 +1410,43 @@ class TeamOverview(BaseModel):
     players: List[PlayerSummary]
     team_badge_url: Optional[str] = None
     next_fixture: Optional[Dict[str, Any]] = None
+    competition_id: str = PREMIER_LEAGUE.id
+    competition_type: str = PREMIER_LEAGUE.type
+
+
+class CompetitionCapabilitiesDTO(BaseModel):
+    has_fpl: bool
+    has_club_acwr_thresholds: bool
+    has_team_badges: bool
+    standings_kind: str
+    risk_calibration_cohort: str
+    acwr_spike_threshold: float
+    fixture_label: str
+
+
+class CompetitionDTO(BaseModel):
+    id: str
+    name: str
+    type: str
+    capabilities: CompetitionCapabilitiesDTO
+
+
+def _competition_to_dto(comp: Competition) -> CompetitionDTO:
+    caps = comp.capabilities
+    return CompetitionDTO(
+        id=comp.id,
+        name=comp.name,
+        type=comp.type,
+        capabilities=CompetitionCapabilitiesDTO(
+            has_fpl=caps.has_fpl,
+            has_club_acwr_thresholds=caps.has_club_acwr_thresholds,
+            has_team_badges=caps.has_team_badges,
+            standings_kind=caps.standings_kind,
+            risk_calibration_cohort=caps.risk_calibration_cohort,
+            acwr_spike_threshold=caps.acwr_spike_threshold,
+            fixture_label=caps.fixture_label,
+        ),
+    )
 
 
 class FPLSquadPlayer(PlayerSummary):
@@ -1569,21 +1637,52 @@ def _safe_league_label(league: Any) -> Optional[str]:
     return text
 
 
-def _league_bucket(league: Any) -> str:
-    """Coarse league bucket for routing (FPL vs La Liga) and percentile grouping.
+_BUCKET_BY_COMP_ID = {
+    PREMIER_LEAGUE.id: "premier_league",
+    LA_LIGA.id: "la_liga",
+    WORLD_CUP_2026.id: "world_cup_2026",
+}
 
-    Refresh / retrain pipelines sometimes emit variants (spacing, casing, Spanish labels).
+
+def _competition_from_row(row: Any) -> Competition:
+    """Resolve a Competition from a player/team row.
+
+    Prefers an explicit ``competition_id`` column (the post-refactor source of
+    truth); falls back to the legacy free-text ``league`` column for
+    backward-compatible reads of existing ``inference_df.pkl``.
     """
-    text = (_safe_league_label(league) or "").strip().lower()
-    if not text:
-        return "unknown"
-    if text in ("premier league", "epl", "english premier league"):
-        return "premier_league"
-    if "la liga" in text:
-        return "la_liga"
-    if text in ("laliga", "primera división", "primera division"):
-        return "la_liga"
-    return "other"
+    comp_id = None
+    league = None
+    if row is None:
+        return PREMIER_LEAGUE
+    if isinstance(row, dict):
+        comp_id = row.get("competition_id")
+        league = row.get("league")
+    elif hasattr(row, "get"):
+        try:
+            comp_id = row.get("competition_id")
+        except Exception:
+            comp_id = None
+        try:
+            league = row.get("league")
+        except Exception:
+            league = None
+    return resolve_competition(comp_id, league)
+
+
+def _league_bucket(league: Any) -> str:
+    """Coarse bucket for routing and percentile grouping.
+
+    Delegates to the competition registry so PL, La Liga, and (future) WC all
+    derive from the same source of truth. The string values are kept stable
+    for existing callers that compare against ``"premier_league"`` /
+    ``"la_liga"``.
+    """
+    comp = competition_from_league_label(league)
+    if comp is None:
+        text = (_safe_league_label(league) or "").strip().lower()
+        return "unknown" if not text else "other"
+    return _BUCKET_BY_COMP_ID.get(comp.id, "other")
 
 
 def _is_la_liga_league(league: Any) -> bool:
@@ -5008,6 +5107,8 @@ def player_row_to_risk(row) -> PlayerRisk:
         fpl_points_projection=FPLPointsProjection(**fpl_points_data) if fpl_points_data else None,
         risk_comparison=RiskComparison(**risk_comparison_data) if risk_comparison_data else None,
         player_importance=PlayerImportance(**importance_data) if importance_data else None,
+        competition_id=_competition_from_row(enriched_row).id,
+        competition_type=_competition_from_row(enriched_row).type,
     )
 
 
@@ -5177,13 +5278,22 @@ def odds_status(team: str = "Arsenal", player: str = "Bukayo Saka"):
 
 
 @app.get("/api/players", response_model=List[PlayerSummary])
-def list_players(team: Optional[str] = None, risk_level: Optional[str] = None):
-    """List all players with summary info."""
+def list_players(
+    team: Optional[str] = None,
+    risk_level: Optional[str] = None,
+    competition: Optional[str] = None,
+):
+    """List all players with summary info, optionally scoped to a competition."""
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
     df = inference_df.copy()
 
+    if competition and "competition_id" in df.columns:
+        comp = competition_for_id(competition)
+        if comp is None:
+            raise HTTPException(status_code=400, detail=f"Unknown competition '{competition}'")
+        df = df[df["competition_id"] == comp.id]
     if team:
         df = df[df["team"].str.lower() == team.lower()]
     if risk_level:
@@ -5223,6 +5333,8 @@ def list_players(team: Optional[str] = None, risk_level: Optional[str] = None):
             is_currently_injured=fpl_status in ("i", "u"),
             injury_news=fpl.get("news") or None if fpl else None,
             chance_of_playing=fpl.get("chance_of_playing") if fpl else None,
+            competition_id=_competition_from_row(row).id,
+            competition_type=_competition_from_row(row).type,
         ))
 
     return players
@@ -5433,12 +5545,24 @@ def get_player_risk(player_name: str):
 
 
 @app.get("/api/teams", response_model=List[str])
-def list_teams(league: Optional[str] = None):
-    """List all available teams, optionally filtered by league."""
+def list_teams(league: Optional[str] = None, competition: Optional[str] = None):
+    """List all available teams, scoped to a competition (preferred) or legacy league label."""
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
-    if league and "league" in inference_df.columns:
+    # ``competition`` (new) wins over ``league`` (legacy) when both are passed.
+    comp: Optional[Competition] = None
+    if competition:
+        comp = competition_for_id(competition)
+        if comp is None:
+            raise HTTPException(status_code=400, detail=f"Unknown competition '{competition}'")
+    elif league:
+        comp = competition_from_league_label(league)
+
+    if comp is not None and "competition_id" in inference_df.columns:
+        league_df = inference_df[inference_df["competition_id"] == comp.id]
+        our_teams = league_df["team"].unique().tolist()
+    elif league and "league" in inference_df.columns:
         target = league.lower().strip()
         norm = inference_df["league"].map(lambda v: (_safe_league_label(v) or "").lower())
         league_df = inference_df[norm == target]
@@ -5446,8 +5570,9 @@ def list_teams(league: Optional[str] = None):
     else:
         our_teams = inference_df["team"].unique().tolist()
 
-    # For non-EPL leagues, skip PL standings validation — return all teams directly
-    is_epl = not league or league.lower() in ("premier league", "epl")
+    # PL standings filter only applies to Premier League. Everyone else returns directly.
+    is_epl = comp is None and (not league or league.lower() in ("premier league", "epl"))
+    is_epl = is_epl or (comp is not None and comp.id == PREMIER_LEAGUE.id)
     if not is_epl:
         return sorted(our_teams)
 
@@ -5573,6 +5698,8 @@ def get_team_overview(team_name: str):
             is_currently_injured=fpl_status in ("i", "u"),
             injury_news=fpl.get("news") or None if fpl else None,
             chance_of_playing=fpl.get("chance_of_playing") if fpl else None,
+            competition_id=_competition_from_row(row).id,
+            competition_type=_competition_from_row(row).type,
         ))
 
     # Get next fixture for the team
@@ -5595,6 +5722,7 @@ def get_team_overview(team_name: str):
     except (TypeError, ValueError):
         avg_prob = 0.5
 
+    team_comp = _competition_from_row(team_df.iloc[0].to_dict())
     response = TeamOverview(
         team=actual_team,
         total_players=len(team_df),
@@ -5605,6 +5733,8 @@ def get_team_overview(team_name: str):
         players=players,
         team_badge_url=get_team_badge_url(actual_team),
         next_fixture=next_fixture_data,
+        competition_id=team_comp.id,
+        competition_type=team_comp.type,
     )
     logger.info(
         "Team overview for %s (%s) built in %.2fs",
@@ -5619,6 +5749,17 @@ def get_team_overview(team_name: str):
 def list_archetypes():
     """List all player archetypes with descriptions."""
     return ARCHETYPE_DESCRIPTIONS
+
+
+@app.get("/api/competitions", response_model=List[CompetitionDTO])
+def list_competitions():
+    """List all known competitions with their capability matrix.
+
+    The frontend routes on these capabilities (``has_fpl``, ``standings_kind``)
+    rather than hardcoding league names, so a new competition only needs an
+    entry in the registry to light up.
+    """
+    return [_competition_to_dto(c) for c in all_competitions()]
 
 
 @app.get("/api/fpl/insights", response_model=FPLInsights)
@@ -5887,6 +6028,8 @@ def get_fpl_squad(team_id: int):
                 is_currently_injured=fpl_status in ("i", "u"),
                 injury_news=fpl.get("news") or None if fpl else None,
                 chance_of_playing=fpl.get("chance_of_playing") if fpl else None,
+                competition_id=_competition_from_row(row).id,
+                competition_type=_competition_from_row(row).type,
                 is_captain=pick.get("is_captain", False),
                 is_vice_captain=pick.get("is_vice_captain", False),
                 squad_position=pick.get("position", 0),
