@@ -235,6 +235,23 @@ export interface PlayerRisk {
   player_importance: PlayerImportance | null;
   competition_id: string;
   competition_type: CompetitionType;
+  international_context: InternationalContext | null;
+}
+
+export interface InternationalContext {
+  country: string;
+  club_team: string | null;
+  club_league: string | null;
+  caps: number | null;
+  intl_goals: number | null;
+  tournament_role: 'Starter' | 'Squad' | 'Unknown';
+  group: string | null;
+  next_opponent: string | null;
+  next_is_home: boolean | null;
+  next_utc_date: string | null;
+  next_stage: string | null;
+  has_risk_features: boolean;
+  summary: string;
 }
 
 export interface TeamNextFixture {

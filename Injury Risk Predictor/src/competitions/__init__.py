@@ -13,6 +13,7 @@ from .registry import (
     for_id,
     from_league_label,
     default_club_competition_id,
+    resolve,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "for_id",
     "from_league_label",
     "default_club_competition_id",
+    "resolve",
 ]

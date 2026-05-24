@@ -1373,6 +1373,27 @@ class InjuryRecord(BaseModel):
     games_missed: int = 0
 
 
+class InternationalContext(BaseModel):
+    """Tournament-specific context for an international (national-team) player.
+
+    Replaces the FPL block on club rows. Populated only when
+    ``competition_type == "international"``.
+    """
+    country: str
+    club_team: Optional[str] = None
+    club_league: Optional[str] = None
+    caps: Optional[int] = None
+    intl_goals: Optional[int] = None
+    tournament_role: str = "Squad"  # "Starter" | "Squad" | "Unknown" — derived from caps + minutes
+    group: Optional[str] = None
+    next_opponent: Optional[str] = None
+    next_is_home: Optional[bool] = None
+    next_utc_date: Optional[str] = None
+    next_stage: Optional[str] = None
+    has_risk_features: bool = False
+    summary: str = ""
+
+
 class PlayerRisk(BaseModel):
     name: str
     team: str
@@ -1415,6 +1436,7 @@ class PlayerRisk(BaseModel):
     player_importance: Optional[PlayerImportance] = None
     competition_id: str = PREMIER_LEAGUE.id
     competition_type: str = PREMIER_LEAGUE.type
+    international_context: Optional[InternationalContext] = None
 
 
 class WhatIfProjection(BaseModel):
@@ -4817,8 +4839,191 @@ def calculate_risk_comparison(player_name: str, team: str, position: str, prob: 
     }
 
 
+def _build_international_context(row: Dict[str, Any]) -> InternationalContext:
+    """Build the tournament-context block for an international row."""
+    country = str(row.get("team") or "Unknown")
+    caps = _safe_int(row.get("caps"), 0) if row.get("caps") is not None else None
+    intl_goals = _safe_int(row.get("intl_goals"), 0) if row.get("intl_goals") is not None else None
+    # Tournament role: starter if double-digit caps + meaningful club minutes,
+    # otherwise squad. Unknown when we have no signal either way.
+    minutes = _safe_int(row.get("minutes_played"), 0)
+    if caps is None and minutes == 0:
+        role = "Unknown"
+    elif (caps or 0) >= 10 and minutes >= 1500:
+        role = "Starter"
+    elif (caps or 0) >= 30:
+        role = "Starter"
+    else:
+        role = "Squad"
+
+    name = row.get("name") or "Player"
+    sentences: List[str] = []
+    if caps is not None:
+        cap_word = "cap" if caps == 1 else "caps"
+        if intl_goals:
+            goal_word = "goal" if intl_goals == 1 else "goals"
+            sentences.append(f"{caps} {cap_word} and {intl_goals} {goal_word} for {country}.")
+        else:
+            sentences.append(f"{caps} {cap_word} for {country}.")
+    if row.get("club_team"):
+        sentences.append(f"Plays his club football at {row['club_team']}.")
+    group_label = str(row["national_group"]).replace("_", " ").title() if row.get("national_group") else None
+    nxt = row.get("next_intl_opponent")
+    if nxt and group_label:
+        venue = "at home" if row.get("next_intl_is_home") else "away"
+        sentences.append(f"In {group_label}, next up {venue} against {nxt}.")
+    elif group_label:
+        sentences.append(f"In {group_label}.")
+    elif nxt:
+        venue = "at home" if row.get("next_intl_is_home") else "away"
+        sentences.append(f"Next up {venue} against {nxt}.")
+    summary = " ".join(sentences).strip()
+    if not summary:
+        summary = f"{name} is in the {country} squad."
+
+    return InternationalContext(
+        country=country,
+        club_team=row.get("club_team"),
+        club_league=row.get("club_league"),
+        caps=caps,
+        intl_goals=intl_goals,
+        tournament_role=role,
+        group=row.get("national_group"),
+        next_opponent=row.get("next_intl_opponent"),
+        next_is_home=bool(row.get("next_intl_is_home")) if row.get("next_intl_is_home") is not None else None,
+        next_utc_date=row.get("next_intl_utc_date"),
+        next_stage=row.get("next_intl_stage"),
+        has_risk_features=bool(row.get("has_risk_features")),
+        summary=summary,
+    )
+
+
+def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
+    """PlayerRisk for an international row.
+
+    Skips every FPL-flavoured fetch (FPL stats, odds, scoring/clean-sheet
+    markets, Yara market response) — those are club-only and would either
+    410 or surface nonsense for a national-team player. For risk-featured
+    rows (joined to a club inference row) we still surface the model's
+    prob/factors; for baseline rows we surface identity + tournament
+    context only.
+    """
+    comp = _competition_from_row(row)
+    prob = _safe_float(row.get("ensemble_prob"), float("nan"))
+    has_risk = row.get("has_risk_features") and not (isinstance(prob, float) and math.isnan(prob))
+    player_name = row.get("name") or "Unknown"
+    country = row.get("team") or "Unknown"
+
+    enriched_row = dict(row)
+    enriched_row["previous_injuries"] = _safe_int(
+        row.get("player_injury_count", row.get("previous_injuries", 0))
+    )
+    risk_pct = round(normalize_risk_score(prob, row.get("league"))) if has_risk else 0
+    enriched_row["risk_score_pct"] = risk_pct
+
+    risk_level = get_risk_level(prob, enriched_row)  # returns "Unknown" for NaN
+    risk_probability = round(normalize_risk_score(prob, row.get("league")) / 100, 3) if has_risk else 0.0
+
+    # Story: reuse generate_player_story for risk-featured rows (workload +
+    # injury history still apply), prepend tournament context. Baseline rows
+    # get a short identity line.
+    intl_ctx = _build_international_context(row)
+    if has_risk:
+        base_story = generate_player_story(enriched_row)
+        story = f"{intl_ctx.summary} {base_story}".strip()
+    else:
+        story = intl_ctx.summary
+
+    prev_injuries = _safe_int(enriched_row.get("previous_injuries", 0))
+    total_days = _safe_int(row.get("total_days_lost", 0))
+    days_since = _safe_int(row.get("days_since_last_injury", 365), 365)
+
+    next_fixture = None
+    if row.get("next_intl_opponent"):
+        next_fixture = NextFixture(
+            opponent=str(row["next_intl_opponent"]),
+            is_home=bool(row.get("next_intl_is_home")),
+            match_time=row.get("next_intl_utc_date"),
+            clean_sheet_odds=None,
+            win_probability=None,
+            fixture_insight=(
+                f"{row.get('next_intl_stage', 'Group stage').replace('_', ' ').title()}"
+                if row.get("next_intl_stage") else None
+            ),
+            difficulty=None,
+        )
+
+    return PlayerRisk(
+        name=player_name,
+        team=country,
+        position=row.get("position") or "Unknown",
+        league=row.get("league") or comp.name,
+        shirt_number=_safe_int(row.get("shirt_number"), 0) or None,
+        age=_safe_int(row.get("age"), 0),
+        risk_level=risk_level,
+        risk_probability=risk_probability,
+        archetype=row.get("archetype", "Unknown") if has_risk else "Unknown",
+        archetype_description=(
+            ARCHETYPE_DESCRIPTIONS.get(row.get("archetype", ""), "Unknown injury profile")
+            if has_risk else "No club-side data tracked for this player."
+        ),
+        factors=RiskFactors(
+            previous_injuries=prev_injuries,
+            total_days_lost=total_days,
+            days_since_last_injury=days_since,
+            avg_days_per_injury=round(total_days / prev_injuries, 1) if prev_injuries > 0 else 0,
+        ),
+        model_predictions=ModelPredictions(
+            ensemble=round(prob, 3) if has_risk else 0.0,
+            lgb=round(_safe_float(row.get("lgb_prob"), prob if has_risk else 0.0), 3),
+            xgb=round(_safe_float(row.get("xgb_prob"), prob if has_risk else 0.0), 3),
+            catboost=round(_safe_float(row.get("catboost_prob"), prob if has_risk else 0.0), 3),
+        ),
+        recommendations=get_personalized_insights(enriched_row) if has_risk else [
+            "No club-side workload data is tracked for this player's league."
+        ],
+        story=story,
+        implied_odds=calculate_implied_odds(prob if has_risk else 0.5),
+        last_injury_date=str(row.get("last_injury_date")) if row.get("last_injury_date") else None,
+        # FPL-flavoured fields stay None for international rows.
+        fpl_insight=None,
+        scoring_odds=None,
+        fpl_value=None,
+        clean_sheet_odds=None,
+        next_fixture=next_fixture,
+        bookmaker_consensus=None,
+        yara_response=None,
+        lab_notes=None,
+        risk_percentile=None,
+        player_image_url=get_player_image_url(player_name, row.get("club_team") or country),
+        team_badge_url=None,  # National-team flags come in Phase 4.
+        is_currently_injured=False,
+        injury_news=None,
+        chance_of_playing=None,
+        upcoming_fixtures=None,
+        injury_records=[],
+        acwr=round(_safe_float(row.get("acwr"), 0.0), 2) if has_risk else None,
+        acute_load=round(_safe_float(row.get("acute_load"), 0.0), 1) if has_risk else None,
+        chronic_load=round(_safe_float(row.get("chronic_load"), 0.0), 1) if has_risk else None,
+        spike_flag=bool(row.get("spike_flag", 0)) if has_risk else None,
+        fpl_points_projection=None,
+        risk_comparison=None,
+        player_importance=None,
+        competition_id=comp.id,
+        competition_type=comp.type,
+        international_context=intl_ctx,
+    )
+
+
 def player_row_to_risk(row) -> PlayerRisk:
     """Convert a DataFrame row to a PlayerRisk response."""
+    # International rows go through a separate builder — they don't have FPL
+    # stats, scorer odds, or bookmaker markets, and trying to fetch them
+    # would either 404 or return nonsense (an FPL search for "Cristiano
+    # Ronaldo" matches a different person).
+    if _competition_from_row(row).type == "international":
+        return _international_row_to_risk(dict(row))
+
     prob = _safe_float(row.get("ensemble_prob", row.get("calibrated_prob", 0.5)), 0.5)
     # Use player_injury_count (has data) instead of previous_injuries (all zeros in inference_df)
     prev_injuries = _safe_int(row.get("player_injury_count", row.get("previous_injuries", 0)))
@@ -5147,6 +5352,7 @@ def player_row_to_risk(row) -> PlayerRisk:
         player_importance=PlayerImportance(**importance_data) if importance_data else None,
         competition_id=_competition_from_row(enriched_row).id,
         competition_type=_competition_from_row(enriched_row).type,
+        international_context=None,
     )
 
 
