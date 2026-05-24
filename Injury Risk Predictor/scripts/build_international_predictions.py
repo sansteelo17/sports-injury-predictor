@@ -269,14 +269,59 @@ def main() -> int:
         logger.info("Enriching caps from Wikipedia (%d countries)...", len(countries))
         caps_lookup = build_caps_lookup(countries)
         if caps_lookup:
+            # Per-country fallback indices so name surface drift between
+            # football-data.org and Wikipedia still joins:
+            #   - ``full``: exact normalised string
+            #   - ``firstlast``: first + last token, drops middle names
+            #   - ``last``: last token (surname) — only for unambiguous surnames
+            #   - ``token_bag``: tokens sorted as a tuple — handles Korean/Japanese
+            #     order swaps ("Kim Seung-gyu" vs "Seung-Gyu Kim")
+            by_country: Dict[str, Dict[str, Dict]] = {}
+            for (country, full_norm), stats in caps_lookup.items():
+                bucket = by_country.setdefault(country, {"full": {}, "last": {}, "firstlast": {}, "bag": {}})
+                bucket["full"][full_norm] = stats
+                tokens = full_norm.split()
+                if tokens:
+                    last = tokens[-1]
+                    if len(last) >= 4:
+                        bucket["last"][last] = None if last in bucket["last"] else stats
+                if len(tokens) >= 2:
+                    bucket["firstlast"][f"{tokens[0]} {tokens[-1]}"] = stats
+                bag_key = tuple(sorted(tokens))
+                if bag_key:
+                    bucket["bag"][bag_key] = None if bag_key in bucket["bag"] else stats
+
             def _lookup(row):
-                key = (row["team"], _norm_name(row["name"]))
-                return caps_lookup.get(key, {})
+                country = row["team"]
+                bucket = by_country.get(country)
+                if not bucket:
+                    return {}
+                full = _norm_name(row["name"])
+                if full in bucket["full"]:
+                    return bucket["full"][full]
+                tokens = full.split()
+                bag_key = tuple(sorted(tokens))
+                if bag_key in bucket["bag"] and bucket["bag"][bag_key] is not None:
+                    return bucket["bag"][bag_key]
+                if len(tokens) >= 2:
+                    fl = f"{tokens[0]} {tokens[-1]}"
+                    if fl in bucket["full"]:
+                        return bucket["full"][fl]
+                    if fl in bucket["firstlast"]:
+                        return bucket["firstlast"][fl]
+                    last = tokens[-1]
+                    cand = bucket["last"].get(last)
+                    if cand:
+                        return cand
+                return {}
+
             stats = combined.apply(_lookup, axis=1)
             combined["caps"] = [s.get("caps") for s in stats]
             combined["intl_goals"] = [s.get("intl_goals") for s in stats]
             matched = int(combined["caps"].notna().sum())
-            logger.info("Caps enrichment matched %d/%d players", matched, len(combined))
+            goals_matched = int(combined["intl_goals"].notna().sum())
+            logger.info("Caps enrichment matched %d/%d players (intl_goals: %d)",
+                        matched, len(combined), goals_matched)
         else:
             logger.warning("Caps lookup is empty — skipping enrichment columns")
 

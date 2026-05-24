@@ -56,7 +56,10 @@ COUNTRY_PAGE_ALIASES: Dict[str, str] = {
     "South Korea": "South_Korea_national_football_team",
     "South Africa": "South_Africa_national_football_team",
     "Saudi Arabia": "Saudi_Arabia_national_football_team",
-    "New Zealand": "New_Zealand_national_football_team",
+    # NB: do not alias New Zealand here — the default
+    # ``New_Zealand_national_football_team`` URL renders without the squad
+    # section, but the men's variant does have it (handled by the default
+    # candidate fallback).
 }
 
 
@@ -85,6 +88,7 @@ def _candidate_page_titles(country: str) -> List[str]:
     return [
         f"{safe}_national_football_team",
         f"{safe}_men%27s_national_football_team",
+        f"{safe}_men%27s_national_soccer_team",
     ]
 
 
@@ -165,19 +169,22 @@ def _parse_int(text: str) -> Optional[int]:
 
 def scrape_country_caps(country: str) -> Dict[str, Dict[str, Optional[int]]]:
     """Return ``{normalised_name: {"caps": int, "intl_goals": int}}`` for a country."""
-    html: Optional[str] = None
+    # Keep trying candidate titles until one yields a parseable squad table.
+    # Some default ``{country}_national_football_team`` URLs return a 200 page
+    # without the squad section (Wikipedia disambig / overview) while the
+    # ``men's_national_football_team`` variant has the real data.
+    table: Optional[BeautifulSoup] = None
     for title in _candidate_page_titles(country):
         html = _fetch_page(title)
-        if html is not None:
+        if html is None:
+            continue
+        soup = BeautifulSoup(html, "html.parser")
+        candidate = _find_squad_table(soup)
+        if candidate is not None:
+            table = candidate
             break
-    if html is None:
-        logger.warning("No Wikipedia page found for %s", country)
-        return {}
-
-    soup = BeautifulSoup(html, "html.parser")
-    table = _find_squad_table(soup)
     if table is None:
-        logger.warning("No 'Current squad' table on Wikipedia page for %s", country)
+        logger.warning("No 'Current squad' table on any Wikipedia variant for %s", country)
         return {}
 
     headers = [th.get_text(strip=True).lower() for th in table.select("tr:nth-of-type(1) th")]
