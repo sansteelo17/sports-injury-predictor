@@ -89,6 +89,7 @@ from src.competitions import (
     from_league_label as competition_from_league_label,
     resolve as resolve_competition,
 )
+from src.data_loaders.international_squads import WORLD_CUP_2026_SEASON
 # Archetype clustering imports are done lazily inside assign_hybrid_archetypes()
 # to avoid importing all of src.models (which pulls in lightgbm, xgboost, etc.)
 
@@ -744,9 +745,36 @@ def _load_models_blocking():
             else:
                 inference_df["competition_id"] = PREMIER_LEAGUE.id
             counts = inference_df["competition_id"].value_counts().to_dict()
-            print(f"Competition routing: {counts}")
+            print(f"Competition routing (club): {counts}")
         except Exception as comp_err:
             logger.warning(f"Failed to derive competition_id: {comp_err}")
+
+    # Merge international (World Cup) predictions, if a build artifact exists.
+    # The international rows carry ``competition_id="world-cup-2026"`` already
+    # (set by scripts/build_international_predictions.py) and reuse the club
+    # ensemble_prob — risk normalises within the tournament cohort downstream.
+    if inference_df is not None:
+        try:
+            import pandas as pd
+            intl_path = os.path.join(
+                PROJECT_ROOT, "data", "processed",
+                f"inference_international_world_cup_{WORLD_CUP_2026_SEASON}.pkl",
+            )
+            if os.path.exists(intl_path):
+                intl_df = pd.read_pickle(intl_path)
+                if not intl_df.empty:
+                    # Align columns: any missing club column gets NaN, any extra
+                    # international column is preserved on concat.
+                    inference_df = pd.concat([inference_df, intl_df], ignore_index=True, sort=False)
+                    print(
+                        f"Merged international predictions: +{len(intl_df)} "
+                        f"rows ({intl_df['team'].nunique()} national teams)"
+                    )
+            else:
+                logger.info("No international predictions pickle at %s — run "
+                            "scripts/build_international_predictions.py", intl_path)
+        except Exception as intl_err:
+            logger.warning(f"Failed to merge international predictions: {intl_err}")
 
     # Apply isotonic probability calibrator if available.
     # Calibration is applied by refresh_predictions.py before saving inference_df.pkl.
@@ -1707,13 +1735,15 @@ def _league_prob_series(league: Optional[Any] = None):
         return None
     inf_id = id(inference_df)
     league_key = _safe_league_label(league)
-    bucket = _league_bucket(league_key) if league_key else None
-
-    if bucket in ("premier_league", "la_liga") and "league" in inference_df.columns:
-        ck = (inf_id, "bucket", bucket)
+    # Resolve to a known competition so each competition gets its own
+    # cohort (PL, La Liga, WC). Tournaments must not be ranked against the
+    # club season — workload distributions differ enough that a combined
+    # ranking would put every WC player in the bottom half.
+    comp = competition_from_league_label(league_key) if league_key else None
+    if comp is not None and "competition_id" in inference_df.columns:
+        ck = (inf_id, "comp", comp.id)
         if ck not in _league_prob_series_cache:
-            norms = inference_df["league"].map(_league_bucket)
-            sub = inference_df[norms == bucket]
+            sub = inference_df[inference_df["competition_id"] == comp.id]
             if len(sub) >= 10:
                 _league_prob_series_cache[ck] = sub["ensemble_prob"]
             else:
