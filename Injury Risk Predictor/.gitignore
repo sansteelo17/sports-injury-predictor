@@ -187,3 +187,4 @@ notebooks/catboost_info/
 # Frontend build artifacts
 frontend/node_modules/
 frontend/.next/
+models/archetype_cache.pkl
