@@ -1392,6 +1392,16 @@ class InternationalContext(BaseModel):
     next_stage: Optional[str] = None
     has_risk_features: bool = False
     summary: str = ""
+    # Club-season stats projected onto the WC card so the international card
+    # has actual numbers, not just identity. Only populated for risk-featured
+    # rows (where we joined a club inference row).
+    club_minutes: Optional[int] = None
+    club_appearances: Optional[int] = None
+    club_goals: Optional[int] = None
+    club_assists: Optional[int] = None
+    club_goals_per_90: Optional[float] = None
+    club_assists_per_90: Optional[float] = None
+    fifa_rating: Optional[int] = None
 
 
 class PlayerRisk(BaseModel):
@@ -4881,6 +4891,24 @@ def _build_international_context(row: Dict[str, Any]) -> InternationalContext:
     if not summary:
         summary = f"{name} is in the {country} squad."
 
+    has_risk = bool(row.get("has_risk_features"))
+    # Club-season stats: only meaningful when we joined a club inference row.
+    def _opt_int(v):
+        if v is None: return None
+        try:
+            f = float(v)
+            return int(f) if not (math.isnan(f) or math.isinf(f)) else None
+        except (TypeError, ValueError):
+            return None
+
+    def _opt_float(v):
+        if v is None: return None
+        try:
+            f = float(v)
+            return round(f, 2) if not (math.isnan(f) or math.isinf(f)) else None
+        except (TypeError, ValueError):
+            return None
+
     return InternationalContext(
         country=country,
         club_team=row.get("club_team"),
@@ -4893,8 +4921,15 @@ def _build_international_context(row: Dict[str, Any]) -> InternationalContext:
         next_is_home=bool(row.get("next_intl_is_home")) if row.get("next_intl_is_home") is not None else None,
         next_utc_date=row.get("next_intl_utc_date"),
         next_stage=row.get("next_intl_stage"),
-        has_risk_features=bool(row.get("has_risk_features")),
+        has_risk_features=has_risk,
         summary=summary,
+        club_minutes=_opt_int(row.get("minutes_played")) if has_risk else None,
+        club_appearances=_opt_int(row.get("appearances")) if has_risk else None,
+        club_goals=_opt_int(row.get("goals")) if has_risk else None,
+        club_assists=_opt_int(row.get("assists")) if has_risk else None,
+        club_goals_per_90=_opt_float(row.get("goals_per_90")) if has_risk else None,
+        club_assists_per_90=_opt_float(row.get("assists_per_90")) if has_risk else None,
+        fifa_rating=_opt_int(row.get("fifa_rating")) if has_risk else None,
     )
 
 
@@ -4926,13 +4961,85 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
 
     # Story: reuse generate_player_story for risk-featured rows (workload +
     # injury history still apply), prepend tournament context. Baseline rows
-    # get a short identity line.
+    # get a short identity line. When the LLM provider is configured
+    # (NARRATIVE_LLM_PROVIDER=openai_compatible + OPENAI_API_KEY), the
+    # template above becomes the *fallback* and OpenAI rewrites it in Yara's
+    # voice grounded in the same context chunks.
     intl_ctx = _build_international_context(row)
     if has_risk:
         base_story = generate_player_story(enriched_row)
-        story = f"{intl_ctx.summary} {base_story}".strip()
+        template_story = f"{intl_ctx.summary} {base_story}".strip()
     else:
-        story = intl_ctx.summary
+        template_story = intl_ctx.summary
+
+    # International narrative LLM: ``INTL_NARRATIVE_LLM_PROVIDER`` overrides
+    # the global ``NARRATIVE_LLM_PROVIDER`` for WC stories only — lets the
+    # club narrative path stay on Ollama (free) while WC routes through
+    # OpenAI (paid, better quality on the more diverse international context).
+    intl_provider = (os.environ.get("INTL_NARRATIVE_LLM_PROVIDER") or "").strip().lower()
+    use_llm = intl_provider in {"ollama", "openai_compatible"} or llm_enabled()
+    if use_llm:
+        chunks: List[Dict[str, Any]] = [
+            {"kind": "identity", "text": f"{player_name} plays for {country}."},
+            {"kind": "international", "text": intl_ctx.summary},
+        ]
+        if intl_ctx.club_team:
+            club_bits = [f"Club: {intl_ctx.club_team}"]
+            if intl_ctx.club_minutes is not None:
+                club_bits.append(f"{intl_ctx.club_minutes} club minutes")
+            if intl_ctx.club_goals is not None or intl_ctx.club_assists is not None:
+                club_bits.append(
+                    f"{intl_ctx.club_goals or 0} goals, {intl_ctx.club_assists or 0} assists this season"
+                )
+            chunks.append({"kind": "club", "text": ". ".join(club_bits) + "."})
+        if has_risk:
+            chunks.append({
+                "kind": "risk",
+                "text": (
+                    f"Two-week injury risk model output: {prob:.0%}. "
+                    f"ACWR {_safe_float(row.get('acwr'), 0.0):.2f}, "
+                    f"{_safe_int(row.get('previous_injuries', 0))} prior injuries, "
+                    f"{_safe_int(row.get('days_since_last_injury'), 365)} days since last injury."
+                ),
+            })
+        chunks.append({
+            "kind": "calibration",
+            "text": (
+                "Tournament workload is denser than a club season, so risk thresholds "
+                "should be read as approximate when applied to World Cup minutes."
+            ),
+        })
+
+        # If INTL provider override is set, swap env for the duration of the
+        # call so generate_grounded_narrative routes to it without altering
+        # the global config. Restore in finally.
+        prev_provider = os.environ.get("NARRATIVE_LLM_PROVIDER")
+        if intl_provider:
+            os.environ["NARRATIVE_LLM_PROVIDER"] = intl_provider
+        try:
+            story = generate_grounded_narrative(
+                task=(
+                    "Write a short, conversational scouting note about this World Cup player "
+                    "in Yara's voice. Lead with tournament context (country, caps, group, next "
+                    "fixture). If injury risk data is available, integrate it as a sentence. "
+                    "Do not use FPL language. Do not use em dashes."
+                ),
+                player_name=player_name,
+                context_chunks=chunks,
+                fallback_text=template_story,
+                require_open_question=False,
+            )
+        except Exception as llm_err:
+            logger.warning("LLM intl narrative failed for %s: %s", player_name, llm_err)
+            story = template_story
+        finally:
+            if intl_provider:
+                if prev_provider is None:
+                    os.environ.pop("NARRATIVE_LLM_PROVIDER", None)
+                else:
+                    os.environ["NARRATIVE_LLM_PROVIDER"] = prev_provider
+    else:
+        story = template_story
 
     prev_injuries = _safe_int(enriched_row.get("previous_injuries", 0))
     total_days = _safe_int(row.get("total_days_lost", 0))

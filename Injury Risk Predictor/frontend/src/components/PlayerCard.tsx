@@ -125,11 +125,12 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
 
   const tabs = [
     { id: "overview" as const, label: "Risk", icon: <BarChart3 size={14} /> },
-    { id: "fpl" as const, label: "Projected", icon: <Star size={14} /> },
+    { id: "fpl" as const, label: isInternational ? "Tournament" : "Projected", icon: <Star size={14} /> },
     { id: "market" as const, label: "Odds", icon: <Coins size={14} /> },
   ];
   type TabId = (typeof tabs)[number]["id"];
   const [activeTab, setActiveTab] = useState<TabId>("overview");
+  const intl = player.international_context;
 
   return (
     <div
@@ -542,6 +543,107 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
       {/* ── FPL / FANTASY TAB ── */}
       {activeTab === "fpl" && (
         <>
+          {/* International (World Cup) context — replaces the FPL strip when
+              competition_type === "international". FPL projection, value, and
+              insight are null for these rows so the rest of the tab is empty. */}
+          {isInternational && intl && (
+            <div className={`px-4 sm:px-6 py-4 space-y-4 ${darkMode ? "border-b border-[#1f1f1f]" : "border-b border-gray-100"}`}>
+              <div className={`rounded-xl p-4 ${
+                darkMode
+                  ? "bg-gradient-to-br from-amber-500/10 to-amber-500/5 border border-amber-500/20"
+                  : "bg-gradient-to-br from-amber-50 to-amber-100 border border-amber-200"
+              }`}>
+                <div className="flex items-center justify-between mb-3">
+                  <span className={`text-xs uppercase tracking-wider font-semibold ${darkMode ? "text-amber-300" : "text-amber-700"}`}>
+                    {player.league}
+                  </span>
+                  <span className={`text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full ${
+                    intl.tournament_role === "Starter"
+                      ? (darkMode ? "bg-emerald-500/20 text-emerald-300" : "bg-emerald-100 text-emerald-700")
+                      : intl.tournament_role === "Squad"
+                        ? (darkMode ? "bg-slate-500/20 text-slate-300" : "bg-slate-100 text-slate-700")
+                        : (darkMode ? "bg-slate-500/10 text-slate-400" : "bg-slate-50 text-slate-500")
+                  }`}>
+                    {intl.tournament_role}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="text-center">
+                    <div className={`text-[10px] uppercase tracking-wider ${darkMode ? "text-gray-500" : "text-gray-500"}`}>Caps</div>
+                    <div className={`text-2xl font-black ${darkMode ? "text-white" : "text-gray-900"}`}>
+                      {intl.caps ?? "—"}
+                    </div>
+                  </div>
+                  <div className="text-center">
+                    <div className={`text-[10px] uppercase tracking-wider ${darkMode ? "text-gray-500" : "text-gray-500"}`}>Goals</div>
+                    <div className={`text-2xl font-black ${darkMode ? "text-white" : "text-gray-900"}`}>
+                      {intl.intl_goals ?? "—"}
+                    </div>
+                  </div>
+                  <div className="text-center">
+                    <div className={`text-[10px] uppercase tracking-wider ${darkMode ? "text-gray-500" : "text-gray-500"}`}>Group</div>
+                    <div className={`text-2xl font-black ${darkMode ? "text-white" : "text-gray-900"}`}>
+                      {intl.group ? intl.group.replace("GROUP_", "") : "—"}
+                    </div>
+                  </div>
+                </div>
+                {intl.next_opponent && (
+                  <div className={`mt-3 pt-3 border-t ${darkMode ? "border-amber-500/10" : "border-amber-200"}`}>
+                    <div className={`text-xs ${darkMode ? "text-amber-200/80" : "text-amber-800"}`}>
+                      Next: {intl.next_is_home ? "vs" : "at"} <span className="font-semibold">{intl.next_opponent}</span>
+                      {intl.next_stage && (
+                        <span className={darkMode ? "text-gray-500" : "text-gray-500"}> · {intl.next_stage.replace(/_/g, " ").toLowerCase()}</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Club season stats — only populated for risk-featured rows */}
+              {intl.club_team && (intl.club_minutes !== null || intl.club_goals !== null) && (
+                <div className={`rounded-xl p-4 ${
+                  darkMode ? "bg-[#1a1a1a] border border-[#262626]" : "bg-gray-50 border border-gray-200"
+                }`}>
+                  <div className={`text-xs uppercase tracking-wider font-semibold mb-2 ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
+                    Club form · {intl.club_team}
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    <div className="text-center">
+                      <div className={`text-[10px] ${darkMode ? "text-gray-500" : "text-gray-500"}`}>Apps</div>
+                      <div className={`text-base font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>
+                        {intl.club_appearances ?? "—"}
+                      </div>
+                    </div>
+                    <div className="text-center">
+                      <div className={`text-[10px] ${darkMode ? "text-gray-500" : "text-gray-500"}`}>Mins</div>
+                      <div className={`text-base font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>
+                        {intl.club_minutes ?? "—"}
+                      </div>
+                    </div>
+                    <div className="text-center">
+                      <div className={`text-[10px] ${darkMode ? "text-gray-500" : "text-gray-500"}`}>G</div>
+                      <div className={`text-base font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>
+                        {intl.club_goals ?? "—"}
+                      </div>
+                    </div>
+                    <div className="text-center">
+                      <div className={`text-[10px] ${darkMode ? "text-gray-500" : "text-gray-500"}`}>A</div>
+                      <div className={`text-base font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>
+                        {intl.club_assists ?? "—"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {!intl.has_risk_features && (
+                <div className={`text-xs ${darkMode ? "text-gray-500" : "text-gray-500"} italic`}>
+                  No club-side workload data is tracked for this player's league.
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Expected Points Hero Card */}
           {player.fpl_points_projection && (
             <div className={`px-4 sm:px-6 py-4 ${darkMode ? "border-b border-[#1f1f1f]" : "border-b border-gray-100"}`}>

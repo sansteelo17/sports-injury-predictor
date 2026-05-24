@@ -252,6 +252,13 @@ export interface InternationalContext {
   next_stage: string | null;
   has_risk_features: boolean;
   summary: string;
+  club_minutes: number | null;
+  club_appearances: number | null;
+  club_goals: number | null;
+  club_assists: number | null;
+  club_goals_per_90: number | null;
+  club_assists_per_90: number | null;
+  fifa_rating: number | null;
 }
 
 export interface TeamNextFixture {
