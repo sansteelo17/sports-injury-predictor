@@ -28,7 +28,57 @@ function SmallBadge({ name, badges }: { name: string; badges?: Record<string, st
   );
 }
 
+// Premier League is 38 matchdays. Treat the season as concluded once the
+// leader has played all 38 — surface the title instead of the live race.
+const PL_MATCHDAYS = 38;
+
 export function StandingsCards({ standings, darkMode = true, teamBadges }: StandingsCardsProps) {
+  const seasonOver = (standings.leader?.played || 0) >= PL_MATCHDAYS;
+
+  if (seasonOver) {
+    const selected = standings.selected_team;
+    const champion = standings.leader;
+    return (
+      <div className={`rounded-xl p-4 sm:p-5 border ${
+        darkMode
+          ? 'bg-gradient-to-br from-amber-500/10 to-amber-500/0 border-amber-500/30'
+          : 'bg-gradient-to-br from-amber-50 to-white border-amber-200'
+      }`}>
+        <div className="flex items-center gap-2 mb-2">
+          <Trophy className="text-amber-500 flex-shrink-0" size={18} />
+          <span className={`text-xs font-medium uppercase tracking-wider ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>
+            Premier League — Season Concluded
+          </span>
+        </div>
+        <div className="flex items-center gap-2 mb-1">
+          <SmallBadge name={champion.name} badges={teamBadges} />
+          <span className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+            {champion.name}
+          </span>
+          <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+            crowned champions
+          </span>
+        </div>
+        <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+          {champion.points} pts from {champion.played} matches
+          {standings.gap_to_second > 0 && ` · ${standings.gap_to_second} clear of ${standings.second.short_name}`}
+        </div>
+        {selected && selected.name !== champion.name && (
+          <div className={`mt-3 pt-3 border-t flex items-center gap-2 text-xs ${
+            darkMode ? 'border-amber-500/20 text-gray-400' : 'border-amber-200 text-gray-600'
+          }`}>
+            <MapPin size={12} className={darkMode ? 'text-[#86efac]' : 'text-emerald-600'} />
+            {selected.name} finished{' '}
+            <span className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              {selected.position}{getOrdinalSuffix(selected.position || 0)}
+            </span>{' '}
+            on {selected.points} pts
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="grid grid-cols-3 gap-2">
       {/* League Leaders */}
