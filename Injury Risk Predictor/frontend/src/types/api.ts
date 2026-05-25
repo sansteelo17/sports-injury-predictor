@@ -1,9 +1,28 @@
+export type CompetitionType = 'club' | 'international';
+
+export interface CompetitionCapabilities {
+  has_fpl: boolean;
+  has_club_acwr_thresholds: boolean;
+  has_team_badges: boolean;
+  standings_kind: 'league_table' | 'group_stage' | 'none';
+  risk_calibration_cohort: string;
+  acwr_spike_threshold: number;
+  fixture_label: string;
+}
+
+export interface Competition {
+  id: string;
+  name: string;
+  type: CompetitionType;
+  capabilities: CompetitionCapabilities;
+}
+
 export interface PlayerSummary {
   name: string;
   team: string;
   position: string;
   shirt_number: number | null;
-  risk_level: 'High' | 'Medium' | 'Low';
+  risk_level: 'High' | 'Medium' | 'Low' | 'Unknown';
   risk_probability: number;
   archetype: string;
   minutes_played: number;
@@ -13,6 +32,8 @@ export interface PlayerSummary {
   is_currently_injured: boolean;
   injury_news: string | null;
   chance_of_playing: number | null;
+  competition_id: string;
+  competition_type: CompetitionType;
 }
 
 export interface InjuryRecord {
@@ -179,7 +200,7 @@ export interface PlayerRisk {
   league: string;
   shirt_number: number | null;
   age: number;
-  risk_level: 'High' | 'Medium' | 'Low';
+  risk_level: 'High' | 'Medium' | 'Low' | 'Unknown';
   risk_probability: number;
   archetype: string;
   archetype_description: string;
@@ -212,6 +233,32 @@ export interface PlayerRisk {
   fpl_points_projection: FPLPointsProjection | null;
   risk_comparison: RiskComparison | null;
   player_importance: PlayerImportance | null;
+  competition_id: string;
+  competition_type: CompetitionType;
+  international_context: InternationalContext | null;
+}
+
+export interface InternationalContext {
+  country: string;
+  club_team: string | null;
+  club_league: string | null;
+  caps: number | null;
+  intl_goals: number | null;
+  tournament_role: 'Starter' | 'Squad' | 'Unknown';
+  group: string | null;
+  next_opponent: string | null;
+  next_is_home: boolean | null;
+  next_utc_date: string | null;
+  next_stage: string | null;
+  has_risk_features: boolean;
+  summary: string;
+  club_minutes: number | null;
+  club_appearances: number | null;
+  club_goals: number | null;
+  club_assists: number | null;
+  club_goals_per_90: number | null;
+  club_assists_per_90: number | null;
+  fifa_rating: number | null;
 }
 
 export interface TeamNextFixture {
@@ -242,6 +289,8 @@ export interface TeamOverview {
   players: PlayerSummary[];
   team_badge_url: string | null;
   next_fixture: TeamNextFixture | null;
+  competition_id: string;
+  competition_type: CompetitionType;
 }
 
 // FPL Types

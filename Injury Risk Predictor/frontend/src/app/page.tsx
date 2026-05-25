@@ -58,8 +58,16 @@ export default function Home() {
   const [darkMode, setDarkMode] = useState(true);
   const [view, setView] = useState<"overview" | "lab">("overview");
 
-  // League
-  const [league, setLeague] = useState<"Premier League" | "La Liga">("Premier League");
+  // Competition (club leagues + international tournaments)
+  type CompetitionChoice = "Premier League" | "La Liga" | "FIFA World Cup 2026";
+  const [league, setLeague] = useState<CompetitionChoice>("Premier League");
+  const isInternational = league === "FIFA World Cup 2026";
+  const competitionId =
+    league === "Premier League"
+      ? "premier-league"
+      : league === "La Liga"
+        ? "la-liga"
+        : "world-cup-2026";
 
   // Squad sync state
   const [mode, setMode] = useState<"browse" | "squad">("browse");
@@ -76,10 +84,10 @@ export default function Home() {
     setPlayerRisk(null);
     setStandings(null);
     setLaLigaStandings([]);
-    getTeams(league)
+    getTeams(undefined, competitionId)
       .then(setTeams)
       .catch(() => setError("Failed to load teams. Is the API running?"));
-  }, [league]);
+  }, [league, competitionId]);
 
   // Load FPL data only when EPL/FPL-specific context is active.
   useEffect(() => {
@@ -107,11 +115,11 @@ export default function Home() {
       .catch(() => console.log("La Liga standings unavailable"));
   }, [league]);
 
-  const handleLeagueSwitch = (l: "Premier League" | "La Liga") => {
+  const handleLeagueSwitch = (l: CompetitionChoice) => {
     if (l !== league) {
       setLeague(l);
-      // FPL squad mode is EPL-only; switch to browse when moving to La Liga
-      if (l === "La Liga" && mode === "squad") setMode("browse");
+      // FPL squad mode is EPL-only; switch to browse when leaving EPL.
+      if (l !== "Premier League" && mode === "squad") setMode("browse");
     }
   };
 
@@ -128,15 +136,16 @@ export default function Home() {
     setError(null);
 
     const isLaLiga = league === "La Liga";
+    const skipFplStandings = isLaLiga || isInternational;
 
-    const standingsPromise = isLaLiga
+    const standingsPromise = skipFplStandings
       ? Promise.resolve(null)
       : getStandingsSummary(selectedTeam).catch(() => null);
 
     Promise.all([getTeamOverview(selectedTeam), standingsPromise])
       .then(([teamData, standingsData]) => {
         setTeamOverview(teamData);
-        if (isLaLiga) {
+        if (skipFplStandings) {
           setStandings(null);
         } else {
           setStandings(standingsData as StandingsSummary | null);
@@ -284,9 +293,9 @@ export default function Home() {
               <strong
                 className={darkMode ? "text-[#86efac]" : "text-emerald-600"}
               >
-                Premier League and La Liga are now live
+                Premier League, La Liga and FIFA World Cup 2026 are live
               </strong>{" "}
-              — more leagues coming.{" "}
+              — more competitions coming.{" "}
               <span className="hidden sm:inline">
                 Yara explains why a player might get injured in the next 2 weeks
                 by blending injury history, workload patterns, and fixture
@@ -305,7 +314,7 @@ export default function Home() {
         <div className="mb-4 sm:mb-6">
           {/* League switcher — always visible first */}
           <div className="flex gap-1 mb-3">
-            {(["Premier League", "La Liga"] as const).map((l) => (
+            {(["Premier League", "La Liga", "FIFA World Cup 2026"] as const).map((l) => (
               <button
                 key={l}
                 onClick={() => handleLeagueSwitch(l)}
@@ -319,7 +328,11 @@ export default function Home() {
                       : "text-gray-500 hover:text-gray-700 border border-transparent"
                 }`}
               >
-                {l === "Premier League" ? "🏴󠁧󠁢󠁥󠁮󠁧󠁿 EPL" : "🇪🇸 La Liga"}
+                {l === "Premier League"
+                  ? "🏴󠁧󠁢󠁥󠁮󠁧󠁿 EPL"
+                  : l === "La Liga"
+                    ? "🇪🇸 La Liga"
+                    : "🏆 World Cup 2026"}
               </button>
             ))}
           </div>
@@ -563,7 +576,9 @@ export default function Home() {
             <p className={`text-sm max-w-md mx-auto ${mutedClass}`}>
               {mode === "squad"
                 ? "Enter your FPL Team ID above to see injury risk for your squad."
-                : "Select a Premier League team to view squad injury risk analysis and player predictions."}
+                : isInternational
+                  ? "Pick a nation to see their World Cup 2026 squad. Players with club history get a full risk score; the rest show identity and tournament context."
+                  : `Select a ${league} team to view squad injury risk analysis and player predictions.`}
             </p>
           </div>
         )}

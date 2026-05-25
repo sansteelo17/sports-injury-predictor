@@ -42,6 +42,12 @@ from dotenv import load_dotenv
 import yara_autoposter as yap
 from yara_card import build_risk_card
 
+try:
+    from src.competitions import for_id, PREMIER_LEAGUE
+except Exception:  # pragma: no cover - studio can still run standalone
+    for_id = None
+    PREMIER_LEAGUE = None
+
 load_dotenv()
 
 logging.basicConfig(
@@ -61,6 +67,9 @@ RISK_KEEP = [
     "story", "fpl_insight", "fpl_points_projection", "scoring_odds",
     "spike_flag", "acwr", "risk_comparison", "player_importance", "fpl_value",
 ]
+
+# Extra fields surfaced for international (World Cup) candidates.
+RISK_KEEP_INTL = ["story", "spike_flag", "acwr", "international_context"]
 
 JOURNALIST_PROMPT = """\
 You are a sports journalist for Yara, a Premier League and La Liga injury risk \
@@ -101,6 +110,46 @@ Return a JSON object: {"scored_players": [ ... ]}. Each item:
 """
 
 
+JOURNALIST_PROMPT_INTL = """\
+You are a sports journalist for Yara, covering the FIFA World Cup 2026. \
+Audience: bettors, fantasy managers, and fans who already know the squads and \
+group draw. They do not want recap. They want stakes.
+
+You receive a JSON array of national-team candidates. Some have club-derived \
+injury risk and form. Others are baseline rows (identity + tournament context \
+only, no risk score). The data is good but not enough alone.
+
+YOUR JOB
+For every candidate, return one scored entry. Score boring ones low, do not omit.
+1. Reject already-public stories (long-term absentees, fringe squad members no \
+group cares about). Score low.
+2. Score story_score 0-100: nation-defining player x injury risk = high; \
+captain or starter doubt before a knockout-implication group game = high; \
+form spike from a top-five league = bonus; a baseline row with a famous name \
+and a marquee opponent = mid bonus; routine squad player with no stakes = floor.
+3. story_hooks: short tags under 32 chars: golden_boot_contender, \
+talisman_doubt, group_stage_decider, knockout_implication, \
+underdog_dark_horse, club_form_spike, club_form_collapse, \
+return_from_injury, baseline_no_risk_features, marquee_fixture.
+4. journalist_notes: 2 sentences MAX, under 240 chars total. Terse, \
+analyst-to-analyst. Cite caps, club, group, or next opponent where useful.
+5. why_short: one lowercase clause, under 100 chars.
+6. sources: array of URLs you actually used. Empty array is fine.
+
+HARD RULES
+- No exclamation marks. No em dashes or en dashes. Use commas or full stops.
+- No tabloid words: BREAKING, HUGE, URGENT, SHOCK, BOMBSHELL.
+- Baseline candidates (has_risk_features=false in international_context) have \
+NO risk score. Do not invent one. Score story potential off identity and stakes.
+- player_name must exactly match a candidate. No fabrication. One entry per candidate.
+
+OUTPUT
+Return a JSON object: {"scored_players": [ ... ]}. Each item:
+{"player_name": string, "story_score": integer 0-100, "story_hooks": string[], \
+"why_short": string, "journalist_notes": string, "sources": string[]}
+"""
+
+
 # ── API ────────────────────────────────────────────────────────────────────
 
 def _get(path: str, **params):
@@ -115,11 +164,13 @@ def _get(path: str, **params):
     return None
 
 
-def fetch_teams(league: str) -> list[str]:
-    data = _get("/teams", league=league)
+def fetch_teams(league: str, competition_id: str | None = None) -> list[str]:
+    params = {"competition": competition_id} if competition_id else {"league": league}
+    data = _get("/teams", **params)
     if isinstance(data, list):
         return [t if isinstance(t, str) else t.get("name") for t in data if t]
-    return list(yap.EPL_TEAMS)  # fallback to the known EPL list
+    # Fallback only valid for EPL; WC has no hardcoded list.
+    return list(yap.EPL_TEAMS) if not competition_id or competition_id == "premier-league" else []
 
 
 def fetch_overviews(teams: list[str], workers: int = 6) -> list[dict]:
@@ -133,7 +184,7 @@ def fetch_overviews(teams: list[str], workers: int = 6) -> list[dict]:
     return out
 
 
-def flatten_candidates(overviews: list[dict]) -> list[dict]:
+def flatten_candidates(overviews: list[dict], is_international: bool = False) -> list[dict]:
     """Flatten team overviews into candidate dicts using REAL API field names."""
     cands = []
     for ov in overviews:
@@ -143,7 +194,8 @@ def flatten_candidates(overviews: list[dict]) -> list[dict]:
             # Skip already-public absences (confirmed out).
             if p.get("is_currently_injured") and p.get("chance_of_playing") == 0:
                 continue
-            prob = float(p.get("risk_probability", 0) or 0)
+            prob_raw = p.get("risk_probability")
+            prob = float(prob_raw) if prob_raw is not None else 0.0
             cands.append({
                 "player_name": p.get("name"),
                 "team": team,
@@ -160,17 +212,23 @@ def flatten_candidates(overviews: list[dict]) -> list[dict]:
                 "chance_of_playing": p.get("chance_of_playing"),
                 "player_image_url": p.get("player_image_url"),
                 "team_next_fixture": next_fixture,
+                "competition_type": p.get("competition_type") or ("international" if is_international else "club"),
             })
+    # Risk-score sort still works for international: baseline rows fall to the
+    # bottom, risk-featured rows sort by ensemble prob.
     cands.sort(key=lambda c: c["risk_score_pct"], reverse=True)
     return cands
 
 
-def enrich_candidates(cands: list[dict], workers: int = 5) -> list[dict]:
+def enrich_candidates(cands: list[dict], workers: int = 5,
+                      is_international: bool = False) -> list[dict]:
     """Merge a slim slice of /players/{name}/risk into each candidate."""
+    keep = RISK_KEEP_INTL if is_international else RISK_KEEP
+
     def fetch(c):
         risk = _get(f"/players/{c['player_name']}/risk")
         if risk:
-            for k in RISK_KEEP:
+            for k in keep:
                 if k in risk:
                     c[k] = risk[k]
             uf = risk.get("upcoming_fixtures") or []
@@ -188,7 +246,8 @@ def enrich_candidates(cands: list[dict], workers: int = 5) -> list[dict]:
 
 # ── Journalist (OpenAI) ──────────────────────────────────────────────────────
 
-def score_candidates(cands: list[dict], gameweek, league: str) -> dict:
+def score_candidates(cands: list[dict], gameweek, league: str,
+                     is_international: bool = False) -> dict:
     """Call OpenAI once to score every candidate. Returns {name: scored_entry}."""
     try:
         from openai import OpenAI
@@ -200,16 +259,18 @@ def score_candidates(cands: list[dict], gameweek, league: str) -> dict:
         return {}
 
     client = OpenAI()
+    label = "matchday" if is_international else "gameweek"
     user_msg = (
-        f"gameweek: {gameweek}\nleague: {league}\n"
+        f"{label}: {gameweek}\ncompetition: {league}\n"
         f"candidates_json:\n{json.dumps(cands, default=str)}"
     )
+    system_prompt = JOURNALIST_PROMPT_INTL if is_international else JOURNALIST_PROMPT
     try:
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
             response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": JOURNALIST_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_msg},
             ],
         )
@@ -248,6 +309,7 @@ def _cutout_for(name: str) -> str:
 
 def _signals(c: dict) -> list:
     sig = []
+    is_intl = c.get("competition_type") == "international"
     acwr = c.get("acwr")
     if acwr is not None:
         flagged = c.get("spike_flag")
@@ -257,14 +319,28 @@ def _signals(c: dict) -> list:
     nf = c.get("team_next_fixture") or {}
     if isinstance(nf, dict) and nf.get("opponent"):
         ha = "(H)" if nf.get("is_home") else "(A)"
-        sig.append(("NEXT MATCH", f"{nf['opponent']} {ha}", "Fixture", "muted"))
+        label = "NEXT MATCH" if not is_intl else "NEXT MATCHDAY"
+        sig.append((label, f"{nf['opponent']} {ha}", "Fixture", "muted"))
     dsi = c.get("days_since_last_injury")
     if dsi is not None and dsi < 365:
         sig.append(("LAST INJURY", f"{dsi} days ago", "Recent", "amber"))
-    proj = c.get("fpl_points_projection") or {}
-    if isinstance(proj, dict) and proj.get("expected_points") is not None:
-        sig.append(("FPL PROJECTION", f"{proj['expected_points']:.1f} pts",
-                    proj.get("confidence", ""), "accent"))
+
+    if is_intl:
+        ic = c.get("international_context") or {}
+        caps = ic.get("caps")
+        goals = ic.get("intl_goals")
+        if caps is not None or goals is not None:
+            val = f"{caps or 0} caps · {goals or 0} goals"
+            sig.append(("NATIONAL TEAM RECORD", val,
+                        ic.get("tournament_role") or "Squad", "accent"))
+        if not ic.get("has_risk_features"):
+            sig.append(("RISK SCORE", "Not available",
+                        "Baseline row", "muted"))
+    else:
+        proj = c.get("fpl_points_projection") or {}
+        if isinstance(proj, dict) and proj.get("expected_points") is not None:
+            sig.append(("FPL PROJECTION", f"{proj['expected_points']:.1f} pts",
+                        proj.get("confidence", ""), "accent"))
     return sig
 
 
@@ -272,9 +348,23 @@ def render_card(c: dict, gameweek, league: str) -> str:
     name = c.get("player_name") or "unknown"
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", name)
     out = os.path.join(OUTPUT_DIR, f"{safe}.png")
-    imp = c.get("player_importance") or {}
-    own = imp.get("ownership_pct") if isinstance(imp, dict) else None
-    strip = f"{own:.1f}% ownership" if isinstance(own, (int, float)) else ""
+    is_intl = c.get("competition_type") == "international"
+
+    if is_intl:
+        ic = c.get("international_context") or {}
+        bits = []
+        if ic.get("group"):
+            bits.append(f"Group {ic['group']}")
+        if ic.get("club_team"):
+            bits.append(f"Club: {ic['club_team']}")
+        strip = " · ".join(bits)
+        header_label = f"MD{gameweek}" if gameweek else "WORLD CUP 2026"
+    else:
+        imp = c.get("player_importance") or {}
+        own = imp.get("ownership_pct") if isinstance(imp, dict) else None
+        strip = f"{own:.1f}% ownership" if isinstance(own, (int, float)) else ""
+        header_label = None
+
     data = {
         "name": name,
         "team": c.get("team", ""),
@@ -286,6 +376,11 @@ def render_card(c: dict, gameweek, league: str) -> str:
         "cutout_path": _cutout_for(name),
         "signals": _signals(c),
         "strip_text": strip,
+        "competition_type": "international" if is_intl else "club",
+        "header_label": header_label,
+        "risk_unavailable": is_intl and not (
+            (c.get("international_context") or {}).get("has_risk_features")
+        ),
     }
     return build_risk_card(data, out)
 
@@ -311,27 +406,40 @@ def build_post_text(c: dict, gameweek) -> str:
 # ── Orchestration ────────────────────────────────────────────────────────────
 
 def run(league: str, top_n: int, gameweek, do_journalist: bool,
-        do_render: bool, post: bool, dry_run: bool):
+        do_render: bool, post: bool, dry_run: bool,
+        competition_id: str | None = None):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    if gameweek is None:
+
+    # Resolve competition (default: Premier League).
+    comp = None
+    if for_id is not None:
+        try:
+            comp = for_id(competition_id) if competition_id else PREMIER_LEAGUE
+        except Exception:
+            comp = PREMIER_LEAGUE
+    is_international = bool(comp and getattr(comp, "type", "club") == "international")
+    league_label = (getattr(comp, "name", None) if comp else None) or league
+
+    if gameweek is None and not is_international:
         gameweek = yap.get_current_gameweek()
 
-    log.info("Fetching teams for %s ...", league)
-    teams = fetch_teams(league)
+    log.info("Fetching teams for %s ...", league_label)
+    teams = fetch_teams(league_label, competition_id=getattr(comp, "id", None))
     log.info("%d teams", len(teams))
 
     log.info("Fetching team overviews ...")
     overviews = fetch_overviews(teams)
-    cands = flatten_candidates(overviews)
+    cands = flatten_candidates(overviews, is_international=is_international)
     log.info("%d candidates after flatten", len(cands))
 
     cands = cands[:top_n]
     log.info("Enriching top %d ...", len(cands))
-    enrich_candidates(cands)
+    enrich_candidates(cands, is_international=is_international)
 
     if do_journalist:
         log.info("Scoring with %s ...", OPENAI_MODEL)
-        scores = score_candidates(cands, gameweek, league)
+        scores = score_candidates(cands, gameweek, league_label,
+                                  is_international=is_international)
         for c in cands:
             s = scores.get(c["player_name"])
             if s:
@@ -346,7 +454,7 @@ def run(league: str, top_n: int, gameweek, do_journalist: bool,
         log.info("Rendering cards ...")
         for c in cands[:5]:
             try:
-                c["card_path"] = render_card(c, gameweek, league)
+                c["card_path"] = render_card(c, gameweek, league_label)
             except Exception as e:
                 log.warning("Card render failed for %s: %s", c.get("player_name"), e)
 
@@ -392,8 +500,12 @@ def _post_with_card(text: str, card_path: str | None):
 def main():
     ap = argparse.ArgumentParser(description="Yara Studio local orchestrator")
     ap.add_argument("--league", default="Premier League")
+    ap.add_argument("--competition", default=None,
+                    help="Competition id (premier-league | la-liga | world-cup-2026). "
+                         "Overrides --league when set.")
     ap.add_argument("--top-n", type=int, default=30)
-    ap.add_argument("--gameweek", type=int, default=None)
+    ap.add_argument("--gameweek", type=int, default=None,
+                    help="Gameweek (club) or matchday number (World Cup).")
     ap.add_argument("--no-journalist", action="store_true", help="skip OpenAI scoring")
     ap.add_argument("--no-render", action="store_true", help="skip card rendering")
     ap.add_argument("--post", action="store_true", help="post the top candidate")
@@ -408,6 +520,7 @@ def main():
         do_render=not args.no_render,
         post=args.post,
         dry_run=args.dry_run,
+        competition_id=args.competition,
     )
 
 

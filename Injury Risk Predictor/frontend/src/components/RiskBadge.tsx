@@ -1,9 +1,9 @@
 'use client';
 
-import { AlertTriangle, CheckCircle, AlertCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle, AlertCircle, HelpCircle } from 'lucide-react';
 
 interface RiskBadgeProps {
-  level: 'High' | 'Medium' | 'Low';
+  level: 'High' | 'Medium' | 'Low' | 'Unknown';
   probability?: number;
   size?: 'sm' | 'md' | 'lg';
   darkMode?: boolean;
@@ -25,6 +25,13 @@ export function RiskBadge({ level, probability, size = 'md', darkMode = true }: 
       dark: 'bg-[#86efac]/20 text-[#86efac] border-[#86efac]/30',
       light: 'bg-emerald-100 text-emerald-700 border-emerald-200',
       icon: CheckCircle,
+    },
+    Unknown: {
+      // No model signal (e.g. WC squad player whose club league we don't track).
+      // Neutral styling so it doesn't look like a Low-risk verdict.
+      dark: 'bg-slate-500/20 text-slate-300 border-slate-500/30',
+      light: 'bg-slate-100 text-slate-600 border-slate-200',
+      icon: HelpCircle,
     },
   };
 

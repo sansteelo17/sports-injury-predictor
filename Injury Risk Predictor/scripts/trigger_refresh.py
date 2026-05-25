@@ -14,6 +14,7 @@ import urllib.request
 def main() -> int:
     base_url = (os.environ.get("REFRESH_TRIGGER_URL") or "").strip()
     mode = (os.environ.get("REFRESH_MODE") or "api").strip().lower()
+    target = (os.environ.get("REFRESH_TARGET") or "club").strip().lower()
     token = (os.environ.get("REFRESH_CRON_TOKEN") or "").strip()
 
     if not base_url:
@@ -22,8 +23,11 @@ def main() -> int:
     if mode not in {"api", "fbref"}:
         print("REFRESH_MODE must be 'api' or 'fbref'")
         return 1
+    if target not in {"club", "international"}:
+        print("REFRESH_TARGET must be 'club' or 'international'")
+        return 1
 
-    url = f"{base_url}?{urllib.parse.urlencode({'mode': mode})}"
+    url = f"{base_url}?{urllib.parse.urlencode({'mode': mode, 'target': target})}"
     req = urllib.request.Request(url, method="POST")
     req.add_header("Accept", "application/json")
     if token:

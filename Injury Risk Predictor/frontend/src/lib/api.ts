@@ -1,4 +1,4 @@
-import { PlayerSummary, PlayerRisk, TeamOverview, FPLInsights, LeagueStanding, StandingsSummary, WhatIfProjection, FPLSquadSync, LaLigaStandingRow } from '@/types/api';
+import { PlayerSummary, PlayerRisk, TeamOverview, FPLInsights, LeagueStanding, StandingsSummary, WhatIfProjection, FPLSquadSync, LaLigaStandingRow, Competition } from '@/types/api';
 
 const rawApiUrl = process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/+$/, '');
 const API_BASE = rawApiUrl
@@ -32,10 +32,11 @@ async function fetchAPI<T>(endpoint: string): Promise<T> {
   return res.json();
 }
 
-export async function getPlayers(team?: string, riskLevel?: string): Promise<PlayerSummary[]> {
+export async function getPlayers(team?: string, riskLevel?: string, competition?: string): Promise<PlayerSummary[]> {
   const params = new URLSearchParams();
   if (team) params.append('team', team);
   if (riskLevel) params.append('risk_level', riskLevel);
+  if (competition) params.append('competition', competition);
 
   const query = params.toString() ? `?${params.toString()}` : '';
   return fetchAPI<PlayerSummary[]>(`/players${query}`);
@@ -45,9 +46,21 @@ export async function getPlayerRisk(playerName: string): Promise<PlayerRisk> {
   return fetchAPI<PlayerRisk>(`/players/${encodeURIComponent(playerName)}/risk`);
 }
 
-export async function getTeams(league?: string): Promise<string[]> {
-  const q = league ? `?league=${encodeURIComponent(league)}` : '';
-  return fetchAPI<string[]>(`/teams${q}`);
+export async function getTeams(leagueOrCompetition?: string, competition?: string): Promise<string[]> {
+  // Prefer the new ``competition`` param. The single-arg form keeps the legacy
+  // ``?league=`` callers working (the backend resolves either).
+  const params = new URLSearchParams();
+  if (competition) {
+    params.append('competition', competition);
+  } else if (leagueOrCompetition) {
+    params.append('league', leagueOrCompetition);
+  }
+  const query = params.toString() ? `?${params.toString()}` : '';
+  return fetchAPI<string[]>(`/teams${query}`);
+}
+
+export async function getCompetitions(): Promise<Competition[]> {
+  return fetchAPI<Competition[]>('/competitions');
 }
 
 export async function getTeamOverview(teamName: string): Promise<TeamOverview> {

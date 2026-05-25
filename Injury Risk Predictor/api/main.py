@@ -79,6 +79,17 @@ from src.data_loaders.api_client import (
     PREMIER_LEAGUE_ID,
 )
 from src.data_loaders.odds_api import OddsClient, get_clean_sheet_insight
+from src.competitions import (
+    Competition,
+    PREMIER_LEAGUE,
+    LA_LIGA,
+    WORLD_CUP_2026,
+    all_competitions,
+    for_id as competition_for_id,
+    from_league_label as competition_from_league_label,
+    resolve as resolve_competition,
+)
+from src.data_loaders.international_squads import WORLD_CUP_2026_SEASON
 # Archetype clustering imports are done lazily inside assign_hybrid_archetypes()
 # to avoid importing all of src.models (which pulls in lightgbm, xgboost, etc.)
 
@@ -323,11 +334,22 @@ def _require_refresh_token(x_refresh_token: Optional[str]) -> None:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
 
-def _run_refresh_job(mode: str = "api") -> None:
-    """Run refresh_predictions and hot-reload artifacts into API memory."""
+def _run_refresh_job(mode: str = "api", target: str = "club") -> None:
+    """Run refresh_predictions and hot-reload artifacts into API memory.
+
+    target="club" runs scripts/refresh_predictions.py and refreshes the EPL/La
+    Liga inference_df. target="international" runs build_international_predictions.py
+    and refreshes the World Cup 2026 pickle. Both reload the API cache after.
+    """
     global artifacts, inference_df
 
-    cmd = [sys.executable, "scripts/refresh_predictions.py", "--mode", mode]
+    if target == "international":
+        cmd = [
+            sys.executable, "scripts/build_international_predictions.py",
+            "--enrich-caps",
+        ]
+    else:
+        cmd = [sys.executable, "scripts/refresh_predictions.py", "--mode", mode]
     output = ""
     exit_code = 1
     status = "failed"
@@ -346,7 +368,7 @@ def _run_refresh_job(mode: str = "api") -> None:
             [part for part in [(proc.stdout or "").strip(), (proc.stderr or "").strip()] if part]
         )
         if exit_code != 0:
-            error = f"refresh_predictions exited with code {exit_code}"
+            error = f"{cmd[1]} exited with code {exit_code}"
         else:
             # Reload all runtime artifacts/caches the same way startup does.
             asyncio.run(load_models())
@@ -720,6 +742,50 @@ def _load_models_blocking():
                     print(f"Enriched injury history: {has_data}/{len(inference_df)} players have injury records")
         except Exception as e:
             print(f"WARNING: Failed to enrich injury history: {e}")
+
+    # Derive competition_id from the legacy free-text ``league`` column so the
+    # rest of the API can route on Competition without a pkl migration. Rows
+    # whose league is missing/unrecognised default to Premier League (the only
+    # safe legacy assumption).
+    if inference_df is not None:
+        try:
+            if "league" in inference_df.columns:
+                inference_df["competition_id"] = inference_df["league"].apply(
+                    lambda v: (competition_from_league_label(v) or PREMIER_LEAGUE).id
+                )
+            else:
+                inference_df["competition_id"] = PREMIER_LEAGUE.id
+            counts = inference_df["competition_id"].value_counts().to_dict()
+            print(f"Competition routing (club): {counts}")
+        except Exception as comp_err:
+            logger.warning(f"Failed to derive competition_id: {comp_err}")
+
+    # Merge international (World Cup) predictions, if a build artifact exists.
+    # The international rows carry ``competition_id="world-cup-2026"`` already
+    # (set by scripts/build_international_predictions.py) and reuse the club
+    # ensemble_prob — risk normalises within the tournament cohort downstream.
+    if inference_df is not None:
+        try:
+            import pandas as pd
+            intl_path = os.path.join(
+                PROJECT_ROOT, "data", "processed",
+                f"inference_international_world_cup_{WORLD_CUP_2026_SEASON}.pkl",
+            )
+            if os.path.exists(intl_path):
+                intl_df = pd.read_pickle(intl_path)
+                if not intl_df.empty:
+                    # Align columns: any missing club column gets NaN, any extra
+                    # international column is preserved on concat.
+                    inference_df = pd.concat([inference_df, intl_df], ignore_index=True, sort=False)
+                    print(
+                        f"Merged international predictions: +{len(intl_df)} "
+                        f"rows ({intl_df['team'].nunique()} national teams)"
+                    )
+            else:
+                logger.info("No international predictions pickle at %s — run "
+                            "scripts/build_international_predictions.py", intl_path)
+        except Exception as intl_err:
+            logger.warning(f"Failed to merge international predictions: {intl_err}")
 
     # Apply isotonic probability calibrator if available.
     # Calibration is applied by refresh_predictions.py before saving inference_df.pkl.
@@ -1143,6 +1209,8 @@ class PlayerSummary(BaseModel):
     is_currently_injured: bool = False
     injury_news: Optional[str] = None
     chance_of_playing: Optional[int] = None
+    competition_id: str = PREMIER_LEAGUE.id
+    competition_type: str = PREMIER_LEAGUE.type
 
 
 class RiskFactors(BaseModel):
@@ -1316,6 +1384,37 @@ class InjuryRecord(BaseModel):
     games_missed: int = 0
 
 
+class InternationalContext(BaseModel):
+    """Tournament-specific context for an international (national-team) player.
+
+    Replaces the FPL block on club rows. Populated only when
+    ``competition_type == "international"``.
+    """
+    country: str
+    club_team: Optional[str] = None
+    club_league: Optional[str] = None
+    caps: Optional[int] = None
+    intl_goals: Optional[int] = None
+    tournament_role: str = "Squad"  # "Starter" | "Squad" | "Unknown" — derived from caps + minutes
+    group: Optional[str] = None
+    next_opponent: Optional[str] = None
+    next_is_home: Optional[bool] = None
+    next_utc_date: Optional[str] = None
+    next_stage: Optional[str] = None
+    has_risk_features: bool = False
+    summary: str = ""
+    # Club-season stats projected onto the WC card so the international card
+    # has actual numbers, not just identity. Only populated for risk-featured
+    # rows (where we joined a club inference row).
+    club_minutes: Optional[int] = None
+    club_appearances: Optional[int] = None
+    club_goals: Optional[int] = None
+    club_assists: Optional[int] = None
+    club_goals_per_90: Optional[float] = None
+    club_assists_per_90: Optional[float] = None
+    fifa_rating: Optional[int] = None
+
+
 class PlayerRisk(BaseModel):
     name: str
     team: str
@@ -1356,6 +1455,9 @@ class PlayerRisk(BaseModel):
     fpl_points_projection: Optional[FPLPointsProjection] = None
     risk_comparison: Optional[RiskComparison] = None
     player_importance: Optional[PlayerImportance] = None
+    competition_id: str = PREMIER_LEAGUE.id
+    competition_type: str = PREMIER_LEAGUE.type
+    international_context: Optional[InternationalContext] = None
 
 
 class WhatIfProjection(BaseModel):
@@ -1379,6 +1481,43 @@ class TeamOverview(BaseModel):
     players: List[PlayerSummary]
     team_badge_url: Optional[str] = None
     next_fixture: Optional[Dict[str, Any]] = None
+    competition_id: str = PREMIER_LEAGUE.id
+    competition_type: str = PREMIER_LEAGUE.type
+
+
+class CompetitionCapabilitiesDTO(BaseModel):
+    has_fpl: bool
+    has_club_acwr_thresholds: bool
+    has_team_badges: bool
+    standings_kind: str
+    risk_calibration_cohort: str
+    acwr_spike_threshold: float
+    fixture_label: str
+
+
+class CompetitionDTO(BaseModel):
+    id: str
+    name: str
+    type: str
+    capabilities: CompetitionCapabilitiesDTO
+
+
+def _competition_to_dto(comp: Competition) -> CompetitionDTO:
+    caps = comp.capabilities
+    return CompetitionDTO(
+        id=comp.id,
+        name=comp.name,
+        type=comp.type,
+        capabilities=CompetitionCapabilitiesDTO(
+            has_fpl=caps.has_fpl,
+            has_club_acwr_thresholds=caps.has_club_acwr_thresholds,
+            has_team_badges=caps.has_team_badges,
+            standings_kind=caps.standings_kind,
+            risk_calibration_cohort=caps.risk_calibration_cohort,
+            acwr_spike_threshold=caps.acwr_spike_threshold,
+            fixture_label=caps.fixture_label,
+        ),
+    )
 
 
 class FPLSquadPlayer(PlayerSummary):
@@ -1569,21 +1708,52 @@ def _safe_league_label(league: Any) -> Optional[str]:
     return text
 
 
-def _league_bucket(league: Any) -> str:
-    """Coarse league bucket for routing (FPL vs La Liga) and percentile grouping.
+_BUCKET_BY_COMP_ID = {
+    PREMIER_LEAGUE.id: "premier_league",
+    LA_LIGA.id: "la_liga",
+    WORLD_CUP_2026.id: "world_cup_2026",
+}
 
-    Refresh / retrain pipelines sometimes emit variants (spacing, casing, Spanish labels).
+
+def _competition_from_row(row: Any) -> Competition:
+    """Resolve a Competition from a player/team row.
+
+    Prefers an explicit ``competition_id`` column (the post-refactor source of
+    truth); falls back to the legacy free-text ``league`` column for
+    backward-compatible reads of existing ``inference_df.pkl``.
     """
-    text = (_safe_league_label(league) or "").strip().lower()
-    if not text:
-        return "unknown"
-    if text in ("premier league", "epl", "english premier league"):
-        return "premier_league"
-    if "la liga" in text:
-        return "la_liga"
-    if text in ("laliga", "primera división", "primera division"):
-        return "la_liga"
-    return "other"
+    comp_id = None
+    league = None
+    if row is None:
+        return PREMIER_LEAGUE
+    if isinstance(row, dict):
+        comp_id = row.get("competition_id")
+        league = row.get("league")
+    elif hasattr(row, "get"):
+        try:
+            comp_id = row.get("competition_id")
+        except Exception:
+            comp_id = None
+        try:
+            league = row.get("league")
+        except Exception:
+            league = None
+    return resolve_competition(comp_id, league)
+
+
+def _league_bucket(league: Any) -> str:
+    """Coarse bucket for routing and percentile grouping.
+
+    Delegates to the competition registry so PL, La Liga, and (future) WC all
+    derive from the same source of truth. The string values are kept stable
+    for existing callers that compare against ``"premier_league"`` /
+    ``"la_liga"``.
+    """
+    comp = competition_from_league_label(league)
+    if comp is None:
+        text = (_safe_league_label(league) or "").strip().lower()
+        return "unknown" if not text else "other"
+    return _BUCKET_BY_COMP_ID.get(comp.id, "other")
 
 
 def _is_la_liga_league(league: Any) -> bool:
@@ -1608,17 +1778,23 @@ def _league_prob_series(league: Optional[Any] = None):
         return None
     inf_id = id(inference_df)
     league_key = _safe_league_label(league)
-    bucket = _league_bucket(league_key) if league_key else None
-
-    if bucket in ("premier_league", "la_liga") and "league" in inference_df.columns:
-        ck = (inf_id, "bucket", bucket)
+    # Resolve to a known competition so each competition gets its own
+    # cohort (PL, La Liga, WC). Tournaments must not be ranked against the
+    # club season — workload distributions differ enough that a combined
+    # ranking would put every WC player in the bottom half.
+    comp = competition_from_league_label(league_key) if league_key else None
+    if comp is not None and "competition_id" in inference_df.columns:
+        ck = (inf_id, "comp", comp.id)
         if ck not in _league_prob_series_cache:
-            norms = inference_df["league"].map(_league_bucket)
-            sub = inference_df[norms == bucket]
+            sub = inference_df[inference_df["competition_id"] == comp.id]
+            # Drop baseline (identity-only) WC rows from the cohort — their
+            # NaN ensemble_prob would skew percentiles and make every real
+            # WC player look like top 50%.
+            sub = sub[sub["ensemble_prob"].notna()]
             if len(sub) >= 10:
                 _league_prob_series_cache[ck] = sub["ensemble_prob"]
             else:
-                _league_prob_series_cache[ck] = inference_df["ensemble_prob"]
+                _league_prob_series_cache[ck] = inference_df["ensemble_prob"].dropna()
         return _league_prob_series_cache[ck]
 
     if league_key and "league" in inference_df.columns:
@@ -1656,9 +1832,12 @@ def get_risk_level(prob: float, row=None) -> str:
     try:
         p = float(prob)
         if math.isnan(p) or math.isinf(p):
-            p = 0.5
+            # Baseline (identity-only) WC rows carry NaN ensemble_prob — the
+            # model has no signal for non-tracked-league players. Surface the
+            # state honestly instead of inventing a percentile.
+            return "Unknown"
     except (TypeError, ValueError):
-        p = 0.5
+        return "Unknown"
     series = _league_prob_series(league_key)
     if series is not None:
         percentile = float((series <= p).mean())
@@ -1682,13 +1861,14 @@ def normalize_risk_score(prob: float, league: Optional[Any] = None) -> float:
 
     Normalises within the player's own league so La Liga and EPL each span 0-100.
     50 = average risk for that league, 90 = top 10% in that league.
+    Returns 0.0 for baseline (NaN-prob) WC rows — surfaced as "Unknown" upstream.
     """
     try:
         p = float(prob)
         if math.isnan(p) or math.isinf(p):
-            p = 0.5
+            return 0.0
     except (TypeError, ValueError):
-        p = 0.5
+        return 0.0
     league_key = _safe_league_label(league)
     series = _league_prob_series(league_key)
     if series is not None:
@@ -4680,8 +4860,288 @@ def calculate_risk_comparison(player_name: str, team: str, position: str, prob: 
     }
 
 
+def _build_international_context(row: Dict[str, Any]) -> InternationalContext:
+    """Build the tournament-context block for an international row."""
+    country = str(row.get("team") or "Unknown")
+    caps = _safe_int(row.get("caps"), 0) if row.get("caps") is not None else None
+    intl_goals = _safe_int(row.get("intl_goals"), 0) if row.get("intl_goals") is not None else None
+    # Tournament role: starter if double-digit caps + meaningful club minutes,
+    # otherwise squad. Unknown when we have no signal either way.
+    minutes = _safe_int(row.get("minutes_played"), 0)
+    if caps is None and minutes == 0:
+        role = "Unknown"
+    elif (caps or 0) >= 10 and minutes >= 1500:
+        role = "Starter"
+    elif (caps or 0) >= 30:
+        role = "Starter"
+    else:
+        role = "Squad"
+
+    name = row.get("name") or "Player"
+    sentences: List[str] = []
+    if caps is not None:
+        cap_word = "cap" if caps == 1 else "caps"
+        if intl_goals:
+            goal_word = "goal" if intl_goals == 1 else "goals"
+            sentences.append(f"{caps} {cap_word} and {intl_goals} {goal_word} for {country}.")
+        else:
+            sentences.append(f"{caps} {cap_word} for {country}.")
+    if row.get("club_team"):
+        sentences.append(f"Plays his club football at {row['club_team']}.")
+    group_label = str(row["national_group"]).replace("_", " ").title() if row.get("national_group") else None
+    nxt = row.get("next_intl_opponent")
+    if nxt and group_label:
+        venue = "at home" if row.get("next_intl_is_home") else "away"
+        sentences.append(f"In {group_label}, next up {venue} against {nxt}.")
+    elif group_label:
+        sentences.append(f"In {group_label}.")
+    elif nxt:
+        venue = "at home" if row.get("next_intl_is_home") else "away"
+        sentences.append(f"Next up {venue} against {nxt}.")
+    summary = " ".join(sentences).strip()
+    if not summary:
+        summary = f"{name} is in the {country} squad."
+
+    has_risk = bool(row.get("has_risk_features"))
+    # Club-season stats: only meaningful when we joined a club inference row.
+    def _opt_int(v):
+        if v is None: return None
+        try:
+            f = float(v)
+            return int(f) if not (math.isnan(f) or math.isinf(f)) else None
+        except (TypeError, ValueError):
+            return None
+
+    def _opt_float(v):
+        if v is None: return None
+        try:
+            f = float(v)
+            return round(f, 2) if not (math.isnan(f) or math.isinf(f)) else None
+        except (TypeError, ValueError):
+            return None
+
+    return InternationalContext(
+        country=country,
+        club_team=row.get("club_team"),
+        club_league=row.get("club_league"),
+        caps=caps,
+        intl_goals=intl_goals,
+        tournament_role=role,
+        group=row.get("national_group"),
+        next_opponent=row.get("next_intl_opponent"),
+        next_is_home=bool(row.get("next_intl_is_home")) if row.get("next_intl_is_home") is not None else None,
+        next_utc_date=row.get("next_intl_utc_date"),
+        next_stage=row.get("next_intl_stage"),
+        has_risk_features=has_risk,
+        summary=summary,
+        club_minutes=_opt_int(row.get("minutes_played")) if has_risk else None,
+        club_appearances=_opt_int(row.get("appearances")) if has_risk else None,
+        club_goals=_opt_int(row.get("goals")) if has_risk else None,
+        club_assists=_opt_int(row.get("assists")) if has_risk else None,
+        club_goals_per_90=_opt_float(row.get("goals_per_90")) if has_risk else None,
+        club_assists_per_90=_opt_float(row.get("assists_per_90")) if has_risk else None,
+        fifa_rating=_opt_int(row.get("fifa_rating")) if has_risk else None,
+    )
+
+
+def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
+    """PlayerRisk for an international row.
+
+    Skips every FPL-flavoured fetch (FPL stats, odds, scoring/clean-sheet
+    markets, Yara market response) — those are club-only and would either
+    410 or surface nonsense for a national-team player. For risk-featured
+    rows (joined to a club inference row) we still surface the model's
+    prob/factors; for baseline rows we surface identity + tournament
+    context only.
+    """
+    comp = _competition_from_row(row)
+    prob = _safe_float(row.get("ensemble_prob"), float("nan"))
+    has_risk = row.get("has_risk_features") and not (isinstance(prob, float) and math.isnan(prob))
+    player_name = row.get("name") or "Unknown"
+    country = row.get("team") or "Unknown"
+
+    enriched_row = dict(row)
+    enriched_row["previous_injuries"] = _safe_int(
+        row.get("player_injury_count", row.get("previous_injuries", 0))
+    )
+    risk_pct = round(normalize_risk_score(prob, row.get("league"))) if has_risk else 0
+    enriched_row["risk_score_pct"] = risk_pct
+
+    risk_level = get_risk_level(prob, enriched_row)  # returns "Unknown" for NaN
+    risk_probability = round(normalize_risk_score(prob, row.get("league")) / 100, 3) if has_risk else 0.0
+
+    # Story: reuse generate_player_story for risk-featured rows (workload +
+    # injury history still apply), prepend tournament context. Baseline rows
+    # get a short identity line. When the LLM provider is configured
+    # (NARRATIVE_LLM_PROVIDER=openai_compatible + OPENAI_API_KEY), the
+    # template above becomes the *fallback* and OpenAI rewrites it in Yara's
+    # voice grounded in the same context chunks.
+    intl_ctx = _build_international_context(row)
+    if has_risk:
+        base_story = generate_player_story(enriched_row)
+        template_story = f"{intl_ctx.summary} {base_story}".strip()
+    else:
+        template_story = intl_ctx.summary
+
+    # International narrative LLM: ``INTL_NARRATIVE_LLM_PROVIDER`` overrides
+    # the global ``NARRATIVE_LLM_PROVIDER`` for WC stories only — lets the
+    # club narrative path stay on Ollama (free) while WC routes through
+    # OpenAI (paid, better quality on the more diverse international context).
+    intl_provider = (os.environ.get("INTL_NARRATIVE_LLM_PROVIDER") or "").strip().lower()
+    use_llm = intl_provider in {"ollama", "openai_compatible"} or llm_enabled()
+    if use_llm:
+        chunks: List[Dict[str, Any]] = [
+            {"kind": "identity", "text": f"{player_name} plays for {country}."},
+            {"kind": "international", "text": intl_ctx.summary},
+        ]
+        if intl_ctx.club_team:
+            club_bits = [f"Club: {intl_ctx.club_team}"]
+            if intl_ctx.club_minutes is not None:
+                club_bits.append(f"{intl_ctx.club_minutes} club minutes")
+            if intl_ctx.club_goals is not None or intl_ctx.club_assists is not None:
+                club_bits.append(
+                    f"{intl_ctx.club_goals or 0} goals, {intl_ctx.club_assists or 0} assists this season"
+                )
+            chunks.append({"kind": "club", "text": ". ".join(club_bits) + "."})
+        if has_risk:
+            chunks.append({
+                "kind": "risk",
+                "text": (
+                    f"Two-week injury risk model output: {prob:.0%}. "
+                    f"ACWR {_safe_float(row.get('acwr'), 0.0):.2f}, "
+                    f"{_safe_int(row.get('previous_injuries', 0))} prior injuries, "
+                    f"{_safe_int(row.get('days_since_last_injury'), 365)} days since last injury."
+                ),
+            })
+        chunks.append({
+            "kind": "calibration",
+            "text": (
+                "Tournament workload is denser than a club season, so risk thresholds "
+                "should be read as approximate when applied to World Cup minutes."
+            ),
+        })
+
+        # If INTL provider override is set, swap env for the duration of the
+        # call so generate_grounded_narrative routes to it without altering
+        # the global config. Restore in finally.
+        prev_provider = os.environ.get("NARRATIVE_LLM_PROVIDER")
+        if intl_provider:
+            os.environ["NARRATIVE_LLM_PROVIDER"] = intl_provider
+        try:
+            story = generate_grounded_narrative(
+                task=(
+                    "Write a short, conversational scouting note about this World Cup player "
+                    "in Yara's voice. Lead with tournament context (country, caps, group, next "
+                    "fixture). If injury risk data is available, integrate it as a sentence. "
+                    "Do not use FPL language. Do not use em dashes."
+                ),
+                player_name=player_name,
+                context_chunks=chunks,
+                fallback_text=template_story,
+                require_open_question=False,
+            )
+        except Exception as llm_err:
+            logger.warning("LLM intl narrative failed for %s: %s", player_name, llm_err)
+            story = template_story
+        finally:
+            if intl_provider:
+                if prev_provider is None:
+                    os.environ.pop("NARRATIVE_LLM_PROVIDER", None)
+                else:
+                    os.environ["NARRATIVE_LLM_PROVIDER"] = prev_provider
+    else:
+        story = template_story
+
+    prev_injuries = _safe_int(enriched_row.get("previous_injuries", 0))
+    total_days = _safe_int(row.get("total_days_lost", 0))
+    days_since = _safe_int(row.get("days_since_last_injury", 365), 365)
+
+    next_fixture = None
+    if row.get("next_intl_opponent"):
+        next_fixture = NextFixture(
+            opponent=str(row["next_intl_opponent"]),
+            is_home=bool(row.get("next_intl_is_home")),
+            match_time=row.get("next_intl_utc_date"),
+            clean_sheet_odds=None,
+            win_probability=None,
+            fixture_insight=(
+                f"{row.get('next_intl_stage', 'Group stage').replace('_', ' ').title()}"
+                if row.get("next_intl_stage") else None
+            ),
+            difficulty=None,
+        )
+
+    return PlayerRisk(
+        name=player_name,
+        team=country,
+        position=row.get("position") or "Unknown",
+        league=row.get("league") or comp.name,
+        shirt_number=_safe_int(row.get("shirt_number"), 0) or None,
+        age=_safe_int(row.get("age"), 0),
+        risk_level=risk_level,
+        risk_probability=risk_probability,
+        archetype=row.get("archetype", "Unknown") if has_risk else "Unknown",
+        archetype_description=(
+            ARCHETYPE_DESCRIPTIONS.get(row.get("archetype", ""), "Unknown injury profile")
+            if has_risk else "No club-side data tracked for this player."
+        ),
+        factors=RiskFactors(
+            previous_injuries=prev_injuries,
+            total_days_lost=total_days,
+            days_since_last_injury=days_since,
+            avg_days_per_injury=round(total_days / prev_injuries, 1) if prev_injuries > 0 else 0,
+        ),
+        model_predictions=ModelPredictions(
+            ensemble=round(prob, 3) if has_risk else 0.0,
+            lgb=round(_safe_float(row.get("lgb_prob"), prob if has_risk else 0.0), 3),
+            xgb=round(_safe_float(row.get("xgb_prob"), prob if has_risk else 0.0), 3),
+            catboost=round(_safe_float(row.get("catboost_prob"), prob if has_risk else 0.0), 3),
+        ),
+        recommendations=get_personalized_insights(enriched_row) if has_risk else [
+            "No club-side workload data is tracked for this player's league."
+        ],
+        story=story,
+        implied_odds=calculate_implied_odds(prob if has_risk else 0.5),
+        last_injury_date=str(row.get("last_injury_date")) if row.get("last_injury_date") else None,
+        # FPL-flavoured fields stay None for international rows.
+        fpl_insight=None,
+        scoring_odds=None,
+        fpl_value=None,
+        clean_sheet_odds=None,
+        next_fixture=next_fixture,
+        bookmaker_consensus=None,
+        yara_response=None,
+        lab_notes=None,
+        risk_percentile=None,
+        player_image_url=get_player_image_url(player_name, row.get("club_team") or country),
+        team_badge_url=None,  # National-team flags come in Phase 4.
+        is_currently_injured=False,
+        injury_news=None,
+        chance_of_playing=None,
+        upcoming_fixtures=None,
+        injury_records=[],
+        acwr=round(_safe_float(row.get("acwr"), 0.0), 2) if has_risk else None,
+        acute_load=round(_safe_float(row.get("acute_load"), 0.0), 1) if has_risk else None,
+        chronic_load=round(_safe_float(row.get("chronic_load"), 0.0), 1) if has_risk else None,
+        spike_flag=bool(row.get("spike_flag", 0)) if has_risk else None,
+        fpl_points_projection=None,
+        risk_comparison=None,
+        player_importance=None,
+        competition_id=comp.id,
+        competition_type=comp.type,
+        international_context=intl_ctx,
+    )
+
+
 def player_row_to_risk(row) -> PlayerRisk:
     """Convert a DataFrame row to a PlayerRisk response."""
+    # International rows go through a separate builder — they don't have FPL
+    # stats, scorer odds, or bookmaker markets, and trying to fetch them
+    # would either 404 or return nonsense (an FPL search for "Cristiano
+    # Ronaldo" matches a different person).
+    if _competition_from_row(row).type == "international":
+        return _international_row_to_risk(dict(row))
+
     prob = _safe_float(row.get("ensemble_prob", row.get("calibrated_prob", 0.5)), 0.5)
     # Use player_injury_count (has data) instead of previous_injuries (all zeros in inference_df)
     prev_injuries = _safe_int(row.get("player_injury_count", row.get("previous_injuries", 0)))
@@ -5008,6 +5468,9 @@ def player_row_to_risk(row) -> PlayerRisk:
         fpl_points_projection=FPLPointsProjection(**fpl_points_data) if fpl_points_data else None,
         risk_comparison=RiskComparison(**risk_comparison_data) if risk_comparison_data else None,
         player_importance=PlayerImportance(**importance_data) if importance_data else None,
+        competition_id=_competition_from_row(enriched_row).id,
+        competition_type=_competition_from_row(enriched_row).type,
+        international_context=None,
     )
 
 
@@ -5105,13 +5568,22 @@ async def health_check():
 @app.post("/api/admin/refresh-predictions")
 def trigger_prediction_refresh(
     mode: str = "api",
+    target: str = "club",
     x_refresh_token: Optional[str] = Header(default=None, alias="X-Refresh-Token"),
 ):
-    """Trigger background prediction refresh and hot-reload artifacts."""
+    """Trigger background prediction refresh and hot-reload artifacts.
+
+    target="club" (default) refreshes EPL/La Liga via refresh_predictions.py.
+    target="international" rebuilds the World Cup pickle via
+    build_international_predictions.py --enrich-caps.
+    """
     _require_refresh_token(x_refresh_token)
     mode_key = (mode or "api").strip().lower()
+    target_key = (target or "club").strip().lower()
     if mode_key not in {"api", "fbref"}:
         raise HTTPException(status_code=400, detail="mode must be 'api' or 'fbref'")
+    if target_key not in {"club", "international"}:
+        raise HTTPException(status_code=400, detail="target must be 'club' or 'international'")
 
     with refresh_state_lock:
         if refresh_state["running"]:
@@ -5124,13 +5596,14 @@ def trigger_prediction_refresh(
         refresh_state["last_status"] = "running"
         refresh_state["last_started_at"] = _utc_now_iso()
         refresh_state["last_mode"] = mode_key
+        refresh_state["last_target"] = target_key
         refresh_state["last_error"] = None
         refresh_state["last_exit_code"] = None
         refresh_state["last_log_tail"] = ""
 
     worker = threading.Thread(
         target=_run_refresh_job,
-        args=(mode_key,),
+        args=(mode_key, target_key),
         daemon=True,
         name="refresh-predictions-worker",
     )
@@ -5140,6 +5613,7 @@ def trigger_prediction_refresh(
         "status": "started",
         "message": "Prediction refresh started",
         "mode": mode_key,
+        "target": target_key,
         "started_at": refresh_state["last_started_at"],
     }
 
@@ -5177,13 +5651,22 @@ def odds_status(team: str = "Arsenal", player: str = "Bukayo Saka"):
 
 
 @app.get("/api/players", response_model=List[PlayerSummary])
-def list_players(team: Optional[str] = None, risk_level: Optional[str] = None):
-    """List all players with summary info."""
+def list_players(
+    team: Optional[str] = None,
+    risk_level: Optional[str] = None,
+    competition: Optional[str] = None,
+):
+    """List all players with summary info, optionally scoped to a competition."""
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
     df = inference_df.copy()
 
+    if competition and "competition_id" in df.columns:
+        comp = competition_for_id(competition)
+        if comp is None:
+            raise HTTPException(status_code=400, detail=f"Unknown competition '{competition}'")
+        df = df[df["competition_id"] == comp.id]
     if team:
         df = df[df["team"].str.lower() == team.lower()]
     if risk_level:
@@ -5223,6 +5706,8 @@ def list_players(team: Optional[str] = None, risk_level: Optional[str] = None):
             is_currently_injured=fpl_status in ("i", "u"),
             injury_news=fpl.get("news") or None if fpl else None,
             chance_of_playing=fpl.get("chance_of_playing") if fpl else None,
+            competition_id=_competition_from_row(row).id,
+            competition_type=_competition_from_row(row).type,
         ))
 
     return players
@@ -5433,12 +5918,24 @@ def get_player_risk(player_name: str):
 
 
 @app.get("/api/teams", response_model=List[str])
-def list_teams(league: Optional[str] = None):
-    """List all available teams, optionally filtered by league."""
+def list_teams(league: Optional[str] = None, competition: Optional[str] = None):
+    """List all available teams, scoped to a competition (preferred) or legacy league label."""
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
-    if league and "league" in inference_df.columns:
+    # ``competition`` (new) wins over ``league`` (legacy) when both are passed.
+    comp: Optional[Competition] = None
+    if competition:
+        comp = competition_for_id(competition)
+        if comp is None:
+            raise HTTPException(status_code=400, detail=f"Unknown competition '{competition}'")
+    elif league:
+        comp = competition_from_league_label(league)
+
+    if comp is not None and "competition_id" in inference_df.columns:
+        league_df = inference_df[inference_df["competition_id"] == comp.id]
+        our_teams = league_df["team"].unique().tolist()
+    elif league and "league" in inference_df.columns:
         target = league.lower().strip()
         norm = inference_df["league"].map(lambda v: (_safe_league_label(v) or "").lower())
         league_df = inference_df[norm == target]
@@ -5446,8 +5943,9 @@ def list_teams(league: Optional[str] = None):
     else:
         our_teams = inference_df["team"].unique().tolist()
 
-    # For non-EPL leagues, skip PL standings validation — return all teams directly
-    is_epl = not league or league.lower() in ("premier league", "epl")
+    # PL standings filter only applies to Premier League. Everyone else returns directly.
+    is_epl = comp is None and (not league or league.lower() in ("premier league", "epl"))
+    is_epl = is_epl or (comp is not None and comp.id == PREMIER_LEAGUE.id)
     if not is_epl:
         return sorted(our_teams)
 
@@ -5573,6 +6071,8 @@ def get_team_overview(team_name: str):
             is_currently_injured=fpl_status in ("i", "u"),
             injury_news=fpl.get("news") or None if fpl else None,
             chance_of_playing=fpl.get("chance_of_playing") if fpl else None,
+            competition_id=_competition_from_row(row).id,
+            competition_type=_competition_from_row(row).type,
         ))
 
     # Get next fixture for the team
@@ -5595,6 +6095,7 @@ def get_team_overview(team_name: str):
     except (TypeError, ValueError):
         avg_prob = 0.5
 
+    team_comp = _competition_from_row(team_df.iloc[0].to_dict())
     response = TeamOverview(
         team=actual_team,
         total_players=len(team_df),
@@ -5605,6 +6106,8 @@ def get_team_overview(team_name: str):
         players=players,
         team_badge_url=get_team_badge_url(actual_team),
         next_fixture=next_fixture_data,
+        competition_id=team_comp.id,
+        competition_type=team_comp.type,
     )
     logger.info(
         "Team overview for %s (%s) built in %.2fs",
@@ -5619,6 +6122,17 @@ def get_team_overview(team_name: str):
 def list_archetypes():
     """List all player archetypes with descriptions."""
     return ARCHETYPE_DESCRIPTIONS
+
+
+@app.get("/api/competitions", response_model=List[CompetitionDTO])
+def list_competitions():
+    """List all known competitions with their capability matrix.
+
+    The frontend routes on these capabilities (``has_fpl``, ``standings_kind``)
+    rather than hardcoding league names, so a new competition only needs an
+    entry in the registry to light up.
+    """
+    return [_competition_to_dto(c) for c in all_competitions()]
 
 
 @app.get("/api/fpl/insights", response_model=FPLInsights)
@@ -5887,6 +6401,8 @@ def get_fpl_squad(team_id: int):
                 is_currently_injured=fpl_status in ("i", "u"),
                 injury_news=fpl.get("news") or None if fpl else None,
                 chance_of_playing=fpl.get("chance_of_playing") if fpl else None,
+                competition_id=_competition_from_row(row).id,
+                competition_type=_competition_from_row(row).type,
                 is_captain=pick.get("is_captain", False),
                 is_vice_captain=pick.get("is_vice_captain", False),
                 squad_position=pick.get("position", 0),

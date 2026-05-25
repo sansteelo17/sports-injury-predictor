@@ -4,6 +4,8 @@
 
 ML system predicting injury risk for football (soccer) players using ensemble models (CatBoost, LightGBM, XGBoost). Features a Next.js frontend, FastAPI backend, narrative generation with LLM enrichment, and FPL (Fantasy Premier League) insights. Educational/portfolio project, not for medical use.
 
+**Competition is a first-class dimension.** Both club leagues (Premier League, La Liga) and international tournaments (FIFA World Cup 2026) are Competitions. They share the same models, payloads, and frontend, but route through `src/competitions/registry.py` capabilities (`has_fpl`, `standings_kind`, `acwr_spike_threshold`, `fixture_label`, `risk_calibration_cohort`) instead of per-league branching.
+
 ## Data Sources
 
 - `data/raw/All_Players_1992-2025.csv` - Historical player stats (49MB, 92K+ rows)
@@ -12,6 +14,9 @@ ML system predicting injury risk for football (soccer) players using ensemble mo
 - **FPL API** (live) - Current season stats, fixtures, gameweek data via `src/data_loaders/fpl_api.py`
 - **football-data.org API** - Match results, squad data via `src/data_loaders/api_client.py`
 - **Odds API** - Bookmaker odds via `src/data_loaders/odds_api.py`
+- **football-data.org WC endpoint** - WC 2026 squads, fixtures, groups via `src/data_loaders/international_squads.py` (rate-limited, 6.5s between calls on free tier)
+- **Wikipedia per-country squad pages** - National-team caps + intl_goals via `src/data_loaders/national_team_caps.py` (24h disk cache, 0.5s rate limit)
+- `data/processed/inference_international_world_cup_2026.pkl` - WC inference frame (1203 rows: 237 risk-featured + 966 baseline identity-only)
 
 ## Architecture
 
@@ -62,6 +67,16 @@ src/
 scripts/
 └── refresh_predictions.py     # Rebuild inference_df from live data
 ```
+
+## Competitions (multi-comp model)
+
+- Registry: `src/competitions/registry.py`. Three competitions live: `premier-league`, `la-liga`, `world-cup-2026`.
+- Backend resolves via `for_id(slug)`. `api/main.py` reads `competition_id` off `inference_df` rows; international rows take an early branch in `player_row_to_risk` (`_international_row_to_risk`) that skips ALL FPL/odds/scoring/Yara-betting fetches and instead populates `international_context`.
+- `_league_prob_series` cohorts by `competition_id` and drops NaN `ensemble_prob` so baseline rows don't bias percentile thresholds.
+- Risk-level percentile cutoffs (0.80 high / 0.40 low) are computed per cohort, so WC has its own calibration that's independent of the club leagues.
+- WC `acwr_spike_threshold = 2.0` (wider than club's 1.8) because international windows are longer between matches.
+- **Baseline rows** (WC players without club data): `has_risk_features=False`, `ensemble_prob=NaN`. They surface as `risk_level="Unknown"` and the frontend renders them with neutral slate styling + a "Baseline tournament row" notice. Do NOT fabricate a risk score for them.
+- **International narrative LLM override**: set `INTL_NARRATIVE_LLM_PROVIDER=openai_compatible` in `.env` to route ONLY WC narratives through OpenAI while keeping club narratives on the global provider (e.g. free Ollama). The override is implemented as a scoped env swap inside `_international_row_to_risk`.
 
 ## Key Thresholds (keep in sync across files)
 
@@ -125,6 +140,13 @@ cd "Injury Risk Predictor/frontend" && npm run dev
 
 # Refresh predictions from live data
 python scripts/refresh_predictions.py --mode api
+
+# Rebuild World Cup 2026 inference frame (squads + fixtures + caps enrichment)
+python scripts/build_international_predictions.py --reuse-cache --enrich-caps
+
+# Yara Studio (content pipeline) — per competition
+python yara_studio.py --competition premier-league --top-n 30 --dry-run
+python yara_studio.py --competition world-cup-2026 --no-journalist --dry-run
 ```
 
 ## Model Pipeline
