@@ -135,8 +135,7 @@ export default function Home() {
     setLoading(true);
     setError(null);
 
-    const isLaLiga = league === "La Liga";
-    const skipFplStandings = isLaLiga || isInternational;
+    const skipFplStandings = league === "La Liga" || league === "FIFA World Cup 2026";
 
     const standingsPromise = skipFplStandings
       ? Promise.resolve(null)

@@ -638,7 +638,7 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
 
               {!intl.has_risk_features && (
                 <div className={`text-xs ${darkMode ? "text-gray-500" : "text-gray-500"} italic`}>
-                  No club-side workload data is tracked for this player's league.
+                  No club-side workload data is tracked for this player&apos;s league.
                 </div>
               )}
             </div>
