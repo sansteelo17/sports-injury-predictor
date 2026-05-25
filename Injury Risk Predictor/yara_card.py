@@ -114,11 +114,15 @@ def build_risk_card(data: dict, output_path: str) -> str:
     data keys (all optional except name/risk_pct):
       name, team, position, league, gw, risk_pct (0-100), archetype,
       club_color (#hex), cutout_path, signals [(label,value,delta,color_name)],
-      footer_url, strip_text
+      footer_url, strip_text, competition_type ("club"|"international"),
+      header_label (optional override for the top-right meta line),
+      risk_unavailable (bool — render 'NO SCORE' instead of the number)
     """
     club_rgb = _rgb(data.get("club_color", "#1F2937"))
     pct = float(data.get("risk_pct", 0))
     rcol = _risk_color(pct)
+    is_intl = data.get("competition_type") == "international"
+    risk_unavailable = bool(data.get("risk_unavailable"))
 
     canvas = Image.new("RGB", (W, H), BG)
     _left_panel(canvas, data, club_rgb)
@@ -150,8 +154,12 @@ def build_risk_card(data: dict, output_path: str) -> str:
         d.text((RX, y), t, font=_font("medium", 12), fill=c or TEXT3)
 
     y = 52
-    d.text((RX, y), "INJURY RISK CARD", font=_font("medium", 13), fill=ACCENT)
-    header = f"GW{data.get('gw', '')}  ·  {data.get('league', 'Premier League').upper()}"
+    title = "TOURNAMENT RISK CARD" if is_intl else "INJURY RISK CARD"
+    d.text((RX, y), title, font=_font("medium", 13), fill=ACCENT)
+    if data.get("header_label"):
+        header = f"{data['header_label']}  ·  {data.get('league', 'World Cup 2026').upper()}"
+    else:
+        header = f"GW{data.get('gw', '')}  ·  {data.get('league', 'Premier League').upper()}"
     d.text((W - RM - int(d.textlength(header, font=_font("medium", 13))), y),
            header, font=_font("medium", 13), fill=TEXT3)
     y += 26
@@ -187,21 +195,29 @@ def build_risk_card(data: dict, output_path: str) -> str:
     y += 18
     nf = _font("black", 110)
     pf = _font("extrabold", 54)
-    pct_str = str(int(round(pct)))
-    d.text((RX, y), pct_str, font=nf, fill=rcol)
-    nw = int(d.textlength(pct_str, font=nf))
-    nh = nf.getbbox(pct_str)[3]
-    ph = pf.getbbox("%")[3]
-    d.text((RX + nw + 8, y + nh - ph - 2), "%", font=pf, fill=rcol)
-    y += nh + 14
+    if risk_unavailable:
+        msg = "NO SCORE"
+        d.text((RX, y), msg, font=_font("black", 64), fill=TEXT3)
+        nh = _font("black", 64).getbbox(msg)[3]
+        d.text((RX, y + nh + 4), "Baseline tournament row — no club risk features",
+               font=_font("medium", 14), fill=TEXT2)
+        y += nh + 26
+    else:
+        pct_str = str(int(round(pct)))
+        d.text((RX, y), pct_str, font=nf, fill=rcol)
+        nw = int(d.textlength(pct_str, font=nf))
+        nh = nf.getbbox(pct_str)[3]
+        ph = pf.getbbox("%")[3]
+        d.text((RX + nw + 8, y + nh - ph - 2), "%", font=pf, fill=rcol)
+        y += nh + 14
 
-    bw = CW
-    fw = int(bw * min(1.0, max(0.0, pct / 100.0)))
-    d.rectangle([RX, y, RX + bw, y + 4], fill=DIVIDER)
-    d.rectangle([RX, y, RX + fw, y + 4], fill=rcol)
-    if fw > 5:
-        d.ellipse([RX + fw - 5, y - 3, RX + fw + 5, y + 7], fill=rcol)
-    y += 20
+        bw = CW
+        fw = int(bw * min(1.0, max(0.0, pct / 100.0)))
+        d.rectangle([RX, y, RX + bw, y + 4], fill=DIVIDER)
+        d.rectangle([RX, y, RX + fw, y + 4], fill=rcol)
+        if fw > 5:
+            d.ellipse([RX + fw - 5, y - 3, RX + fw + 5, y + 7], fill=rcol)
+        y += 20
 
     archetype = (data.get("archetype") or "").upper()
     if archetype:
