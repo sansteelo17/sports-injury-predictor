@@ -334,11 +334,22 @@ def _require_refresh_token(x_refresh_token: Optional[str]) -> None:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
 
-def _run_refresh_job(mode: str = "api") -> None:
-    """Run refresh_predictions and hot-reload artifacts into API memory."""
+def _run_refresh_job(mode: str = "api", target: str = "club") -> None:
+    """Run refresh_predictions and hot-reload artifacts into API memory.
+
+    target="club" runs scripts/refresh_predictions.py and refreshes the EPL/La
+    Liga inference_df. target="international" runs build_international_predictions.py
+    and refreshes the World Cup 2026 pickle. Both reload the API cache after.
+    """
     global artifacts, inference_df
 
-    cmd = [sys.executable, "scripts/refresh_predictions.py", "--mode", mode]
+    if target == "international":
+        cmd = [
+            sys.executable, "scripts/build_international_predictions.py",
+            "--enrich-caps",
+        ]
+    else:
+        cmd = [sys.executable, "scripts/refresh_predictions.py", "--mode", mode]
     output = ""
     exit_code = 1
     status = "failed"
@@ -357,7 +368,7 @@ def _run_refresh_job(mode: str = "api") -> None:
             [part for part in [(proc.stdout or "").strip(), (proc.stderr or "").strip()] if part]
         )
         if exit_code != 0:
-            error = f"refresh_predictions exited with code {exit_code}"
+            error = f"{cmd[1]} exited with code {exit_code}"
         else:
             # Reload all runtime artifacts/caches the same way startup does.
             asyncio.run(load_models())
@@ -5557,13 +5568,22 @@ async def health_check():
 @app.post("/api/admin/refresh-predictions")
 def trigger_prediction_refresh(
     mode: str = "api",
+    target: str = "club",
     x_refresh_token: Optional[str] = Header(default=None, alias="X-Refresh-Token"),
 ):
-    """Trigger background prediction refresh and hot-reload artifacts."""
+    """Trigger background prediction refresh and hot-reload artifacts.
+
+    target="club" (default) refreshes EPL/La Liga via refresh_predictions.py.
+    target="international" rebuilds the World Cup pickle via
+    build_international_predictions.py --enrich-caps.
+    """
     _require_refresh_token(x_refresh_token)
     mode_key = (mode or "api").strip().lower()
+    target_key = (target or "club").strip().lower()
     if mode_key not in {"api", "fbref"}:
         raise HTTPException(status_code=400, detail="mode must be 'api' or 'fbref'")
+    if target_key not in {"club", "international"}:
+        raise HTTPException(status_code=400, detail="target must be 'club' or 'international'")
 
     with refresh_state_lock:
         if refresh_state["running"]:
@@ -5576,13 +5596,14 @@ def trigger_prediction_refresh(
         refresh_state["last_status"] = "running"
         refresh_state["last_started_at"] = _utc_now_iso()
         refresh_state["last_mode"] = mode_key
+        refresh_state["last_target"] = target_key
         refresh_state["last_error"] = None
         refresh_state["last_exit_code"] = None
         refresh_state["last_log_tail"] = ""
 
     worker = threading.Thread(
         target=_run_refresh_job,
-        args=(mode_key,),
+        args=(mode_key, target_key),
         daemon=True,
         name="refresh-predictions-worker",
     )
@@ -5592,6 +5613,7 @@ def trigger_prediction_refresh(
         "status": "started",
         "message": "Prediction refresh started",
         "mode": mode_key,
+        "target": target_key,
         "started_at": refresh_state["last_started_at"],
     }
 
