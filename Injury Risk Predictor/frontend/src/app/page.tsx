@@ -58,9 +58,9 @@ export default function Home() {
   const [darkMode, setDarkMode] = useState(true);
   const [view, setView] = useState<"overview" | "lab">("overview");
 
-  // Competition (club leagues + international tournaments)
-  type CompetitionChoice = "Premier League" | "La Liga" | "FIFA World Cup 2026";
-  const [league, setLeague] = useState<CompetitionChoice>("Premier League");
+  // Competition (international tournament leads while the WC is active).
+  type CompetitionChoice = "FIFA World Cup 2026" | "Premier League" | "La Liga";
+  const [league, setLeague] = useState<CompetitionChoice>("FIFA World Cup 2026");
   const isInternational = league === "FIFA World Cup 2026";
   const competitionId =
     league === "Premier League"
@@ -313,7 +313,7 @@ export default function Home() {
         <div className="mb-4 sm:mb-6">
           {/* League switcher — always visible first */}
           <div className="flex gap-1 mb-3">
-            {(["Premier League", "La Liga", "FIFA World Cup 2026"] as const).map((l) => (
+            {(["FIFA World Cup 2026", "Premier League", "La Liga"] as const).map((l) => (
               <button
                 key={l}
                 onClick={() => handleLeagueSwitch(l)}

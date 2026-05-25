@@ -31,6 +31,10 @@ function getOrdinalSuffix(n: number): string {
   return s[(v - 20) % 10] || s[v] || s[0];
 }
 
+// La Liga is 38 matchdays. Once the leader has played them all, surface the
+// champion instead of the live race.
+const LA_LIGA_MATCHDAYS = 38;
+
 export function LaLigaStandingsCards({ standings, selectedTeam, darkMode = true }: LaLigaStandingsCardsProps) {
   if (!standings.length) return null;
 
@@ -39,6 +43,50 @@ export function LaLigaStandingsCards({ standings, selectedTeam, darkMode = true 
   const selected = selectedTeam
     ? standings.find((r) => r.name.toLowerCase() === selectedTeam.toLowerCase())
     : null;
+
+  const seasonOver = (leader.played || 0) >= LA_LIGA_MATCHDAYS;
+  if (seasonOver) {
+    const gap = second ? leader.points - second.points : 0;
+    return (
+      <div className={`rounded-xl p-4 sm:p-5 border ${
+        darkMode
+          ? 'bg-gradient-to-br from-amber-500/10 to-amber-500/0 border-amber-500/30'
+          : 'bg-gradient-to-br from-amber-50 to-white border-amber-200'
+      }`}>
+        <div className="flex items-center gap-2 mb-2">
+          <Trophy className="text-amber-500 flex-shrink-0" size={18} />
+          <span className={`text-xs font-medium uppercase tracking-wider ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>
+            La Liga — Season Concluded
+          </span>
+        </div>
+        <div className="flex items-center gap-2 mb-1">
+          <TeamBadge url={leader.badge_url} name={leader.name} />
+          <span className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+            {leader.name}
+          </span>
+          <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+            crowned champions
+          </span>
+        </div>
+        <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+          {leader.points} pts from {leader.played} matches
+          {gap > 0 && second && ` · ${gap} clear of ${second.name}`}
+        </div>
+        {selected && selected.name.toLowerCase() !== leader.name.toLowerCase() && (
+          <div className={`mt-3 pt-3 border-t flex items-center gap-2 text-xs ${
+            darkMode ? 'border-amber-500/20 text-gray-400' : 'border-amber-200 text-gray-600'
+          }`}>
+            <MapPin size={12} className={darkMode ? 'text-[#86efac]' : 'text-emerald-600'} />
+            {selected.name} finished{' '}
+            <span className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              {selected.position}{getOrdinalSuffix(selected.position)}
+            </span>{' '}
+            on {selected.points} pts
+          </div>
+        )}
+      </div>
+    );
+  }
 
   const cardBase = darkMode
     ? 'bg-[#141414] border border-[#1f1f1f]'

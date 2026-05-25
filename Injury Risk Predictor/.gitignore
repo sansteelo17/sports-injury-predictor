@@ -177,6 +177,13 @@ Thumbs.db
 
 # Data files (too large for git)
 data/
+# Whitelist the WC inference artifacts — built locally and shipped to
+# Render so the deployed API has WC data on cold boot (before the cron runs).
+!data/processed/
+!data/processed/inference_international_world_cup_2026.pkl
+!data/processed/world_cup_2026_fixtures.pkl
+!data/processed/world_cup_2026_squads.pkl
+!data/processed/world_cup_2026_groups.json
 
 # Scratchpad
 scratchpad/
