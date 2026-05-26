@@ -90,6 +90,7 @@ from src.competitions import (
     resolve as resolve_competition,
 )
 from src.data_loaders.international_squads import WORLD_CUP_2026_SEASON
+from src.competitions.country_flags import flag_url as wc_flag_url
 # Archetype clustering imports are done lazily inside assign_hybrid_archetypes()
 # to avoid importing all of src.models (which pulls in lightgbm, xgboost, etc.)
 
@@ -5114,7 +5115,7 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
         lab_notes=None,
         risk_percentile=None,
         player_image_url=get_player_image_url(player_name, row.get("club_team") or country),
-        team_badge_url=None,  # National-team flags come in Phase 4.
+        team_badge_url=wc_flag_url(country),
         is_currently_injured=False,
         injury_news=None,
         chance_of_playing=None,
@@ -6010,7 +6011,7 @@ def get_team_badges():
 
     badges = {}
     for team in teams:
-        url = la_liga_badges.get(team) or get_team_badge_url(team)
+        url = la_liga_badges.get(team) or get_team_badge_url(team) or wc_flag_url(team)
         if url:
             badges[team] = url
     return badges
@@ -6104,7 +6105,7 @@ def get_team_overview(team_name: str):
         low_risk_count=low_risk,
         avg_risk=round(normalize_risk_score(avg_prob, team_league) / 100, 3),
         players=players,
-        team_badge_url=get_team_badge_url(actual_team),
+        team_badge_url=get_team_badge_url(actual_team) or wc_flag_url(actual_team),
         next_fixture=next_fixture_data,
         competition_id=team_comp.id,
         competition_type=team_comp.type,
