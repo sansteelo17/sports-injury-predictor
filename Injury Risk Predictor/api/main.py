@@ -83,6 +83,7 @@ from src.competitions import (
     Competition,
     PREMIER_LEAGUE,
     LA_LIGA,
+    BUNDESLIGA,
     WORLD_CUP_2026,
     all_competitions,
     for_id as competition_for_id,
@@ -1712,6 +1713,7 @@ def _safe_league_label(league: Any) -> Optional[str]:
 _BUCKET_BY_COMP_ID = {
     PREMIER_LEAGUE.id: "premier_league",
     LA_LIGA.id: "la_liga",
+    BUNDESLIGA.id: "bundesliga",
     WORLD_CUP_2026.id: "world_cup_2026",
 }
 

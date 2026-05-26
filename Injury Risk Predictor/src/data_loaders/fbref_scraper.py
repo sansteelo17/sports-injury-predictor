@@ -43,6 +43,7 @@ logger = get_logger(__name__)
 BASE_URL = "https://fbref.com"
 PREMIER_LEAGUE_URL = f"{BASE_URL}/en/comps/9/Premier-League-Stats"
 LA_LIGA_URL = f"{BASE_URL}/en/comps/12/La-Liga-Stats"
+BUNDESLIGA_URL = f"{BASE_URL}/en/comps/20/Bundesliga-Stats"
 RATE_LIMIT_DELAY = 4.0  # seconds between requests (be respectful to FBref)
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
@@ -194,6 +195,10 @@ class FBrefScraper:
     def get_la_liga_teams(self) -> List[Dict]:
         """Get all current La Liga teams with their FBref IDs."""
         return self._get_league_teams(LA_LIGA_URL, "La Liga")
+
+    def get_bundesliga_teams(self) -> List[Dict]:
+        """Get all current Bundesliga teams with their FBref IDs."""
+        return self._get_league_teams(BUNDESLIGA_URL, "Bundesliga")
 
     def get_team_players(self, team_url: str) -> List[Dict]:
         """
@@ -423,6 +428,25 @@ class FBrefScraper:
         if "url" in df.columns:
             df = df.rename(columns={"url": "player_url"})
 
+        logger.info(f"Total: {len(df)} players from {len(teams)} teams")
+        return df
+
+    def get_all_bundesliga_players(self) -> pd.DataFrame:
+        """Get all current Bundesliga players with their team info.
+
+        Same row shape as the PL/La Liga equivalents — caller code already
+        expects: name, team, position, appearances, season_minutes.
+        """
+        teams = self.get_bundesliga_teams()
+        all_players = []
+        for team in teams:
+            logger.info(f"Fetching players for {team['name']}...")
+            for player in self.get_team_players(team["url"]):
+                player["team"] = team["name"]
+                all_players.append(player)
+        df = pd.DataFrame(all_players)
+        if "url" in df.columns:
+            df = df.rename(columns={"url": "player_url"})
         logger.info(f"Total: {len(df)} players from {len(teams)} teams")
         return df
 

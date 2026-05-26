@@ -788,6 +788,8 @@ def load_fbref_minutes_lookup(players_df, league_name: str = "La Liga"):
     try:
         if league_name == "La Liga":
             fbref_df = scraper.get_all_la_liga_players()
+        elif league_name == "Bundesliga":
+            fbref_df = scraper.get_all_bundesliga_players()
         else:
             fbref_df = scraper.get_all_premier_league_players()
     except Exception as e:
@@ -1674,9 +1676,77 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
         else:
             la_liga_rows = []
 
-    all_rows = epl_rows + la_liga_rows
+    # --- Bundesliga (+ UCL for Bundesliga teams) ---
+    # Same shape as La Liga: squads + matches + minutes lookup → workload rows.
+    # No public-stats fallback (Bundesliga has no equivalent of LaLiga official
+    # leaderboards), so we lean on FBref minutes + the prior artifact pickle.
+    print("\n   Fetching Bundesliga squads and matches...")
+    try:
+        bl_players = client.get_all_bundesliga_squads(season=season)
+        bl_matches = client.get_bundesliga_matches(season=season, status="FINISHED")
+        print(f"   Bundesliga: {len(bl_players)} players, {len(bl_matches)} Bundesliga matches")
+
+        # Add UCL matches for Bundesliga teams to capture European workload.
+        try:
+            cl_all = client.get_champions_league_matches(season=season)
+            if len(cl_all) > 0:
+                bl_teams = set(bl_matches["Home"].unique()) | set(bl_matches["Away"].unique())
+                cl_bl = cl_all[cl_all["Home"].isin(bl_teams) | cl_all["Away"].isin(bl_teams)].copy()
+                if len(cl_bl) > 0:
+                    if "league" not in cl_bl.columns:
+                        cl_bl["league"] = "Bundesliga"
+                    bl_matches = pd.concat([bl_matches, cl_bl], ignore_index=True)
+                    bl_matches = bl_matches.drop_duplicates(
+                        subset=["Date", "Home", "Away"], keep="first"
+                    )
+                    print(f"   + {len(cl_bl)} UCL matches → {len(bl_matches)} total Bundesliga workload matches")
+        except Exception as cl_e:
+            print(f"   Warning: UCL fetch failed ({cl_e}), using Bundesliga only")
+
+        fbref_minutes_lookup = load_fbref_minutes_lookup(bl_players, league_name="Bundesliga")
+        artifact_minutes_lookup = build_artifact_minutes_lookup(
+            bl_players, artifacts.get("inference_df"), "Bundesliga",
+        )
+
+        bl_minutes_lookup = {}
+        bl_minutes_lookup = _merge_minutes_lookup(bl_minutes_lookup, fbref_minutes_lookup)
+        bl_minutes_lookup = _merge_minutes_lookup(bl_minutes_lookup, artifact_minutes_lookup)
+
+        total_bl = len(bl_players)
+        fbref_bl_matches = _count_minutes_matches(bl_players, fbref_minutes_lookup)
+        artifact_bl_matches = _count_minutes_matches(bl_players, artifact_minutes_lookup)
+        final_bl_matches = _count_minutes_matches(bl_players, bl_minutes_lookup)
+        print(
+            f"   Bundesliga minutes coverage: {final_bl_matches}/{total_bl} players "
+            f"(FBref {fbref_bl_matches}, artifact {artifact_bl_matches})"
+        )
+
+        bl_rows = _build_player_rows(
+            bl_players,
+            bl_matches,
+            "Bundesliga",
+            snapshot_date,
+            bl_minutes_lookup,
+            {},   # no public output-signal lookup yet for Bundesliga
+            {},   # no next-fixture map yet; UCL/BL fixtures wired in a follow-up
+            ref_now=now,
+        )
+    except Exception as e:
+        print(f"   Warning: could not fetch Bundesliga data ({e}). Preserving existing predictions.")
+        existing_df = artifacts.get("inference_df")
+        if existing_df is not None and "league" in existing_df.columns:
+            existing_bl = existing_df[existing_df["league"] == "Bundesliga"]
+            bl_rows = existing_bl.to_dict("records") if not existing_bl.empty else []
+            print(f"   Preserved {len(bl_rows)} existing Bundesliga predictions.")
+        else:
+            bl_rows = []
+
+    all_rows = epl_rows + la_liga_rows + bl_rows
     snapshots_df = pd.DataFrame(all_rows)
-    print(f"\n   Total: {len(epl_rows)} EPL + {len(la_liga_rows)} La Liga = {len(snapshots_df)} players")
+    print(
+        f"\n   Total: {len(epl_rows)} EPL + {len(la_liga_rows)} La Liga + "
+        f"{len(bl_rows)} Bundesliga = {len(snapshots_df)} players"
+    )
     return snapshots_df
 
 
