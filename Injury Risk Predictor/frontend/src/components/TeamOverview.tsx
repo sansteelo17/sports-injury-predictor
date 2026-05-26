@@ -6,9 +6,10 @@ import { Users, AlertTriangle, AlertCircle, CheckCircle, TrendingUp, TrendingDow
 interface TeamOverviewProps {
   team: TeamOverviewType;
   darkMode?: boolean;
+  seasonOver?: boolean;
 }
 
-export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
+export function TeamOverview({ team, darkMode = true, seasonOver = false }: TeamOverviewProps) {
   const total = Math.max(team.total_players, 1);
   const highPct = Math.round((team.high_risk_count / total) * 100);
   const medPct = Math.round((team.medium_risk_count / total) * 100);
@@ -202,8 +203,8 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
         </span>
       </div>
 
-      {/* Next Fixture */}
-      {team.next_fixture && (
+      {/* Next Fixture (hidden once the season is over — there isn't one). */}
+      {team.next_fixture && !seasonOver && (
         <div className={`px-4 py-3 ${
           darkMode ? 'bg-cyan-500/10 border-t border-cyan-500/20' : 'bg-cyan-50 border-t border-cyan-200'
         }`}>
@@ -295,8 +296,10 @@ export function TeamOverview({ team, darkMode = true }: TeamOverviewProps) {
         </div>
       )}
 
-      {/* Market Insight Banner */}
-      {(showDynamicInsight || showNegativeInsight || showPositiveInsight) && (
+      {/* Market Insight Banner — only meaningful while a fixture is on the
+          horizon. Hide once the season has concluded so the panel doesn't
+          relitigate odds for a match that won't happen. */}
+      {!seasonOver && (showDynamicInsight || showNegativeInsight || showPositiveInsight) && (
         <div className={`px-4 py-3 ${sStyle.bg}`}>
           <div className="flex items-start gap-2">
             {insightSentiment === 'positive' ? (

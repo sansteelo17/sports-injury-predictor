@@ -27,6 +27,7 @@ import { toAbsoluteApiUrl } from "@/lib/api";
 interface PlayerCardProps {
   player: PlayerRisk;
   darkMode?: boolean;
+  seasonOver?: boolean;
 }
 
 const FPL_LOGO_SOURCES = [
@@ -51,7 +52,7 @@ function formatStoryLines(story: string): string[] {
     .filter(Boolean);
 }
 
-export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
+export function PlayerCard({ player, darkMode = true, seasonOver = false }: PlayerCardProps) {
   const archetypeColors: Record<string, { dark: string; light: string }> = {
     Durable: {
       dark: "bg-[#86efac]/20 border-[#86efac]/30 text-[#86efac]",
@@ -123,10 +124,17 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
     : "PL";
   const trackedLeagueLabel = player.league || "league";
 
+  // Fantasy projections and market odds only make sense while a fixture is
+  // upcoming. Drop both for club players once the season has ended; keep the
+  // Tournament tab for internationals since the WC itself is the live fixture.
   const tabs = [
     { id: "overview" as const, label: "Risk", icon: <BarChart3 size={14} /> },
-    { id: "fpl" as const, label: isInternational ? "Tournament" : "Projected", icon: <Star size={14} /> },
-    { id: "market" as const, label: "Odds", icon: <Coins size={14} /> },
+    ...(seasonOver && !isInternational
+      ? []
+      : [
+          { id: "fpl" as const, label: isInternational ? "Tournament" : "Projected", icon: <Star size={14} /> },
+          { id: "market" as const, label: "Odds", icon: <Coins size={14} /> },
+        ]),
   ];
   type TabId = (typeof tabs)[number]["id"];
   const [activeTab, setActiveTab] = useState<TabId>("overview");
@@ -243,6 +251,16 @@ export function PlayerCard({ player, darkMode = true }: PlayerCardProps) {
               >
                 Higher risk than {Math.round(player.risk_percentile * 100)}% of{" "}
                 {trackedLeagueLabel} players tracked
+              </p>
+            )}
+            {seasonOver && !isInternational && (
+              <p className={`text-xs mt-2 italic ${darkMode ? "text-gray-500" : "text-gray-500"}`}>
+                Final risk profile from the 2025-26 {trackedLeagueLabel} season — refreshes when preseason resumes.
+              </p>
+            )}
+            {isInternational && intl?.has_risk_features && intl.club_team && (
+              <p className={`text-xs mt-2 italic ${darkMode ? "text-gray-500" : "text-gray-500"}`}>
+                Risk derived from {intl.club_team}&apos;s end-of-season workload — international fixtures will refine this once the tournament kicks off.
               </p>
             )}
           </>
