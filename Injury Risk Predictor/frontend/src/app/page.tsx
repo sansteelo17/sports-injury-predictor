@@ -221,6 +221,17 @@ export default function Home() {
 
   const hasContent = mode === "browse" ? !!teamOverview : !!fplSquad;
 
+  // Club season is "over" once the leader has played all 38 matchdays. Market
+  // panels, fixture odds, and Fantasy tabs all become noise post-final-day —
+  // there's nothing to project and nothing to bet on. International is never
+  // "over" in this sense (the tournament is itself an active competition).
+  const CLUB_MATCHDAYS = 38;
+  const seasonOver = isInternational
+    ? false
+    : league === "La Liga"
+      ? (laLigaStandings[0]?.played ?? 0) >= CLUB_MATCHDAYS
+      : (standings?.leader?.played ?? 0) >= CLUB_MATCHDAYS;
+
   return (
     <div
       className={`app-shell min-h-screen flex flex-col ${bgClass} ${textClass} ${darkMode ? "matrix-theme" : "light-theme"}`}
@@ -429,7 +440,7 @@ export default function Home() {
                 />
               ) : teamOverview ? (
                 <>
-                  <TeamOverview team={teamOverview} darkMode={darkMode} />
+                  <TeamOverview team={teamOverview} darkMode={darkMode} seasonOver={seasonOver} />
 
                   {standings && league === "Premier League" && (
                     <StandingsCards
@@ -531,7 +542,7 @@ export default function Home() {
 
                   {/* Content */}
                   {view === "overview" ? (
-                    <PlayerCard player={playerRisk} darkMode={darkMode} />
+                    <PlayerCard player={playerRisk} darkMode={darkMode} seasonOver={seasonOver} />
                   ) : (
                     <LabNotes player={playerRisk} darkMode={darkMode} />
                   )}
