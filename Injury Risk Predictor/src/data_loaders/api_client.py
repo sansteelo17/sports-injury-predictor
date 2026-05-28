@@ -501,6 +501,7 @@ class FootballDataClient:
             "St. Pauli": "St. Pauli",
             "Heidenheim": "Heidenheim",
             "Hamburg": "Hamburg",
+            "HSV": "Hamburg",
             "Köln": "Koln",
             "Koln": "Koln",
             "Bochum": "Bochum",
