@@ -71,13 +71,24 @@ class FootballDataClient:
         self._last_request_time = time.time()
 
     def _get(self, endpoint: str, params: Optional[Dict] = None, _retries: int = 0) -> Dict:
-        """Make a GET request to the API."""
+        """Make a GET request to the API. Retries on 429 (rate limit) and
+        transient connection errors (RemoteDisconnected, ConnectionError) —
+        football-data.org's free tier sporadically drops the TCP connection
+        without a response, which previously failed whole league fetches."""
         self._rate_limit()
 
         url = f"{BASE_URL}/{endpoint}"
         logger.debug(f"GET {url} params={params}")
 
-        response = self.session.get(url, params=params)
+        try:
+            response = self.session.get(url, params=params, timeout=30)
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if _retries >= 4:
+                raise
+            wait = 5 * (2 ** _retries)  # 5s, 10s, 20s, 40s
+            logger.warning(f"Connection error ({e.__class__.__name__}) on {url}; retrying in {wait}s (attempt {_retries + 1}/4)")
+            time.sleep(wait)
+            return self._get(endpoint, params, _retries=_retries + 1)
 
         if response.status_code == 429:
             if _retries >= 3:
