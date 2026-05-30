@@ -5893,32 +5893,52 @@ def get_predictions(team: str):
 
 
 @app.get("/api/players/{player_name}/risk", response_model=PlayerRisk)
-def get_player_risk(player_name: str):
-    """Get detailed risk prediction for a specific player."""
+def get_player_risk(player_name: str, competition_id: Optional[str] = None):
+    """Get detailed risk prediction for a specific player.
+
+    If competition_id is provided (e.g., "world-cup-2026"), filter to that competition.
+    If not provided or no match found in that competition, fall back to any match.
+    """
     started = time.perf_counter()
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
-    cache_key = player_name.lower()
+    cache_key = f"{player_name.lower()}:{competition_id or 'any'}"
     now = datetime.utcnow()
     cached = _player_risk_cache.get(cache_key)
     if cached and cached["expires"] > now:
         logger.info(
-            "Player risk for %s served from cache in %.2fs",
+            "Player risk for %s (%s) served from cache in %.2fs",
             player_name,
+            competition_id or "any",
             time.perf_counter() - started,
         )
         return cached["data"]
 
+    # Try exact match first
     matches = inference_df[
         inference_df["name"].str.lower() == player_name.lower()
     ]
+
+    # Filter by competition if requested
+    if competition_id and not matches.empty:
+        comp_matches = matches[matches["competition_id"] == competition_id]
+        if not comp_matches.empty:
+            matches = comp_matches
+
+    # Fall back to substring match if no exact match
     if matches.empty:
         matches = inference_df[
             inference_df["name"].str.lower().str.contains(player_name.lower())
         ]
+        # Re-filter by competition for substring matches
+        if competition_id and not matches.empty:
+            comp_matches = matches[matches["competition_id"] == competition_id]
+            if not comp_matches.empty:
+                matches = comp_matches
+
     if matches.empty:
-        raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found")
+        raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found{f' in {competition_id}' if competition_id else ''}")
 
     row = matches.iloc[0].to_dict()
     result = player_row_to_risk(row)
