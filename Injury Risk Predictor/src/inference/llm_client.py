@@ -188,6 +188,42 @@ def _call_ollama(system_prompt: str, user_prompt: str, max_output_tokens: int = 
         return None
 
 
+def _post_openai_chat(
+    base_url: str,
+    api_key: str,
+    payload: Dict[str, Any],
+    timeout: float,
+):
+    """POST a chat completion, adapting to per-model parameter quirks.
+
+    Newer OpenAI models (GPT-5.x, o-series) reject ``max_tokens`` (want
+    ``max_completion_tokens``) and only allow the default ``temperature``. Rather
+    than hardcode a model-name allowlist, we send the broadly-compatible payload
+    first and, on a 400 that names an unsupported parameter, mutate that one
+    field and retry. Returns the final ``requests.Response`` (caller inspects it).
+    """
+    url = f"{base_url}/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = dict(payload)
+    for _ in range(3):
+        resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        if resp.status_code != 400:
+            return resp
+        low = (resp.text or "").lower()
+        mutated = False
+        if "max_tokens" in low and "max_completion_tokens" in low and "max_tokens" in payload:
+            payload["max_completion_tokens"] = payload.pop("max_tokens")
+            mutated = True
+        if "temperature" in low and "temperature" in payload and (
+            "unsupported" in low or "does not support" in low or "only the default" in low
+        ):
+            payload.pop("temperature", None)
+            mutated = True
+        if not mutated:
+            return resp
+    return resp
+
+
 def _call_openai_compatible(system_prompt: str, user_prompt: str, max_output_tokens: int = 300) -> Optional[str]:
     base_url = (os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") or "").rstrip("/")
     api_key = os.getenv("OPENAI_API_KEY", "")
@@ -200,13 +236,10 @@ def _call_openai_compatible(system_prompt: str, user_prompt: str, max_output_tok
         return None
 
     try:
-        resp = requests.post(
-            f"{base_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
+        resp = _post_openai_chat(
+            base_url,
+            api_key,
+            {
                 "model": model,
                 "temperature": temperature,
                 "max_tokens": max_output_tokens,
@@ -215,7 +248,7 @@ def _call_openai_compatible(system_prompt: str, user_prompt: str, max_output_tok
                     {"role": "user", "content": user_prompt},
                 ],
             },
-            timeout=timeout,
+            timeout,
         )
         if resp.status_code != 200:
             body_preview = (resp.text or "").strip().replace("\n", " ")[:400]
@@ -238,6 +271,68 @@ def _call_openai_compatible(system_prompt: str, user_prompt: str, max_output_tok
             e,
         )
         return None
+
+
+# ── Startup health check ──────────────────────────────────────────────────────
+
+def probe_openai_models() -> None:
+    """Probe the configured OpenAI model(s) at startup and log loudly on failure.
+
+    A wrong/unavailable ``OPENAI_MODEL`` or ``INTL_OPENAI_MODEL`` causes every
+    narrative call to 400 and silently fall back to deterministic template text.
+    This sends one tiny (max_tokens=1) completion per distinct configured model
+    so a bad id is surfaced at boot instead of hiding behind plausible-looking
+    fallback copy. Never raises — startup must not depend on the LLM.
+    """
+    provider = _provider()
+    intl_provider = (os.getenv("INTL_NARRATIVE_LLM_PROVIDER", "") or "").strip().lower()
+    if "openai_compatible" not in {provider, intl_provider}:
+        return
+
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        logger.warning("OPENAI_API_KEY not set; narratives will use deterministic template text.")
+        return
+
+    base_url = (os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") or "").rstrip("/")
+    club_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    intl_model = (os.getenv("INTL_OPENAI_MODEL", "") or "").strip()
+
+    # {model: which-narratives-it-serves} so the log says what breaks if it fails.
+    to_check: Dict[str, str] = {}
+    if provider == "openai_compatible":
+        to_check[club_model] = "club-league"
+    if intl_provider == "openai_compatible" and intl_model:
+        to_check[intl_model] = "World Cup"
+
+    for model, scope in to_check.items():
+        try:
+            resp = _post_openai_chat(
+                base_url,
+                api_key,
+                {
+                    "model": model,
+                    "temperature": float(os.getenv("NARRATIVE_LLM_TEMPERATURE", "0.6")),
+                    "max_tokens": 16,
+                    "messages": [{"role": "user", "content": "ping"}],
+                },
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                logger.info("LLM model OK: %s (%s narratives)", model, scope)
+            else:
+                body_preview = (resp.text or "").strip().replace("\n", " ")[:300]
+                logger.error(
+                    "LLM model FAILED: %s (%s narratives) returned HTTP %s. "
+                    "These narratives will SILENTLY fall back to template text. body=%s",
+                    model, scope, resp.status_code, body_preview,
+                )
+        except Exception as e:
+            logger.error(
+                "LLM model probe errored for %s (%s narratives): %s. "
+                "These narratives may fall back to template text.",
+                model, scope, e,
+            )
 
 
 # ── Public API ───────────────────────────────────────────────────────────────

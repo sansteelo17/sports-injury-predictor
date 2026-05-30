@@ -42,8 +42,12 @@ export async function getPlayers(team?: string, riskLevel?: string, competition?
   return fetchAPI<PlayerSummary[]>(`/players${query}`);
 }
 
-export async function getPlayerRisk(playerName: string): Promise<PlayerRisk> {
-  return fetchAPI<PlayerRisk>(`/players/${encodeURIComponent(playerName)}/risk`);
+export async function getPlayerRisk(playerName: string, competition?: string): Promise<PlayerRisk> {
+  // Pass the active competition so a World Cup player resolves to their
+  // national-team row rather than falling back to their club (PL) row, which
+  // would surface FPL stats and a club-league percentile.
+  const query = competition ? `?competition_id=${encodeURIComponent(competition)}` : "";
+  return fetchAPI<PlayerRisk>(`/players/${encodeURIComponent(playerName)}/risk${query}`);
 }
 
 export async function getTeams(leagueOrCompetition?: string, competition?: string): Promise<string[]> {
