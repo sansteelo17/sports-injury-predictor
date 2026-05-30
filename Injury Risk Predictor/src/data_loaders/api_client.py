@@ -28,6 +28,7 @@ BASE_URL = "https://api.football-data.org/v4"
 PREMIER_LEAGUE_ID = "PL"
 LA_LIGA_ID = "PD"
 BUNDESLIGA_ID = "BL1"
+SERIE_A_ID = "SA"
 CHAMPIONS_LEAGUE_ID = "CL"
 RATE_LIMIT_DELAY = 6.5  # seconds between requests (free tier: 10/min)
 
@@ -516,6 +517,166 @@ class FootballDataClient:
             "Köln": "Koln",
             "Koln": "Koln",
             "Bochum": "Bochum",
+        }
+        return name_map.get(name, name)
+
+    # ── Serie A ──────────────────────────────────────────────────────────────
+    # Mirrors the Bundesliga trio (matches / teams / squads). Serie A is 20 clubs
+    # and 38 matchdays, matching PL and La Liga structure.
+
+    def get_serie_a_matches(
+        self,
+        season: int = 2024,
+        status: str = "FINISHED",
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """Fetch Serie A matches for a season. Same row shape as PL/La Liga."""
+        params = {"season": season}
+        if status:
+            params["status"] = status
+        if date_from:
+            params["dateFrom"] = date_from
+        if date_to:
+            params["dateTo"] = date_to
+
+        data = self._get(f"competitions/{SERIE_A_ID}/matches", params)
+        matches = data.get("matches", [])
+        logger.info(f"Fetched {len(matches)} Serie A matches from API")
+
+        if not matches:
+            return pd.DataFrame()
+
+        rows = []
+        for m in matches:
+            if m["status"] != "FINISHED":
+                continue
+            home_goals = m["score"]["fullTime"]["home"]
+            away_goals = m["score"]["fullTime"]["away"]
+            if home_goals is None or away_goals is None:
+                continue
+            ftr = "H" if home_goals > away_goals else ("A" if away_goals > home_goals else "D")
+            rows.append({
+                "Season_End_Year": season + 1,
+                "Wk": m.get("matchday", 0),
+                "Date": m["utcDate"][:10],
+                "Home": self._normalize_serie_a_team(m["homeTeam"]["shortName"]),
+                "Away": self._normalize_serie_a_team(m["awayTeam"]["shortName"]),
+                "HomeGoals": home_goals,
+                "AwayGoals": away_goals,
+                "FTR": ftr,
+                "league": "Serie A",
+            })
+
+        df = pd.DataFrame(rows)
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date").reset_index(drop=True)
+        logger.info(f"Processed {len(df)} finished Serie A matches")
+        return df
+
+    def get_serie_a_teams(self, season: int = 2024) -> List[Dict]:
+        """Return list of Serie A team dicts for the given season."""
+        data = self._get(f"competitions/{SERIE_A_ID}/teams", {"season": season})
+        return data.get("teams", [])
+
+    def get_all_serie_a_squads(self, season: int = 2024) -> pd.DataFrame:
+        """Fetch squads for all Serie A teams."""
+        teams = self.get_serie_a_teams(season=season)
+
+        all_players = []
+        for team in teams:
+            logger.info(f"Fetching Serie A squad for {team['shortName']}...")
+            try:
+                team_data = self._get(f"teams/{team['id']}")
+                squad = team_data.get("squad", [])
+                team_name = self._normalize_serie_a_team(team["shortName"])
+
+                for p in squad:
+                    dob = p.get("dateOfBirth")
+                    age = None
+                    if dob:
+                        try:
+                            birth_date = datetime.strptime(dob, "%Y-%m-%d")
+                            age = (datetime.now() - birth_date).days // 365
+                        except ValueError:
+                            pass
+
+                    all_players.append({
+                        "name": p["name"],
+                        "team": team_name,
+                        "position": p.get("position", "Unknown"),
+                        "shirt_number": p.get("shirtNumber"),
+                        "age": age,
+                        "nationality": p.get("nationality"),
+                    })
+            except Exception as e:
+                logger.warning(f"Failed to fetch Serie A squad for {team.get('shortName', '?')}: {e}")
+
+        df = pd.DataFrame(all_players)
+        logger.info(f"Fetched {len(df)} Serie A players from {len(teams)} teams")
+        return df
+
+    def _normalize_serie_a_team(self, name: str) -> str:
+        """Normalise football-data.org Serie A names to a single canonical form.
+
+        Covers the 20 current top-flight clubs plus a few historical
+        promotion/relegation names so multi-season fetches still resolve.
+        """
+        name_map = {
+            # Full names
+            "Juventus FC": "Juventus",
+            "Juventus": "Juventus",
+            "AC Milan": "AC Milan",
+            "Milan": "AC Milan",
+            "Inter Milano": "Internazionale",
+            "Internazionale": "Internazionale",
+            "Inter": "Internazionale",
+            "Associazione Calcio Napoli": "Napoli",
+            "Napoli": "Napoli",
+            "SS Lazio": "Lazio",
+            "Lazio": "Lazio",
+            "AS Roma": "Roma",
+            "Roma": "Roma",
+            "Fiorentina": "Fiorentina",
+            "ACF Fiorentina": "Fiorentina",
+            "Atalanta BC": "Atalanta",
+            "Atalanta": "Atalanta",
+            "Torino FC": "Torino",
+            "Torino": "Torino",
+            "Bologna FC": "Bologna",
+            "Bologna": "Bologna",
+            "UC Sampdoria": "Sampdoria",
+            "Sampdoria": "Sampdoria",
+            "Cagliari Calcio": "Cagliari",
+            "Cagliari": "Cagliari",
+            "AS Monza": "Monza",
+            "Monza": "Monza",
+            "Hellas Verona": "Hellas Verona",
+            "Verona": "Hellas Verona",
+            "US Lecce": "Lecce",
+            "Lecce": "Lecce",
+            "US Sassuolo Calcio": "Sassuolo",
+            "Sassuolo": "Sassuolo",
+            "Benevento Calcio": "Benevento",
+            "Benevento": "Benevento",
+            "Frosinone Calcio": "Frosinone",
+            "Frosinone": "Frosinone",
+            "Perugia Calcio": "Perugia",
+            "Perugia": "Perugia",
+            "AS Pescara": "Pescara",
+            "Pescara": "Pescara",
+            "Brescia Calcio": "Brescia",
+            "Brescia": "Brescia",
+            "Parma Calcio": "Parma",
+            "Parma": "Parma",
+            "Como 1907": "Como",
+            "Como": "Como",
+            "Genoa CFC": "Genoa",
+            "Genoa": "Genoa",
+            "Udinese Calcio": "Udinese",
+            "Udinese": "Udinese",
+            "Venezia FC": "Venezia",
+            "Venezia": "Venezia",
         }
         return name_map.get(name, name)
 

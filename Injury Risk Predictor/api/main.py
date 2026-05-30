@@ -84,6 +84,7 @@ from src.competitions import (
     PREMIER_LEAGUE,
     LA_LIGA,
     BUNDESLIGA,
+    SERIE_A,
     WORLD_CUP_2026,
     all_competitions,
     for_id as competition_for_id,
@@ -1712,6 +1713,7 @@ _BUCKET_BY_COMP_ID = {
     PREMIER_LEAGUE.id: "premier_league",
     LA_LIGA.id: "la_liga",
     BUNDESLIGA.id: "bundesliga",
+    SERIE_A.id: "serie_a",
     WORLD_CUP_2026.id: "world_cup_2026",
 }
 
