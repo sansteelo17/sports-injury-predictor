@@ -308,32 +308,22 @@ export default function Home() {
               <strong
                 className={darkMode ? "text-[#86efac]" : "text-emerald-600"}
               >
-                Premier League, La Liga, Bundesliga, Serie A and FIFA World Cup 2026 are live
+                Yara is an AI analyst covering injury risk across EPL, La Liga, Bundesliga, Serie A, and World Cup 2026.
               </strong>{" "}
-              — more competitions coming.{" "}
-              <span className="hidden sm:inline">
-                Yara explains why a player might get injured in the next 2 weeks
-                by blending injury history, workload patterns, and fixture
-                context into risk narratives.
-              </span>
-              <span className="sm:hidden">
-                Yara explains why a player might get injured in the next 2 weeks
-                by blending injury history, workload patterns, and fixture
-                context into risk narratives.
-              </span>
+              She constructs injury narratives from historical data, workload patterns, and fixture context — modeling what happens when elite athletes face cumulative fatigue.
             </div>
           </div>
         </div>
 
         {/* League Switcher + Mode Toggle + Input */}
         <div className="mb-4 sm:mb-6">
-          {/* League switcher — always visible first */}
-          <div className="flex gap-1 mb-3">
+          {/* League switcher — scrollable on mobile, wrapping on desktop */}
+          <div className="flex gap-1 mb-3 overflow-x-auto sm:flex-wrap pb-2 sm:pb-0">
             {(["FIFA World Cup 2026", "Premier League", "La Liga", "Bundesliga", "Serie A"] as const).map((l) => (
               <button
                 key={l}
                 onClick={() => handleLeagueSwitch(l)}
-                className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${
+                className={`px-2 sm:px-3 py-1 rounded-lg text-xs sm:text-sm font-medium transition-colors whitespace-nowrap flex-shrink-0 sm:flex-shrink ${
                   league === l
                     ? darkMode
                       ? "bg-[#86efac]/15 text-[#86efac] border border-[#86efac]/30"
@@ -351,7 +341,7 @@ export default function Home() {
                       ? "🇩🇪 Bundesliga"
                       : l === "Serie A"
                         ? "🇮🇹 Serie A"
-                        : "🏆 World Cup 2026"}
+                        : "🏆 WC26"}
               </button>
             ))}
           </div>
