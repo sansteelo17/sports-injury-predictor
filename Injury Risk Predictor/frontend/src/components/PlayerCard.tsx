@@ -662,8 +662,8 @@ export function PlayerCard({ player, darkMode = true, seasonOver = false }: Play
             </div>
           )}
 
-          {/* Expected Points Hero Card */}
-          {player.fpl_points_projection && (
+          {/* Expected Points Hero Card — club leagues only, not international */}
+          {player.fpl_points_projection && !isInternational && (
             <div className={`px-4 sm:px-6 py-4 ${darkMode ? "border-b border-[#1f1f1f]" : "border-b border-gray-100"}`}>
               <div className={`rounded-xl p-4 ${
                 darkMode

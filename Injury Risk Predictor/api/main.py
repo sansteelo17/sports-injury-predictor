@@ -1821,16 +1821,21 @@ def _league_prob_series(league: Optional[Any] = None):
 def get_risk_level(prob: float, row=None) -> str:
     """Classify 2-week injury risk using within-league percentile ranking.
 
-    Ranks player relative to others in the same league:
+    Ranks player relative to others in the same competition:
     - High: top 20% (80th percentile and above)
     - Medium: 40th-80th percentile
     - Low: bottom 40%
+
+    For international rows, uses competition_id directly to avoid comparing WC players to club leagues.
     """
-    league_raw = (
-        row.get("league")
-        if isinstance(row, dict)
-        else (row.get("league") if row is not None and hasattr(row, "get") else None)
-    )
+    # For international rows, use competition_id if available to ensure WC players
+    # are ranked against WC players, not EPL players
+    comp_id = None
+    league_raw = None
+    if isinstance(row, dict):
+        comp_id = row.get("competition_id")
+        league_raw = row.get("league")
+
     league_key = _safe_league_label(league_raw)
     try:
         p = float(prob)
@@ -1841,7 +1846,14 @@ def get_risk_level(prob: float, row=None) -> str:
             return "Unknown"
     except (TypeError, ValueError):
         return "Unknown"
-    series = _league_prob_series(league_key)
+
+    # For international rows, use comp_id to look up the correct cohort directly
+    # This ensures WC players are ranked against WC players, not club league players
+    if comp_id and comp_id == "world-cup-2026":
+        from src.competitions import WORLD_CUP_2026
+        series = _league_prob_series(WORLD_CUP_2026)
+    else:
+        series = _league_prob_series(league_key)
     if series is not None:
         percentile = float((series <= p).mean())
         if percentile >= 0.80:
