@@ -132,7 +132,7 @@ export function PlayerCard({ player, darkMode = true, seasonOver = false }: Play
     ...(seasonOver && !isInternational
       ? []
       : [
-          { id: "fpl" as const, label: isInternational ? "Tournament" : "Projected", icon: <Star size={14} /> },
+          { id: "fpl" as const, label: isInternational ? "Tournament" : "Stats", icon: <Star size={14} /> },
           { id: "market" as const, label: "Odds", icon: <Coins size={14} /> },
         ]),
   ];
@@ -798,82 +798,22 @@ export function PlayerCard({ player, darkMode = true, seasonOver = false }: Play
             </div>
           )}
 
-          {/* Fantasy value assessment */}
-          {player.fpl_value && (
+          {/* Fantasy value assessment — hidden for now; focus is on injury risk, not gameplay projections */}
+          {false && player.fpl_value && (
             <div
               className={`px-4 sm:px-6 py-4 ${darkMode ? "border-b border-[#1f1f1f]" : "border-b border-gray-100"}`}
             >
-              <div
-                className={`rounded-lg p-4 ${
-                  player.fpl_value.tier === "Premium"
-                    ? darkMode
-                      ? "bg-yellow-500/10 border border-yellow-500/30"
-                      : "bg-yellow-50 border border-yellow-200"
-                    : player.fpl_value.tier === "Strong"
-                      ? darkMode
-                        ? "bg-green-500/10 border border-green-500/30"
-                        : "bg-green-50 border border-green-200"
-                      : player.fpl_value.tier === "Avoid"
-                        ? darkMode
-                          ? "bg-red-500/10 border border-red-500/30"
-                          : "bg-red-50 border border-red-200"
-                        : darkMode
-                          ? "bg-blue-500/10 border border-blue-500/30"
-                          : "bg-blue-50 border border-blue-200"
-                }`}
-              >
-                <div className="flex items-start gap-3">
-                  <Star
-                    className={`flex-shrink-0 ${
-                      player.fpl_value.tier === "Premium"
-                        ? "text-yellow-400"
-                        : player.fpl_value.tier === "Strong"
-                          ? "text-green-400"
-                          : player.fpl_value.tier === "Avoid"
-                            ? "text-red-400"
-                            : "text-blue-400"
-                    }`}
-                    size={20}
-                  />
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2 flex-wrap">
-                      <span
-                        className={`font-semibold ${darkMode ? "text-white" : "text-gray-900"}`}
-                      >
-                        Fantasy Value: {player.fpl_value.tier}
-                      </span>
-                      {!isLaLiga && player.fpl_value.price > 0 && (
-                        <span
-                          className={`text-xs px-2 py-0.5 rounded-full ${
-                            darkMode
-                              ? "bg-white/10 text-gray-300"
-                              : "bg-gray-200 text-gray-700"
-                          }`}
-                        >
-                          {player.fpl_value.price}m
-                        </span>
-                      )}
-                    </div>
-                    <p
-                      className={`text-sm leading-relaxed ${darkMode ? "text-gray-300" : "text-gray-600"}`}
-                    >
-                      {player.fpl_value.verdict}
-                    </p>
-                  </div>
-                </div>
-              </div>
+              {/* Commented out: shows tier/price/verdict */}
             </div>
           )}
 
-          {/* Empty state if no fantasy data */}
-          {!player.fpl_insight &&
-            !player.fpl_value &&
-            !player.fpl_points_projection && (
+          {/* Empty state if no narrative data */}
+          {!player.story && (
               <div className="px-4 sm:px-6 py-8 text-center">
                 <p
                   className={`text-sm ${darkMode ? "text-gray-500" : "text-gray-400"}`}
                 >
-                  No projection data available for this player.
+                  Narrative analysis coming soon for this player.
                 </p>
               </div>
             )}

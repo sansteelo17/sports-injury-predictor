@@ -1667,11 +1667,74 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
         else:
             bl_rows = []
 
-    all_rows = epl_rows + la_liga_rows + bl_rows
+    # --- Serie A (+ UCL for Serie A teams) ---
+    # Same shape as Bundesliga: squads + matches + minutes lookup → workload rows.
+    print("\n   Fetching Serie A squads and matches...")
+    try:
+        sa_players = client.get_all_serie_a_squads(season=season)
+        sa_matches = client.get_serie_a_matches(season=season, status="FINISHED")
+        print(f"   Serie A: {len(sa_players)} players, {len(sa_matches)} Serie A matches")
+
+        # Add UCL matches for Serie A teams to capture European workload.
+        try:
+            cl_all = client.get_champions_league_matches(season=season)
+            if len(cl_all) > 0:
+                sa_teams = set(sa_matches["Home"].unique()) | set(sa_matches["Away"].unique())
+                cl_sa = cl_all[cl_all["Home"].isin(sa_teams) | cl_all["Away"].isin(sa_teams)].copy()
+                if len(cl_sa) > 0:
+                    if "league" not in cl_sa.columns:
+                        cl_sa["league"] = "Serie A"
+                    sa_matches = pd.concat([sa_matches, cl_sa], ignore_index=True)
+                    sa_matches = sa_matches.drop_duplicates(
+                        subset=["Date", "Home", "Away"], keep="first"
+                    )
+                    print(f"   + {len(cl_sa)} UCL matches → {len(sa_matches)} total Serie A workload matches")
+        except Exception as cl_e:
+            print(f"   Warning: UCL fetch failed ({cl_e}), using Serie A only")
+
+        fbref_minutes_lookup = load_fbref_minutes_lookup(sa_players, league_name="Serie A")
+        artifact_minutes_lookup = build_artifact_minutes_lookup(
+            sa_players, artifacts.get("inference_df"), "Serie A",
+        )
+
+        sa_minutes_lookup = {}
+        sa_minutes_lookup = _merge_minutes_lookup(sa_minutes_lookup, fbref_minutes_lookup)
+        sa_minutes_lookup = _merge_minutes_lookup(sa_minutes_lookup, artifact_minutes_lookup)
+
+        total_sa = len(sa_players)
+        fbref_sa_matches = _count_minutes_matches(sa_players, fbref_minutes_lookup)
+        artifact_sa_matches = _count_minutes_matches(sa_players, artifact_minutes_lookup)
+        final_sa_matches = _count_minutes_matches(sa_players, sa_minutes_lookup)
+        print(
+            f"   Serie A minutes coverage: {final_sa_matches}/{total_sa} players "
+            f"(FBref {fbref_sa_matches}, artifact {artifact_sa_matches})"
+        )
+
+        sa_rows = _build_player_rows(
+            sa_players,
+            sa_matches,
+            "Serie A",
+            snapshot_date,
+            sa_minutes_lookup,
+            {},   # no public output-signal lookup yet for Serie A
+            {},   # no next-fixture map yet
+            ref_now=now,
+        )
+    except Exception as e:
+        print(f"   Warning: could not fetch Serie A data ({e}). Preserving existing predictions.")
+        existing_df = artifacts.get("inference_df")
+        if existing_df is not None and "league" in existing_df.columns:
+            existing_sa = existing_df[existing_df["league"] == "Serie A"]
+            sa_rows = existing_sa.to_dict("records") if not existing_sa.empty else []
+            print(f"   Preserved {len(sa_rows)} existing Serie A predictions.")
+        else:
+            sa_rows = []
+
+    all_rows = epl_rows + la_liga_rows + bl_rows + sa_rows
     snapshots_df = pd.DataFrame(all_rows)
     print(
         f"\n   Total: {len(epl_rows)} EPL + {len(la_liga_rows)} La Liga + "
-        f"{len(bl_rows)} Bundesliga = {len(snapshots_df)} players"
+        f"{len(bl_rows)} Bundesliga + {len(sa_rows)} Serie A = {len(snapshots_df)} players"
     )
     return snapshots_df
 
