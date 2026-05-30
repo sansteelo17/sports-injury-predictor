@@ -2,24 +2,17 @@
 """
 Refresh predictions with current data.
 
-Two modes available:
-1. FBref (default): Scrapes actual player match logs for accurate workload
-2. API: Uses football-data.org for team-level workload (less accurate, faster)
+Uses football-data.org for team-level workload (the only mode that still works
+end-to-end). Per-player season minutes/goals come from the soccerdata library
+(FBref data, accessed via undetected chromedriver) on top of the league-specific
+public-stats loaders.
 
 Usage:
-    # Default: FBref scraper (accurate, ~20 min for all players)
-    python scripts/refresh_predictions.py
-
-    # Quick mode: API-based (team-level, ~2 min)
-    python scripts/refresh_predictions.py --mode api --api-key YOUR_KEY
-
-    # Preview without saving
+    python scripts/refresh_predictions.py --api-key YOUR_KEY
     python scripts/refresh_predictions.py --dry-run
+    python scripts/refresh_predictions.py --transfermarkt   # also scrape TM injuries
 
-    # Specific players only
-    python scripts/refresh_predictions.py --players "Bukayo Saka,Martin Odegaard"
-
-Get API key at: https://www.football-data.org/client/register
+Get a free football-data.org API key at https://www.football-data.org/client/register.
 """
 
 import os
@@ -56,79 +49,8 @@ logger = get_logger(__name__)
 # FBREF MODE: Scrape actual player match logs
 # =============================================================================
 
-def refresh_with_fbref(artifacts, dry_run=False, player_filter=None):
-    """
-    Refresh predictions using FBref scraper for accurate player workload.
-
-    Args:
-        artifacts: Loaded model artifacts
-        dry_run: If True, don't save results
-        player_filter: Optional list of player names to filter to
-    """
-    from src.data_loaders.fbref_scraper import FBrefScraper, fetch_all_player_workloads
-
-    print("\n2. Scraping FBref for player match logs...")
-    print("   (This takes ~15-20 min for all players, uses 24h cache)")
-
-    scraper = FBrefScraper(cache_hours=24)
-
-    # Get all players
-    players_df = scraper.get_all_premier_league_players()
-    print(f"   Found {len(players_df)} players from {players_df['team'].nunique()} teams")
-
-    # Filter if requested
-    if player_filter:
-        players_df = players_df[players_df["name"].isin(player_filter)]
-        print(f"   Filtered to {len(players_df)} requested players")
-
-    # Calculate workload for each player
-    print("\n3. Calculating player workloads from match logs...")
-
-    workloads = []
-    total = len(players_df)
-
-    for i, (_, player) in enumerate(players_df.iterrows()):
-        if i % 50 == 0 and i > 0:
-            print(f"   Progress: {i}/{total} players ({i*100//total}%)")
-
-        try:
-            workload = scraper.get_player_workload(player["player_url"])
-            workload["name"] = player["name"]
-            workload["team"] = player["team"]
-            workload["position"] = player["position"]
-            workload["age"] = player["age"]
-            workload["player_team"] = player["team"]  # For compatibility
-            workloads.append(workload)
-        except Exception as e:
-            logger.warning(f"Failed for {player['name']}: {e}")
-            workloads.append({
-                "name": player["name"],
-                "team": player["team"],
-                "player_team": player["team"],
-                "position": player["position"],
-                "age": player["age"],
-                "acute_load": 0,
-                "chronic_load": 0,
-                "acwr": 1.0,
-                "monotony": 1.0,
-                "strain": 0,
-                "fatigue_index": 0,
-                "workload_slope": 0,
-                "spike_flag": 0,
-                "matches_last_7": 0,
-                "matches_last_14": 0,
-                "matches_last_30": 0,
-            })
-
-    snapshots_df = pd.DataFrame(workloads)
-    snapshots_df["snapshot_date"] = datetime.now().strftime("%Y-%m-%d")
-    snapshots_df["injury_datetime"] = datetime.now()
-
-    return snapshots_df
-
-
 # =============================================================================
-# API MODE: Team-level workload (less accurate but faster)
+# API MODE: Team-level workload (the only mode that still works)
 # =============================================================================
 
 # Normalize team names between squad API and match API
@@ -778,20 +700,26 @@ def load_api_football_minutes_lookup(players_df, season: int, league_name: str =
     return lookup
 
 
-def load_fbref_minutes_lookup(players_df, league_name: str = "La Liga"):
-    """Load season minutes from FBref team standard tables."""
-    from src.data_loaders.fbref_scraper import FBrefScraper
+def load_fbref_minutes_lookup(players_df, league_name: str = "La Liga", season_start_year: int | None = None):
+    """Load season minutes from FBref via the soccerdata library.
 
-    print(f"   Loading {league_name} minutes from FBref fallback...")
-    scraper = FBrefScraper(cache_hours=24)
+    soccerdata wraps FBref behind undetected chromedriver so we get past the
+    bot block our plain-requests scraper kept hitting (403). The shape of the
+    returned lookup is unchanged so the rest of the pipeline doesn't care.
 
-    try:
-        if league_name == "La Liga":
-            fbref_df = scraper.get_all_la_liga_players()
-        else:
-            fbref_df = scraper.get_all_premier_league_players()
-    except Exception as e:
-        logger.warning(f"Failed to load {league_name} minutes from FBref: {e}")
+    season_start_year defaults to the current season inferred from today's
+    date (Aug+ → this year, else previous).
+    """
+    from src.data_loaders.soccerdata_loader import load_player_season_stats
+
+    if season_start_year is None:
+        now = datetime.now()
+        season_start_year = now.year if now.month >= 8 else now.year - 1
+
+    print(f"   Loading {league_name} minutes via soccerdata (FBref, season {season_start_year})...")
+    fbref_df = load_player_season_stats(league_name, season_start_year)
+    if fbref_df is None or fbref_df.empty:
+        print(f"   soccerdata returned no rows for {league_name}; continuing with other sources.")
         return {}
 
     lookup = {}
@@ -806,13 +734,13 @@ def load_fbref_minutes_lookup(players_df, league_name: str = "La Liga"):
             {
                 "minutes_played": minutes_played,
                 "appearances": appearances,
-                "source": "fbref",
+                "source": "soccerdata-fbref",
             },
             team=str(row.get("team", "")).strip(),
         )
 
     matched = _count_minutes_matches(players_df, lookup)
-    print(f"   FBref matched {matched}/{len(players_df)} {league_name} players")
+    print(f"   soccerdata/FBref matched {matched}/{len(players_df)} {league_name} players")
     return lookup
 
 
@@ -1674,9 +1602,77 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
         else:
             la_liga_rows = []
 
-    all_rows = epl_rows + la_liga_rows
+    # --- Bundesliga (+ UCL for Bundesliga teams) ---
+    # Same shape as La Liga: squads + matches + minutes lookup → workload rows.
+    # No public-stats fallback (Bundesliga has no equivalent of LaLiga official
+    # leaderboards), so we lean on FBref minutes + the prior artifact pickle.
+    print("\n   Fetching Bundesliga squads and matches...")
+    try:
+        bl_players = client.get_all_bundesliga_squads(season=season)
+        bl_matches = client.get_bundesliga_matches(season=season, status="FINISHED")
+        print(f"   Bundesliga: {len(bl_players)} players, {len(bl_matches)} Bundesliga matches")
+
+        # Add UCL matches for Bundesliga teams to capture European workload.
+        try:
+            cl_all = client.get_champions_league_matches(season=season)
+            if len(cl_all) > 0:
+                bl_teams = set(bl_matches["Home"].unique()) | set(bl_matches["Away"].unique())
+                cl_bl = cl_all[cl_all["Home"].isin(bl_teams) | cl_all["Away"].isin(bl_teams)].copy()
+                if len(cl_bl) > 0:
+                    if "league" not in cl_bl.columns:
+                        cl_bl["league"] = "Bundesliga"
+                    bl_matches = pd.concat([bl_matches, cl_bl], ignore_index=True)
+                    bl_matches = bl_matches.drop_duplicates(
+                        subset=["Date", "Home", "Away"], keep="first"
+                    )
+                    print(f"   + {len(cl_bl)} UCL matches → {len(bl_matches)} total Bundesliga workload matches")
+        except Exception as cl_e:
+            print(f"   Warning: UCL fetch failed ({cl_e}), using Bundesliga only")
+
+        fbref_minutes_lookup = load_fbref_minutes_lookup(bl_players, league_name="Bundesliga")
+        artifact_minutes_lookup = build_artifact_minutes_lookup(
+            bl_players, artifacts.get("inference_df"), "Bundesliga",
+        )
+
+        bl_minutes_lookup = {}
+        bl_minutes_lookup = _merge_minutes_lookup(bl_minutes_lookup, fbref_minutes_lookup)
+        bl_minutes_lookup = _merge_minutes_lookup(bl_minutes_lookup, artifact_minutes_lookup)
+
+        total_bl = len(bl_players)
+        fbref_bl_matches = _count_minutes_matches(bl_players, fbref_minutes_lookup)
+        artifact_bl_matches = _count_minutes_matches(bl_players, artifact_minutes_lookup)
+        final_bl_matches = _count_minutes_matches(bl_players, bl_minutes_lookup)
+        print(
+            f"   Bundesliga minutes coverage: {final_bl_matches}/{total_bl} players "
+            f"(FBref {fbref_bl_matches}, artifact {artifact_bl_matches})"
+        )
+
+        bl_rows = _build_player_rows(
+            bl_players,
+            bl_matches,
+            "Bundesliga",
+            snapshot_date,
+            bl_minutes_lookup,
+            {},   # no public output-signal lookup yet for Bundesliga
+            {},   # no next-fixture map yet; UCL/BL fixtures wired in a follow-up
+            ref_now=now,
+        )
+    except Exception as e:
+        print(f"   Warning: could not fetch Bundesliga data ({e}). Preserving existing predictions.")
+        existing_df = artifacts.get("inference_df")
+        if existing_df is not None and "league" in existing_df.columns:
+            existing_bl = existing_df[existing_df["league"] == "Bundesliga"]
+            bl_rows = existing_bl.to_dict("records") if not existing_bl.empty else []
+            print(f"   Preserved {len(bl_rows)} existing Bundesliga predictions.")
+        else:
+            bl_rows = []
+
+    all_rows = epl_rows + la_liga_rows + bl_rows
     snapshots_df = pd.DataFrame(all_rows)
-    print(f"\n   Total: {len(epl_rows)} EPL + {len(la_liga_rows)} La Liga = {len(snapshots_df)} players")
+    print(
+        f"\n   Total: {len(epl_rows)} EPL + {len(la_liga_rows)} La Liga + "
+        f"{len(bl_rows)} Bundesliga = {len(snapshots_df)} players"
+    )
     return snapshots_df
 
 
@@ -2092,9 +2088,13 @@ def run_injury_scraper(max_age_days: int = 1):
 
 def main():
     parser = argparse.ArgumentParser(description="Refresh predictions with live data")
-    parser.add_argument("--mode", choices=["fbref", "api"], default="fbref",
-                        help="Data source: 'fbref' (accurate) or 'api' (fast)")
-    parser.add_argument("--api-key", help="Football-data.org API key (for api mode)")
+    # --mode kept for backwards-compat with the Render cron's CLI call but
+    # only ``api`` is supported. The legacy ``fbref`` per-player workload mode
+    # was removed when our custom FBref scraper started 403ing; FBref data
+    # now flows through ``soccerdata`` for season minutes only.
+    parser.add_argument("--mode", choices=["api"], default="api",
+                        help="Data source (only 'api' is supported now)")
+    parser.add_argument("--api-key", help="Football-data.org API key")
     parser.add_argument("--dry-run", action="store_true", help="Don't save, just preview")
     parser.add_argument("--players", help="Comma-separated player names to filter to")
     parser.add_argument("--transfermarkt", action="store_true",
@@ -2128,17 +2128,12 @@ def main():
     archetype_df = artifacts.get("df_clusters")
     print(f"   Loaded models with {len(player_history)} player histories")
 
-    # Get player snapshots based on mode
-    if args.mode == "fbref":
-        player_filter = args.players.split(",") if args.players else None
-        snapshots_df = refresh_with_fbref(artifacts, args.dry_run, player_filter)
-    else:
-        api_key = args.api_key or os.environ.get("FOOTBALL_DATA_API_KEY")
-        if not api_key:
-            print("ERROR: API key required for api mode.")
-            print("Set FOOTBALL_DATA_API_KEY env var or use --api-key")
-            sys.exit(1)
-        snapshots_df = refresh_with_api(artifacts, api_key, args.dry_run)
+    api_key = args.api_key or os.environ.get("FOOTBALL_DATA_API_KEY")
+    if not api_key:
+        print("ERROR: API key required.")
+        print("Set FOOTBALL_DATA_API_KEY env var or use --api-key")
+        sys.exit(1)
+    snapshots_df = refresh_with_api(artifacts, api_key, args.dry_run)
 
     # Run inference
     inference_df = run_inference(

@@ -59,7 +59,7 @@ export default function Home() {
   const [view, setView] = useState<"overview" | "lab">("overview");
 
   // Competition (international tournament leads while the WC is active).
-  type CompetitionChoice = "FIFA World Cup 2026" | "Premier League" | "La Liga";
+  type CompetitionChoice = "FIFA World Cup 2026" | "Premier League" | "La Liga" | "Bundesliga";
   const [league, setLeague] = useState<CompetitionChoice>("FIFA World Cup 2026");
   const isInternational = league === "FIFA World Cup 2026";
   const competitionId =
@@ -67,7 +67,9 @@ export default function Home() {
       ? "premier-league"
       : league === "La Liga"
         ? "la-liga"
-        : "world-cup-2026";
+        : league === "Bundesliga"
+          ? "bundesliga"
+          : "world-cup-2026";
 
   // Squad sync state
   const [mode, setMode] = useState<"browse" | "squad">("browse");
@@ -221,16 +223,17 @@ export default function Home() {
 
   const hasContent = mode === "browse" ? !!teamOverview : !!fplSquad;
 
-  // Club season is "over" once the leader has played all 38 matchdays. Market
-  // panels, fixture odds, and Fantasy tabs all become noise post-final-day —
-  // there's nothing to project and nothing to bet on. International is never
-  // "over" in this sense (the tournament is itself an active competition).
-  const CLUB_MATCHDAYS = 38;
+  // Club season is "over" once the leader has played the league's full
+  // matchday count. Market panels, fixture odds, and Fantasy tabs all become
+  // noise post-final-day. International is never "over" in this sense (the
+  // tournament is itself an active competition).
+  // Bundesliga is 34 matchdays; EPL + La Liga are 38.
+  const clubMatchdays = league === "Bundesliga" ? 34 : 38;
   const seasonOver = isInternational
     ? false
     : league === "La Liga"
-      ? (laLigaStandings[0]?.played ?? 0) >= CLUB_MATCHDAYS
-      : (standings?.leader?.played ?? 0) >= CLUB_MATCHDAYS;
+      ? (laLigaStandings[0]?.played ?? 0) >= clubMatchdays
+      : (standings?.leader?.played ?? 0) >= clubMatchdays;
 
   return (
     <div
@@ -324,7 +327,7 @@ export default function Home() {
         <div className="mb-4 sm:mb-6">
           {/* League switcher — always visible first */}
           <div className="flex gap-1 mb-3">
-            {(["FIFA World Cup 2026", "Premier League", "La Liga"] as const).map((l) => (
+            {(["FIFA World Cup 2026", "Premier League", "La Liga", "Bundesliga"] as const).map((l) => (
               <button
                 key={l}
                 onClick={() => handleLeagueSwitch(l)}
@@ -342,7 +345,9 @@ export default function Home() {
                   ? "🏴󠁧󠁢󠁥󠁮󠁧󠁿 EPL"
                   : l === "La Liga"
                     ? "🇪🇸 La Liga"
-                    : "🏆 World Cup 2026"}
+                    : l === "Bundesliga"
+                      ? "🇩🇪 Bundesliga"
+                      : "🏆 World Cup 2026"}
               </button>
             ))}
           </div>

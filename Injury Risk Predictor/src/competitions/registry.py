@@ -92,6 +92,24 @@ LA_LIGA = Competition(
 )
 
 
+BUNDESLIGA = Competition(
+    id="bundesliga",
+    name="Bundesliga",
+    type="club",
+    capabilities=CompetitionCapabilities(
+        has_fpl=False,
+        has_club_acwr_thresholds=True,
+        has_team_badges=True,
+        standings_kind="league_table",
+        risk_calibration_cohort="self",
+        acwr_spike_threshold=1.8,
+        # Bundesliga is 34 matchdays not 38, but the label is the same.
+        fixture_label="Matchday",
+    ),
+    league_label_aliases=("bundesliga", "1. bundesliga", "german bundesliga"),
+)
+
+
 WORLD_CUP_2026 = Competition(
     id="world-cup-2026",
     name="FIFA World Cup 2026",
@@ -112,7 +130,7 @@ WORLD_CUP_2026 = Competition(
 
 
 _REGISTRY: Dict[str, Competition] = {
-    c.id: c for c in (PREMIER_LEAGUE, LA_LIGA, WORLD_CUP_2026)
+    c.id: c for c in (PREMIER_LEAGUE, LA_LIGA, BUNDESLIGA, WORLD_CUP_2026)
 }
 
 

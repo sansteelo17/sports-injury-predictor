@@ -27,6 +27,7 @@ logger = get_logger(__name__)
 BASE_URL = "https://api.football-data.org/v4"
 PREMIER_LEAGUE_ID = "PL"
 LA_LIGA_ID = "PD"
+BUNDESLIGA_ID = "BL1"
 CHAMPIONS_LEAGUE_ID = "CL"
 RATE_LIMIT_DELAY = 6.5  # seconds between requests (free tier: 10/min)
 
@@ -70,13 +71,24 @@ class FootballDataClient:
         self._last_request_time = time.time()
 
     def _get(self, endpoint: str, params: Optional[Dict] = None, _retries: int = 0) -> Dict:
-        """Make a GET request to the API."""
+        """Make a GET request to the API. Retries on 429 (rate limit) and
+        transient connection errors (RemoteDisconnected, ConnectionError) —
+        football-data.org's free tier sporadically drops the TCP connection
+        without a response, which previously failed whole league fetches."""
         self._rate_limit()
 
         url = f"{BASE_URL}/{endpoint}"
         logger.debug(f"GET {url} params={params}")
 
-        response = self.session.get(url, params=params)
+        try:
+            response = self.session.get(url, params=params, timeout=30)
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if _retries >= 4:
+                raise
+            wait = 5 * (2 ** _retries)  # 5s, 10s, 20s, 40s
+            logger.warning(f"Connection error ({e.__class__.__name__}) on {url}; retrying in {wait}s (attempt {_retries + 1}/4)")
+            time.sleep(wait)
+            return self._get(endpoint, params, _retries=_retries + 1)
 
         if response.status_code == 429:
             if _retries >= 3:
@@ -342,6 +354,168 @@ class FootballDataClient:
             "Cádiz CF": "Cadiz",
             "Cádiz": "Cadiz",
             "Cadiz": "Cadiz",
+        }
+        return name_map.get(name, name)
+
+    # ── Bundesliga ───────────────────────────────────────────────────────────
+    # Mirrors the La Liga trio (matches / teams / squads). Bundesliga is 34
+    # matchdays (not 38) and has 18 clubs (not 20), but the football-data.org
+    # response shapes are identical so the row-builder is the same.
+
+    def get_bundesliga_matches(
+        self,
+        season: int = 2024,
+        status: str = "FINISHED",
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """Fetch Bundesliga matches for a season. Same row shape as PL/La Liga."""
+        params = {"season": season}
+        if status:
+            params["status"] = status
+        if date_from:
+            params["dateFrom"] = date_from
+        if date_to:
+            params["dateTo"] = date_to
+
+        data = self._get(f"competitions/{BUNDESLIGA_ID}/matches", params)
+        matches = data.get("matches", [])
+        logger.info(f"Fetched {len(matches)} Bundesliga matches from API")
+
+        if not matches:
+            return pd.DataFrame()
+
+        rows = []
+        for m in matches:
+            if m["status"] != "FINISHED":
+                continue
+            home_goals = m["score"]["fullTime"]["home"]
+            away_goals = m["score"]["fullTime"]["away"]
+            if home_goals is None or away_goals is None:
+                continue
+            ftr = "H" if home_goals > away_goals else ("A" if away_goals > home_goals else "D")
+            rows.append({
+                "Season_End_Year": season + 1,
+                "Wk": m.get("matchday", 0),
+                "Date": m["utcDate"][:10],
+                "Home": self._normalize_bundesliga_team(m["homeTeam"]["shortName"]),
+                "Away": self._normalize_bundesliga_team(m["awayTeam"]["shortName"]),
+                "HomeGoals": home_goals,
+                "AwayGoals": away_goals,
+                "FTR": ftr,
+                "league": "Bundesliga",
+            })
+
+        df = pd.DataFrame(rows)
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date").reset_index(drop=True)
+        logger.info(f"Processed {len(df)} finished Bundesliga matches")
+        return df
+
+    def get_bundesliga_teams(self, season: int = 2024) -> List[Dict]:
+        """Return list of Bundesliga team dicts for the given season."""
+        data = self._get(f"competitions/{BUNDESLIGA_ID}/teams", {"season": season})
+        return data.get("teams", [])
+
+    def get_all_bundesliga_squads(self, season: int = 2024) -> pd.DataFrame:
+        """Fetch squads for all Bundesliga teams."""
+        teams = self.get_bundesliga_teams(season=season)
+
+        all_players = []
+        for team in teams:
+            logger.info(f"Fetching Bundesliga squad for {team['shortName']}...")
+            try:
+                team_data = self._get(f"teams/{team['id']}")
+                squad = team_data.get("squad", [])
+                team_name = self._normalize_bundesliga_team(team["shortName"])
+
+                for p in squad:
+                    dob = p.get("dateOfBirth")
+                    age = None
+                    if dob:
+                        try:
+                            birth_date = datetime.strptime(dob, "%Y-%m-%d")
+                            age = (datetime.now() - birth_date).days // 365
+                        except ValueError:
+                            pass
+
+                    all_players.append({
+                        "name": p["name"],
+                        "team": team_name,
+                        "position": p.get("position", "Unknown"),
+                        "shirt_number": p.get("shirtNumber"),
+                        "age": age,
+                        "nationality": p.get("nationality"),
+                    })
+            except Exception as e:
+                logger.warning(f"Failed to fetch Bundesliga squad for {team.get('shortName', '?')}: {e}")
+
+        df = pd.DataFrame(all_players)
+        logger.info(f"Fetched {len(df)} Bundesliga players from {len(teams)} teams")
+        return df
+
+    def _normalize_bundesliga_team(self, name: str) -> str:
+        """Normalise football-data.org Bundesliga names to a single canonical form.
+
+        Covers the 18 current top-flight clubs plus a few historical
+        promotion/relegation names so multi-season fetches still resolve.
+        """
+        name_map = {
+            # Full names
+            "FC Bayern München": "Bayern Munich",
+            "Bayern München": "Bayern Munich",
+            "FC Bayern Munich": "Bayern Munich",
+            "Borussia Dortmund": "Borussia Dortmund",
+            "Bayer 04 Leverkusen": "Bayer Leverkusen",
+            "RB Leipzig": "RB Leipzig",
+            "VfB Stuttgart": "Stuttgart",
+            "Eintracht Frankfurt": "Eintracht Frankfurt",
+            "TSG 1899 Hoffenheim": "Hoffenheim",
+            "VfL Wolfsburg": "Wolfsburg",
+            "Borussia Mönchengladbach": "Monchengladbach",
+            "Borussia Moenchengladbach": "Monchengladbach",
+            "SC Freiburg": "Freiburg",
+            "1. FSV Mainz 05": "Mainz",
+            "1. FC Union Berlin": "Union Berlin",
+            "Werder Bremen": "Werder Bremen",
+            "SV Werder Bremen": "Werder Bremen",
+            "FC Augsburg": "Augsburg",
+            "FC St. Pauli 1910": "St. Pauli",
+            "FC St. Pauli": "St. Pauli",
+            "1. FC Heidenheim 1846": "Heidenheim",
+            "Hamburger SV": "Hamburg",
+            "1. FC Köln": "Koln",
+            "1. FC Koln": "Koln",
+            "VfL Bochum 1848": "Bochum",
+            "VfL Bochum": "Bochum",
+            "Holstein Kiel": "Holstein Kiel",
+            "Fortuna Düsseldorf": "Dusseldorf",
+            "Hertha BSC": "Hertha Berlin",
+            # Short-name passthroughs (API often returns shortName already)
+            "Bayern Munich": "Bayern Munich",
+            "Bayern": "Bayern Munich",
+            "Dortmund": "Borussia Dortmund",
+            "Leverkusen": "Bayer Leverkusen",
+            "Leipzig": "RB Leipzig",
+            "Stuttgart": "Stuttgart",
+            "Frankfurt": "Eintracht Frankfurt",
+            "Hoffenheim": "Hoffenheim",
+            "Wolfsburg": "Wolfsburg",
+            "M'gladbach": "Monchengladbach",
+            "Gladbach": "Monchengladbach",
+            "Freiburg": "Freiburg",
+            "Mainz 05": "Mainz",
+            "Mainz": "Mainz",
+            "Union Berlin": "Union Berlin",
+            "Bremen": "Werder Bremen",
+            "Augsburg": "Augsburg",
+            "St. Pauli": "St. Pauli",
+            "Heidenheim": "Heidenheim",
+            "Hamburg": "Hamburg",
+            "HSV": "Hamburg",
+            "Köln": "Koln",
+            "Koln": "Koln",
+            "Bochum": "Bochum",
         }
         return name_map.get(name, name)
 

@@ -17,14 +17,11 @@ try:
 except ImportError:
     pass  # requests not installed
 
-# FBref scraper for player match logs (optional - requires beautifulsoup4)
+# FBref season stats via soccerdata (optional - requires soccerdata + Chrome)
 try:
-    from .fbref_scraper import (
-        FBrefScraper,
-        fetch_all_player_workloads,
-    )
+    from .soccerdata_loader import load_player_season_stats
 except ImportError:
-    pass  # beautifulsoup4 not installed
+    pass  # soccerdata not installed
 
 __all__ = [
     "load_all",
@@ -35,7 +32,6 @@ __all__ = [
     "FootballDataClient",
     "fetch_current_season_matches",
     "fetch_historical_matches",
-    # FBref scraper
-    "FBrefScraper",
-    "fetch_all_player_workloads",
+    # FBref data via soccerdata
+    "load_player_season_stats",
 ]

@@ -12,7 +12,7 @@ Designed to run on a schedule (Tue/Fri) via cron.
 
 Usage:
     python scripts/retrain.py                    # Fast mode (API-based workload)
-    python scripts/retrain.py --accurate         # Accurate mode (FBref scraping)
+    python scripts/retrain.py --skip-scrape      # Skip TM injury scrape
     python scripts/retrain.py --skip-scrape      # Skip injury re-scrape
     python scripts/retrain.py --dry-run          # Preview only, don't save
 """
@@ -178,7 +178,6 @@ def step_refresh_predictions(logger, mode="api", dry_run=False):
     from src.utils.model_io import load_artifacts, save_artifacts
     from scripts.refresh_predictions import (
         refresh_with_api,
-        refresh_with_fbref,
         run_inference,
     )
 
@@ -194,18 +193,14 @@ def step_refresh_predictions(logger, mode="api", dry_run=False):
     archetype_df = artifacts["df_clusters"]
     logger.info(f"Loaded models ({len(player_history)} player histories)")
 
-    # Get player snapshots
-    if mode == "fbref":
-        snapshots_df = refresh_with_fbref(artifacts, dry_run)
-    else:
-        api_key = os.environ.get("FOOTBALL_DATA_API_KEY")
-        if not api_key:
-            logger.error("FOOTBALL_DATA_API_KEY not set — cannot use API mode")
-            # Try fbref as fallback
-            logger.info("Falling back to FBref mode...")
-            snapshots_df = refresh_with_fbref(artifacts, dry_run)
-        else:
-            snapshots_df = refresh_with_api(artifacts, api_key, dry_run)
+    # Only API mode survives — the per-player FBref workload path was removed
+    # when our custom scraper started 403ing. soccerdata handles season-level
+    # minutes inside refresh_with_api; nothing here needs that detail.
+    api_key = os.environ.get("FOOTBALL_DATA_API_KEY")
+    if not api_key:
+        logger.error("FOOTBALL_DATA_API_KEY not set — cannot refresh")
+        return None
+    snapshots_df = refresh_with_api(artifacts, api_key, dry_run)
 
     if snapshots_df is None or len(snapshots_df) == 0:
         logger.error("No player snapshots generated")
@@ -330,10 +325,6 @@ def main():
         description="YaraSports retraining pipeline (scheduled Tue/Fri)"
     )
     parser.add_argument(
-        "--accurate", action="store_true",
-        help="Use FBref scraping for accurate workload (slower, ~20 min)"
-    )
-    parser.add_argument(
         "--skip-scrape", action="store_true",
         help="Skip Transfermarkt injury scraping"
     )
@@ -352,7 +343,7 @@ def main():
     args = parser.parse_args()
 
     logger = setup_logging()
-    mode = "fbref" if args.accurate else "api"
+    mode = "api"  # only mode that still works end-to-end
     start_time = time.time()
 
     logger.info("")

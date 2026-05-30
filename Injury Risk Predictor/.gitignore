@@ -188,6 +188,9 @@ data/
 # Scratchpad
 scratchpad/
 
+# soccerdata / seleniumbase scratch (chromedriver lock files etc.)
+downloaded_files/
+
 # CatBoost training artifacts
 notebooks/catboost_info/
 
