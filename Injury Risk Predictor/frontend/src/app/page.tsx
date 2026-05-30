@@ -170,11 +170,11 @@ export default function Home() {
 
     setLoading(true);
     setView("overview");
-    getPlayerRisk(selectedPlayer)
+    getPlayerRisk(selectedPlayer, competitionId)
       .then(setPlayerRisk)
       .catch(() => setError("Failed to load player data"))
       .finally(() => setLoading(false));
-  }, [selectedPlayer]);
+  }, [selectedPlayer, competitionId]);
 
   // Squad sync handler
   const handleSquadSync = (teamId: string) => {
@@ -269,7 +269,7 @@ export default function Home() {
               <p
                 className={`text-[10px] sm:text-xs leading-tight max-w-[170px] sm:max-w-none ${mutedClass}`}
               >
-                Risk-aware match intelligence for fans and analysts.
+                Yara tracks injury risk for footballers across the globe.
               </p>
             </div>
           </div>
@@ -308,9 +308,9 @@ export default function Home() {
               <strong
                 className={darkMode ? "text-[#86efac]" : "text-emerald-600"}
               >
-                Yara is an AI analyst covering injury risk across EPL, La Liga, Bundesliga, Serie A, and World Cup 2026.
+                Yara watches players around the world.
               </strong>{" "}
-              She constructs injury narratives from historical data, workload patterns, and fixture context — modeling what happens when elite athletes face cumulative fatigue.
+              From the World Cup to the Premier League, La Liga, Bundesliga, and Serie A, she reads the workload, injury history, and fixture context and tells you who is breaking down.
             </div>
           </div>
         </div>

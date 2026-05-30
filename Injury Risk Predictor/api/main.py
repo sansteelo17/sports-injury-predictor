@@ -70,7 +70,7 @@ from src.inference.story_generator import (
     generate_yara_response,
     generate_lab_notes,
 )
-from src.inference.llm_client import generate_grounded_narrative, llm_enabled
+from src.inference.llm_client import generate_grounded_narrative, llm_enabled, probe_openai_models
 from src.data_loaders.fpl_api import FPLClient, get_fpl_insights
 from src.data_loaders.football_data_api import FootballDataClient, get_standings_summary
 from src.data_loaders.api_client import (
@@ -97,8 +97,8 @@ from src.competitions.country_flags import flag_url as wc_flag_url
 # to avoid importing all of src.models (which pulls in lightgbm, xgboost, etc.)
 
 app = FastAPI(
-    title="EPL Injury Risk Predictor API",
-    description="ML-powered injury risk predictions for Premier League players",
+    title="YaraSports Injury Risk API",
+    description="ML-powered injury risk predictions for footballers worldwide (World Cup, Premier League, La Liga, Bundesliga, Serie A)",
     version="1.0.0",
 )
 
@@ -827,6 +827,15 @@ def _load_models_blocking():
 
     import gc
     gc.collect()
+
+    # Probe configured narrative models so a bad OPENAI_MODEL / INTL_OPENAI_MODEL
+    # id is logged loudly at boot rather than silently degrading every narrative
+    # to template text.
+    try:
+        probe_openai_models()
+    except Exception as probe_err:
+        logger.warning("Model probe skipped: %s", probe_err)
+
     _startup_complete = True
 
 
@@ -5038,10 +5047,16 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
 
         # If INTL provider override is set, swap env for the duration of the
         # call so generate_grounded_narrative routes to it without altering
-        # the global config. Restore in finally.
+        # the global config. Restore in finally. The model is swapped the same
+        # way: INTL_OPENAI_MODEL (e.g. gpt-5.5) overrides OPENAI_MODEL for World
+        # Cup narratives only, keeping club leagues on the cheaper default.
+        intl_model = (os.environ.get("INTL_OPENAI_MODEL") or "").strip()
         prev_provider = os.environ.get("NARRATIVE_LLM_PROVIDER")
+        prev_model = os.environ.get("OPENAI_MODEL")
         if intl_provider:
             os.environ["NARRATIVE_LLM_PROVIDER"] = intl_provider
+        if intl_model:
+            os.environ["OPENAI_MODEL"] = intl_model
         try:
             story = generate_grounded_narrative(
                 task=(
@@ -5064,6 +5079,11 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
                     os.environ.pop("NARRATIVE_LLM_PROVIDER", None)
                 else:
                     os.environ["NARRATIVE_LLM_PROVIDER"] = prev_provider
+            if intl_model:
+                if prev_model is None:
+                    os.environ.pop("OPENAI_MODEL", None)
+                else:
+                    os.environ["OPENAI_MODEL"] = prev_model
     else:
         story = template_story
 
@@ -5893,32 +5913,52 @@ def get_predictions(team: str):
 
 
 @app.get("/api/players/{player_name}/risk", response_model=PlayerRisk)
-def get_player_risk(player_name: str):
-    """Get detailed risk prediction for a specific player."""
+def get_player_risk(player_name: str, competition_id: Optional[str] = None):
+    """Get detailed risk prediction for a specific player.
+
+    If competition_id is provided (e.g., "world-cup-2026"), filter to that competition.
+    If not provided or no match found in that competition, fall back to any match.
+    """
     started = time.perf_counter()
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
-    cache_key = player_name.lower()
+    cache_key = f"{player_name.lower()}:{competition_id or 'any'}"
     now = datetime.utcnow()
     cached = _player_risk_cache.get(cache_key)
     if cached and cached["expires"] > now:
         logger.info(
-            "Player risk for %s served from cache in %.2fs",
+            "Player risk for %s (%s) served from cache in %.2fs",
             player_name,
+            competition_id or "any",
             time.perf_counter() - started,
         )
         return cached["data"]
 
+    # Try exact match first
     matches = inference_df[
         inference_df["name"].str.lower() == player_name.lower()
     ]
+
+    # Filter by competition if requested
+    if competition_id and not matches.empty:
+        comp_matches = matches[matches["competition_id"] == competition_id]
+        if not comp_matches.empty:
+            matches = comp_matches
+
+    # Fall back to substring match if no exact match
     if matches.empty:
         matches = inference_df[
             inference_df["name"].str.lower().str.contains(player_name.lower())
         ]
+        # Re-filter by competition for substring matches
+        if competition_id and not matches.empty:
+            comp_matches = matches[matches["competition_id"] == competition_id]
+            if not comp_matches.empty:
+                matches = comp_matches
+
     if matches.empty:
-        raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found")
+        raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found{f' in {competition_id}' if competition_id else ''}")
 
     row = matches.iloc[0].to_dict()
     result = player_row_to_risk(row)
@@ -6049,6 +6089,12 @@ def get_team_overview(team_name: str):
     actual_team = team_df.iloc[0]["team"]
     team_league = _safe_league_label(team_df.iloc[0].get("league")) or "Premier League"
     is_la_liga = _is_la_liga_league(team_df.iloc[0].get("league"))
+    # FPL stats are Premier-League-only. Gating on the capability (not just
+    # "not La Liga") stops national teams, Bundesliga, and Serie A squads from
+    # pulling club FPL minutes/injury status that belong to a different player
+    # context entirely.
+    team_comp = _competition_from_row(team_df.iloc[0].to_dict())
+    comp_has_fpl = team_comp.capabilities.has_fpl
 
     high_risk = len(team_df[team_df["risk_level"] == "High"])
     medium_risk = len(team_df[team_df["risk_level"] == "Medium"])
@@ -6060,7 +6106,7 @@ def get_team_overview(team_name: str):
     for _, row in team_df.iterrows():
         prob = row.get("ensemble_prob", 0.5)
         name = row.get("name", "Unknown")
-        fpl = None if is_la_liga else get_fpl_stats_for_player(name)
+        fpl = get_fpl_stats_for_player(name) if comp_has_fpl else None
         minutes = _resolve_display_minutes(row, fpl)
         fpl_status = fpl.get("status", "a") if fpl else "a"
         row_league = row.get("league")
@@ -6110,7 +6156,6 @@ def get_team_overview(team_name: str):
     except (TypeError, ValueError):
         avg_prob = 0.5
 
-    team_comp = _competition_from_row(team_df.iloc[0].to_dict())
     response = TeamOverview(
         team=actual_team,
         total_players=len(team_df),

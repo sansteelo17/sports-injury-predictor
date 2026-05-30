@@ -8,8 +8,8 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: 'YaraSports - Injury Risk Predictor',
-  description: 'ML-powered injury risk predictions for Premier League players',
+  title: 'YaraSports - Global Football Injury Risk',
+  description: 'Yara tracks injury risk for footballers around the world, across the World Cup, Premier League, La Liga, Bundesliga, and Serie A.',
   icons: {
     icon: '/icon.svg',
     shortcut: '/icon.svg',
