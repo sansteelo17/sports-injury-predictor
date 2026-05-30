@@ -105,8 +105,6 @@ app = FastAPI(
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "https://epl-injury-frontend.onrender.com",
-    "https://injurywatch.onrender.com",
     "https://yara-sports-frontend.onrender.com",
     "https://yaraspeaks.com",
     "https://www.yaraspeaks.com",
@@ -5583,8 +5581,8 @@ def trigger_prediction_refresh(
     _require_refresh_token(x_refresh_token)
     mode_key = (mode or "api").strip().lower()
     target_key = (target or "club").strip().lower()
-    if mode_key not in {"api", "fbref"}:
-        raise HTTPException(status_code=400, detail="mode must be 'api' or 'fbref'")
+    if mode_key not in {"api"}:
+        raise HTTPException(status_code=400, detail="mode must be 'api' (fbref mode removed)")
     if target_key not in {"club", "international"}:
         raise HTTPException(status_code=400, detail="target must be 'club' or 'international'")
 
