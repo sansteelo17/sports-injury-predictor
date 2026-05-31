@@ -45,21 +45,26 @@ export function WinnerOddsCard({ data, darkMode = true }: WinnerOddsCardProps) {
         )}
       </div>
 
-      <div className="space-y-1">
-        {data.markets.slice(0, 6).map((row) => (
-          <div key={row.team} className="flex items-center gap-2">
-            <span className="text-xs w-20 truncate">{row.team}</span>
-            <div className={`flex-1 h-1.5 rounded-full overflow-hidden ${darkMode ? "bg-[#1f1f1f]" : "bg-gray-100"}`}>
-              <div
-                className={darkMode ? "h-full bg-[#86efac]" : "h-full bg-emerald-500"}
-                style={{ width: `${Math.min(100, Math.round(row.win_probability * 100 * 3))}%` }}
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+        {data.markets.map((row) => (
+          <div key={row.team} className="flex items-center gap-1.5 min-w-0">
+            {row.flag_url ? (
+              <img
+                src={row.flag_url}
+                alt=""
+                width={16}
+                height={11}
+                className="flex-shrink-0 rounded-[2px] object-cover"
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).style.visibility = "hidden";
+                }}
               />
-            </div>
-            <span className="text-xs font-semibold tabular-nums w-9 text-right">
+            ) : (
+              <span className="w-4 flex-shrink-0" />
+            )}
+            <span className="text-xs truncate flex-1 min-w-0">{row.team}</span>
+            <span className="text-xs font-semibold tabular-nums">
               {Math.round(row.win_probability * 100)}%
-            </span>
-            <span className={`text-[10px] tabular-nums w-9 text-right ${muted}`}>
-              {row.decimal_odds.toFixed(1)}
             </span>
           </div>
         ))}

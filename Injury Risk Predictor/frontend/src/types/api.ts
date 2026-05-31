@@ -252,6 +252,7 @@ export interface WinnerOddsRow {
   decimal_odds: number;
   win_probability: number;
   books: number;
+  flag_url: string | null;
 }
 
 export interface BookmakerRef {

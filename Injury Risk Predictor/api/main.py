@@ -1960,8 +1960,78 @@ LA_LIGA_BADGE_MAP: Dict[str, str] = {
 }
 
 
+_EFL_CREST_STOPWORDS = {
+    "borussia", "hellas", "real", "calcio", "eintracht", "bayer", "werder",
+    "union", "fortuna", "athletic", "sporting", "united", "city",
+}
+_efl_crest_map: Optional[Dict[str, Any]] = None  # distinctive token -> crest url (or _AMBIGUOUS)
+_EFL_AMBIGUOUS = object()
+
+
+def _norm_club_tokens(name: str) -> List[str]:
+    import unicodedata
+    s = "".join(c for c in unicodedata.normalize("NFKD", str(name)) if not unicodedata.combining(c)).lower()
+    s = re.sub(r"[^a-z0-9 ]", " ", s)
+    return [t for t in s.split() if len(t) >= 4 and t not in _EFL_CREST_STOPWORDS and not t.isdigit()]
+
+
+def _load_efl_crests() -> Dict[str, Any]:
+    """Lazily fetch Bundesliga + Serie A crests from football-data.org and index
+    them by distinctive name token (ambiguity-guarded, like the stats fix)."""
+    global _efl_crest_map
+    if _efl_crest_map is not None:
+        return _efl_crest_map
+    mapping: Dict[str, Any] = {}
+    key = os.getenv("FOOTBALL_DATA_API_KEY", "")
+    if key:
+        for code in ("BL1", "SA"):
+            try:
+                resp = requests.get(
+                    f"https://api.football-data.org/v4/competitions/{code}/teams",
+                    headers={"X-Auth-Token": key},
+                    timeout=12,
+                )
+                if resp.status_code != 200:
+                    continue
+                for t in resp.json().get("teams", []):
+                    crest = t.get("crest")
+                    if not crest:
+                        continue
+                    tokens = set(_norm_club_tokens(t.get("name", "")) + _norm_club_tokens(t.get("shortName", "")))
+                    for tok in tokens:
+                        if tok not in mapping:
+                            mapping[tok] = crest
+                        elif mapping[tok] != crest:
+                            mapping[tok] = _EFL_AMBIGUOUS  # token shared by two clubs — unusable
+            except Exception as e:
+                logger.debug("EFL crest fetch failed for %s: %s", code, e)
+    _efl_crest_map = mapping
+    return mapping
+
+
+def _efl_crest_for(team_name: str) -> Optional[str]:
+    mapping = _load_efl_crests()
+    if not mapping:
+        return None
+    qtoks = _norm_club_tokens(team_name)
+    for tok in qtoks:
+        crest = mapping.get(tok)
+        if crest is not None and crest is not _EFL_AMBIGUOUS:
+            return crest
+    # Prefix fallback for surface drift like "Hamburg" vs "Hamburger SV".
+    for tok in qtoks:
+        if len(tok) < 5:
+            continue
+        for mk, crest in mapping.items():
+            if crest is _EFL_AMBIGUOUS or len(mk) < 5:
+                continue
+            if tok.startswith(mk) or mk.startswith(tok):
+                return crest
+    return None
+
+
 def get_team_badge_url(team_name: str) -> Optional[str]:
-    """Get badge URL for a team (EPL via FPL CDN, La Liga via football-data.org crests)."""
+    """Get badge URL for a team (EPL via FPL CDN, La Liga / Bundesliga / Serie A via football-data.org crests)."""
     team_lower = team_name.lower().strip()
 
     # La Liga — check static map first (no API dependency)
@@ -1994,6 +2064,11 @@ def get_team_badge_url(team_name: str) -> Optional[str]:
             continue
         if search in key or key in search:
             return f"https://resources.premierleague.com/premierleague/badges/50/t{fpl_team_ids[key]}@x2.png"
+
+    # Bundesliga / Serie A crests (football-data.org, lazily fetched + cached).
+    efl = _efl_crest_for(team_name)
+    if efl:
+        return efl
     return None
 
 
@@ -6423,8 +6498,10 @@ def get_competition_winner_odds(competition_id: str):
     bookmakers: List[Dict[str, Any]] = []
     if comp is not None and comp.id == WORLD_CUP_2026.id and odds_client is not None:
         try:
-            data = odds_client.get_world_cup_winner_odds() or {}
+            data = odds_client.get_world_cup_winner_odds(top_n=48) or {}
             markets = data.get("markets", [])
+            for m in markets:
+                m["flag_url"] = wc_flag_url(m.get("team", ""))
             bookmakers = data.get("bookmakers", [])
         except Exception as e:
             logger.warning("Winner odds fetch failed for %s: %s", competition_id, e)
