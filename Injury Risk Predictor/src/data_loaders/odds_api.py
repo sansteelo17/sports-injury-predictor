@@ -49,6 +49,7 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env")
 # Premier League sport key
 SPORT_KEY = "soccer_epl"
 SPORT_KEY_LA_LIGA = "soccer_spain_la_liga"
+SPORT_KEY_WORLD_CUP = "soccer_fifa_world_cup"
 
 # Market types we care about
 MARKETS = {
@@ -397,6 +398,64 @@ class OddsClient:
 
         except Exception as e:
             logger.debug(f"Failed to fetch scorer odds for {player_name}: {e}")
+            return None
+
+    def get_world_cup_match_odds(self, team_name: str, opponent: str) -> Optional[Dict]:
+        """Bookmaker win probability for a World Cup matchup, or None.
+
+        Pre-tournament the ``soccer_fifa_world_cup`` market is often empty or
+        not yet listed — every failure path returns None so the caller simply
+        shows no odds rather than anything fabricated. Win probability is the
+        vig-naive average of 1/decimal across books.
+        """
+        if not self.api_key or not team_name or not opponent:
+            return None
+        cache_key = f"wc_h2h_{team_name.lower()}_{opponent.lower()}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        try:
+            response = self.session.get(
+                f"{ODDS_API_URL}/sports/{SPORT_KEY_WORLD_CUP}/odds",
+                params={
+                    "apiKey": self.api_key,
+                    "regions": "uk,eu,us",
+                    "markets": "h2h",
+                    "oddsFormat": "decimal",
+                },
+                timeout=10,
+            )
+            if response.status_code != 200:
+                logger.debug("WC odds endpoint HTTP %s", response.status_code)
+                self._cache[cache_key] = None
+                return None
+            tl, ol = team_name.lower(), opponent.lower()
+            for match in response.json() or []:
+                home = (match.get("home_team") or "").lower()
+                away = (match.get("away_team") or "").lower()
+                names = f"{home} {away}"
+                if tl not in names or ol not in names:
+                    continue
+                team_probs: List[float] = []
+                for bookie in match.get("bookmakers", []):
+                    for market in bookie.get("markets", []):
+                        if market.get("key") != "h2h":
+                            continue
+                        for o in market.get("outcomes", []):
+                            name = (o.get("name") or "").lower()
+                            price = o.get("price")
+                            if (tl in name or name in tl) and price and price > 0:
+                                team_probs.append(1.0 / price)
+                if team_probs:
+                    result = {
+                        "win_probability": round(sum(team_probs) / len(team_probs), 3),
+                        "books": len(team_probs),
+                    }
+                    self._cache[cache_key] = result
+                    return result
+            self._cache[cache_key] = None
+            return None
+        except Exception as e:
+            logger.debug("WC odds fetch failed for %s vs %s: %s", team_name, opponent, e)
             return None
 
     @staticmethod

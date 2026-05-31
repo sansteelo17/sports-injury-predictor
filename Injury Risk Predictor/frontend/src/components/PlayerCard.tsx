@@ -21,6 +21,8 @@ import {
   User,
   Users,
   Zap,
+  Newspaper,
+  ExternalLink,
 } from "lucide-react";
 import { toAbsoluteApiUrl } from "@/lib/api";
 
@@ -659,6 +661,46 @@ export function PlayerCard({ player, darkMode = true, seasonOver = false }: Play
                   No club-side workload data is tracked for this player&apos;s league.
                 </div>
               )}
+            </div>
+          )}
+
+          {/* In the news — trusted, attributed feeds only. Every item links to
+              its source; nothing here is model-generated. */}
+          {isInternational && player.news && player.news.length > 0 && (
+            <div className="px-4 sm:px-6 py-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Newspaper size={15} className={darkMode ? "text-[#86efac]" : "text-emerald-600"} />
+                <h4 className="text-sm font-semibold">In the news</h4>
+                <span className={`text-[10px] ${darkMode ? "text-gray-600" : "text-gray-400"}`}>
+                  trusted sources
+                </span>
+              </div>
+              <div className="space-y-2">
+                {player.news.map((item, i) => (
+                  <a
+                    key={i}
+                    href={item.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`block rounded-lg p-3 border transition-colors ${
+                      darkMode
+                        ? "bg-[#141414] border-[#1f1f1f] hover:border-[#86efac]/40"
+                        : "bg-white border-gray-200 hover:border-emerald-300"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-sm leading-snug">{item.title}</p>
+                      <ExternalLink
+                        size={13}
+                        className={`flex-shrink-0 mt-0.5 ${darkMode ? "text-gray-600" : "text-gray-400"}`}
+                      />
+                    </div>
+                    <p className={`text-[11px] mt-1 ${darkMode ? "text-[#86efac]/80" : "text-emerald-600"}`}>
+                      {item.source}
+                    </p>
+                  </a>
+                ))}
+              </div>
             </div>
           )}
 

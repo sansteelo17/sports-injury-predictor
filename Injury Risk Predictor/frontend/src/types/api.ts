@@ -236,6 +236,15 @@ export interface PlayerRisk {
   competition_id: string;
   competition_type: CompetitionType;
   international_context: InternationalContext | null;
+  news: NewsItem[];
+}
+
+export interface NewsItem {
+  title: string;
+  summary: string;
+  source: string;
+  url: string;
+  published: string | null;
 }
 
 export interface InternationalContext {

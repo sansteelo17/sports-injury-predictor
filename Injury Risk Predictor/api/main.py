@@ -92,6 +92,7 @@ from src.competitions import (
     resolve as resolve_competition,
 )
 from src.data_loaders.international_squads import WORLD_CUP_2026_SEASON
+from src.data_loaders.news_feed import fetch_player_news
 from src.competitions.country_flags import flag_url as wc_flag_url
 # Archetype clustering imports are done lazily inside assign_hybrid_archetypes()
 # to avoid importing all of src.models (which pulls in lightgbm, xgboost, etc.)
@@ -1425,6 +1426,21 @@ class InternationalContext(BaseModel):
     fifa_rating: Optional[int] = None
 
 
+class NewsItem(BaseModel):
+    """A single trusted, attributed news item.
+
+    Sourced only from the curated feed allowlist in
+    ``src.data_loaders.news_feed`` — every item carries the outlet name and a
+    URL so the reader can verify it. The narrative layer may summarise these
+    but never sources or invents them.
+    """
+    title: str
+    summary: str = ""
+    source: str
+    url: str
+    published: Optional[str] = None
+
+
 class PlayerRisk(BaseModel):
     name: str
     team: str
@@ -1468,6 +1484,7 @@ class PlayerRisk(BaseModel):
     competition_id: str = PREMIER_LEAGUE.id
     competition_type: str = PREMIER_LEAGUE.type
     international_context: Optional[InternationalContext] = None
+    news: List[NewsItem] = []
 
 
 class WhatIfProjection(BaseModel):
@@ -4968,6 +4985,32 @@ def _build_international_context(row: Dict[str, Any]) -> InternationalContext:
     )
 
 
+def _derive_age(row: Dict[str, Any]) -> int:
+    """Best-effort age for a player row.
+
+    The World Cup frame has no ``age`` column (it carries ``date_of_birth`` and
+    ``age_club``), so the old ``row.get("age")`` floored every international
+    player to 0. Prefer an exact age from date of birth, then ``age_club``, then
+    any ``age`` value present.
+    """
+    for key in ("age",):
+        a = _safe_int(row.get(key), 0)
+        if a > 0:
+            return a
+    dob = row.get("date_of_birth")
+    if dob:
+        try:
+            born = datetime.fromisoformat(str(dob)[:10])
+            today = datetime.utcnow()
+            years = today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+            if 14 < years < 60:
+                return years
+        except (ValueError, TypeError):
+            pass
+    age_club = _safe_int(row.get("age_club"), 0)
+    return age_club if age_club > 0 else 0
+
+
 def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
     """PlayerRisk for an international row.
 
@@ -5001,6 +5044,16 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
     # template above becomes the *fallback* and OpenAI rewrites it in Yara's
     # voice grounded in the same context chunks.
     intl_ctx = _build_international_context(row)
+
+    # Hybrid news: deterministic fetch from trusted feeds, attributed. Yara may
+    # summarise these but never sources or invents them; the cards render
+    # straight from here regardless of the LLM.
+    try:
+        news_items = [NewsItem(**n) for n in fetch_player_news(player_name, country)]
+    except Exception as news_err:
+        logger.warning("News fetch failed for %s: %s", player_name, news_err)
+        news_items = []
+
     if has_risk:
         base_story = generate_player_story(enriched_row)
         template_story = f"{intl_ctx.summary} {base_story}".strip()
@@ -5037,6 +5090,11 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
                     f"{_safe_int(row.get('days_since_last_injury'), 365)} days since last injury."
                 ),
             })
+        for n in news_items[:3]:
+            chunks.append({
+                "kind": "news",
+                "text": f"{n.source} reports: {n.title}",
+            })
         chunks.append({
             "kind": "calibration",
             "text": (
@@ -5063,7 +5121,9 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
                     "Write a short, conversational scouting note about this World Cup player "
                     "in Yara's voice. Lead with tournament context (country, caps, group, next "
                     "fixture). If injury risk data is available, integrate it as a sentence. "
-                    "Do not use FPL language. Do not use em dashes."
+                    "If a news item is provided, you may reference at most one and must name the "
+                    "outlet (e.g. 'Sky reports'); never state a rumour as fact and never invent "
+                    "news. Do not use FPL language. Do not use em dashes."
                 ),
                 player_name=player_name,
                 context_chunks=chunks,
@@ -5093,12 +5153,21 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
 
     next_fixture = None
     if row.get("next_intl_opponent"):
+        _opp = str(row["next_intl_opponent"])
+        _win_prob = None
+        if odds_client is not None:
+            try:
+                _odds = odds_client.get_world_cup_match_odds(country, _opp)
+                if _odds:
+                    _win_prob = _odds.get("win_probability")
+            except Exception as odds_err:
+                logger.warning("WC odds enrichment failed for %s: %s", country, odds_err)
         next_fixture = NextFixture(
-            opponent=str(row["next_intl_opponent"]),
+            opponent=_opp,
             is_home=bool(row.get("next_intl_is_home")),
             match_time=row.get("next_intl_utc_date"),
             clean_sheet_odds=None,
-            win_probability=None,
+            win_probability=_win_prob,
             fixture_insight=(
                 f"{row.get('next_intl_stage', 'Group stage').replace('_', ' ').title()}"
                 if row.get("next_intl_stage") else None
@@ -5112,7 +5181,7 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
         position=row.get("position") or "Unknown",
         league=row.get("league") or comp.name,
         shirt_number=_safe_int(row.get("shirt_number"), 0) or None,
-        age=_safe_int(row.get("age"), 0),
+        age=_derive_age(row),
         risk_level=risk_level,
         risk_probability=risk_probability,
         archetype=row.get("archetype", "Unknown") if has_risk else "Unknown",
@@ -5165,6 +5234,7 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
         competition_id=comp.id,
         competition_type=comp.type,
         international_context=intl_ctx,
+        news=news_items,
     )
 
 
@@ -6071,6 +6141,50 @@ def get_team_badges():
     return badges
 
 
+def _enrich_intl_fixture_odds(fixture: Dict[str, Any], team: str, opponent: str) -> None:
+    """Populate a WC fixture dict with bookmaker win probability if markets exist.
+
+    No-op when odds are unavailable (the norm before the tournament starts), so
+    the fixture renders with no odds rather than anything invented.
+    """
+    if odds_client is None:
+        return
+    data = odds_client.get_world_cup_match_odds(team, opponent)
+    if data and data.get("win_probability") is not None:
+        fixture["win_probability"] = data["win_probability"]
+
+
+def _international_team_next_fixture(team_df) -> Optional[Dict[str, Any]]:
+    """Next fixture for a national team, read off the WC rows.
+
+    Every row for the team carries the same team-level ``next_intl_*`` fields,
+    so we take them from the first row that has an opponent. Odds fields are
+    populated by the WC odds enrichment when markets exist.
+    """
+    if team_df is None or len(getattr(team_df, "index", [])) == 0:
+        return None
+    for _, r in team_df.iterrows():
+        opp = r.get("next_intl_opponent")
+        if not opp or (isinstance(opp, float) and math.isnan(opp)):
+            continue
+        stage = r.get("next_intl_stage")
+        fixture = {
+            "opponent": str(opp),
+            "is_home": bool(r.get("next_intl_is_home")) if r.get("next_intl_is_home") is not None else None,
+            "match_time": r.get("next_intl_utc_date"),
+            "clean_sheet_odds": None,
+            "win_probability": None,
+            "fixture_insight": str(stage).replace("_", " ").title() if stage else None,
+        }
+        # Enrich with bookmaker win probability if WC markets are available.
+        try:
+            _enrich_intl_fixture_odds(fixture, str(team_df.iloc[0]["team"]), str(opp))
+        except Exception as odds_err:
+            logger.warning("WC odds enrichment failed: %s", odds_err)
+        return fixture
+    return None
+
+
 @app.get("/api/teams/{team_name}/overview", response_model=TeamOverview)
 def get_team_overview(team_name: str):
     """Get risk overview for an entire team."""
@@ -6145,6 +6259,11 @@ def get_team_overview(team_name: str):
         except Exception as ctx_err:
             logger.warning("La Liga team context unavailable for %s: %s", actual_team, ctx_err)
             next_fixture_data = None
+    elif team_comp.is_international:
+        # National teams have no club fixture feed. The next match is carried on
+        # the WC rows themselves (next_intl_*), so read it from there rather than
+        # calling the club fixture helper (which would find nothing).
+        next_fixture_data = _international_team_next_fixture(team_df)
     else:
         next_fixture_data = get_next_fixture_for_team(actual_team, team_df["ensemble_prob"].mean())
 
