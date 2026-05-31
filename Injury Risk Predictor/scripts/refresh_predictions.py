@@ -929,14 +929,22 @@ def load_fbref_stats_lookups(players_df, league_name: str = "Premier League", se
     Returns ``(minutes_lookup, signal_lookup)``; the signal lookup only holds
     players FBref found, so callers can fall back to FPL for the rest.
 
-    ``players_df`` is accepted for signature parity with the other loaders but is
-    unused: FBref returns the whole league in one shot, matched by name later.
+    ``players_df`` (the squad) is used to re-key FBref payloads under the squad's
+    team strings: FBref says "Newcastle United" while the squad/FPL say
+    "Newcastle", and the team-aware lookup is keyed on the squad name. Without
+    this alignment the FBref payload sits under a team key that's never queried,
+    so the FPL fallback wins. Matched by normalized full name (unique per league).
     """
     from src.data_loaders.soccerdata_loader import load_player_season_stats
 
     if season_start_year is None:
         now = datetime.now()
         season_start_year = now.year if now.month >= 8 else now.year - 1
+
+    squad_team_by_name = {}
+    if players_df is not None and "name" in getattr(players_df, "columns", []):
+        for _, p in players_df[["name", "team"]].drop_duplicates().iterrows():
+            squad_team_by_name[_normalize_player_key(str(p["name"]))] = str(p["team"])
 
     print(f"   Loading {league_name} season stats from FBref (apps/goals/assists/minutes)...")
     df = load_player_season_stats(league_name, season_start_year)
@@ -948,9 +956,10 @@ def load_fbref_stats_lookups(players_df, league_name: str = "Premier League", se
     signal_lookup: dict = {}
     for _, row in df.iterrows():
         name = str(row.get("name", "")).strip()
-        team = str(row.get("team", "")).strip()
         if not name:
             continue
+        # Prefer the squad's team string so keys line up with FPL/the squad.
+        team = squad_team_by_name.get(_normalize_player_key(name), str(row.get("team", "")).strip())
         mins = int(row.get("season_minutes", 0) or 0)
         apps = int(row.get("appearances", 0) or 0)
         goals = int(row.get("goals", 0) or 0)
