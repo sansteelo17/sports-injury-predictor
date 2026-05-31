@@ -212,7 +212,12 @@ def _post_openai_chat(
         low = (resp.text or "").lower()
         mutated = False
         if "max_tokens" in low and "max_completion_tokens" in low and "max_tokens" in payload:
-            payload["max_completion_tokens"] = payload.pop("max_tokens")
+            # Models that require max_completion_tokens are reasoning models
+            # (GPT-5.x, o-series): they spend part of the budget on hidden
+            # reasoning, so a tight cap leaves the visible content empty. Floor
+            # it high enough that reasoning + answer both fit.
+            requested = int(payload.pop("max_tokens") or 0)
+            payload["max_completion_tokens"] = max(requested, 1200)
             mutated = True
         if "temperature" in low and "temperature" in payload and (
             "unsupported" in low or "does not support" in low or "only the default" in low

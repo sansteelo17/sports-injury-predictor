@@ -8,8 +8,8 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: 'YaraSports - Global Football Injury Risk',
-  description: 'Yara tracks injury risk for footballers around the world, across the World Cup, Premier League, La Liga, Bundesliga, and Serie A.',
+  title: 'YaraSports - Football Injury Risk, Predicted',
+  description: 'Yara predicts injury risk and builds the story behind it from every source: workload, injury history, fixtures, odds, and news. World Cup, Premier League, La Liga, Bundesliga, and Serie A.',
   icons: {
     icon: '/icon.svg',
     shortcut: '/icon.svg',
