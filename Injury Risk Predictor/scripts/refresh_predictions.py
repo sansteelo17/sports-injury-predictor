@@ -196,8 +196,6 @@ def _register_minutes_payload(lookup: dict, name: str, payload: dict, team: str 
         lookup[(normalized_name, normalized_team)] = payload
         lookup[(canonical_name, normalized_team)] = payload
 
-    _register_surname_key(lookup, normalized_name, payload)
-
 
 def _lookup_minutes_payload(lookup: dict, player_name: str, team_name: str | None = None):
     """Resolve the best minutes payload using team-aware keys first."""
@@ -244,7 +242,6 @@ def _register_signal_payload(lookup: dict, name: str, payload: dict, team: str |
         ])
     for key in keys:
         lookup[key] = payload
-    _register_surname_key(lookup, normalized_name, payload)
 
 
 def _lookup_signal_payload(lookup: dict, player_name: str, team_name: str | None = None):
@@ -313,9 +310,11 @@ def _merge_minutes_lookup(base_lookup: dict, incoming_lookup: dict) -> dict:
     """
     merged = dict(base_lookup)
     for key, payload in (incoming_lookup or {}).items():
+        if not isinstance(payload, dict):
+            continue  # skip sentinels/placeholders (e.g. ambiguity markers)
         existing = merged.get(key)
-        existing_minutes = int((existing or {}).get("minutes_played", 0) or 0)
-        incoming_minutes = int((payload or {}).get("minutes_played", 0) or 0)
+        existing_minutes = int(existing.get("minutes_played", 0) or 0) if isinstance(existing, dict) else 0
+        incoming_minutes = int(payload.get("minutes_played", 0) or 0)
 
         if existing is None or existing_minutes <= 0 < incoming_minutes or existing_minutes <= 0:
             merged[key] = payload
@@ -919,107 +918,74 @@ def load_transfermarkt_minutes_lookup(players_df, season: int, league_name: str 
     return lookup
 
 
-def load_transfermarkt_stats_lookups(players_df, season: int, league_name: str = "Premier League"):
-    """Scrape Transfermarkt once per player and build BOTH a minutes lookup
-    (real appearances + minutes) and a signal lookup (goals + assists + per-90).
+def load_fbref_stats_lookups(players_df, league_name: str = "Premier League", season_start_year: int | None = None):
+    """Build BOTH a minutes lookup (real appearances + minutes) and a signal
+    lookup (goals + assists + per-90) from FBref via soccerdata.
 
-    Lets a league use Transfermarkt as the single source of displayed season
-    stats so the cards match what fans verify against, instead of FPL (whose
-    "appearances" is really minutes/90 and whose assist attribution differs).
-    Returns ``(minutes_lookup, signal_lookup)``. The signal lookup only holds
-    players TM actually found, so callers can fall back to FPL for the rest.
+    FBref reports real appearances (not FPL's minutes/90 proxy) and official
+    goals/assists, so cards match what fans verify against. One request covers
+    the whole league. Transfermarkt is no longer usable for this: its stats
+    pages are JS-rendered, so the plain-requests scraper returns an empty shell.
+    Returns ``(minutes_lookup, signal_lookup)``; the signal lookup only holds
+    players FBref found, so callers can fall back to FPL for the rest.
+
+    ``players_df`` (the squad) is used to re-key FBref payloads under the squad's
+    team strings: FBref says "Newcastle United" while the squad/FPL say
+    "Newcastle", and the team-aware lookup is keyed on the squad name. Without
+    this alignment the FBref payload sits under a team key that's never queried,
+    so the FPL fallback wins. Matched by normalized full name (unique per league).
     """
-    from src.data_loaders.transfermarkt_scraper import TransfermarktScraper
+    from src.data_loaders.soccerdata_loader import load_player_season_stats
 
-    scraper = TransfermarktScraper(cache_hours=168)
-    cache_dir = Path(PROJECT_ROOT) / "data" / "cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_file = cache_dir / f"transfermarkt_stats_{league_name.lower().replace(' ', '_')}_{season}.csv"
+    if season_start_year is None:
+        now = datetime.now()
+        season_start_year = now.year if now.month >= 8 else now.year - 1
 
-    cached_rows = {}
-    if cache_file.exists():
-        try:
-            cache_df = pd.read_csv(cache_file)
-            for _, row in cache_df.iterrows():
-                key = (str(row.get("name", "")).strip().lower(), str(row.get("team", "")).strip().lower())
-                cached_rows[key] = {
-                    "minutes_played": int(row.get("minutes_played", 0) or 0),
-                    "appearances": int(row.get("appearances", 0) or 0),
-                    "goals": int(row.get("goals", 0) or 0),
-                    "assists": int(row.get("assists", 0) or 0),
-                }
-        except Exception as e:
-            logger.warning(f"Failed to read Transfermarkt stats cache: {e}")
+    squad_team_by_name = {}
+    if players_df is not None and "name" in getattr(players_df, "columns", []):
+        for _, p in players_df[["name", "team"]].drop_duplicates().iterrows():
+            squad_team_by_name[_normalize_player_key(str(p["name"]))] = str(p["team"])
+
+    print(f"   Loading {league_name} season stats from FBref (apps/goals/assists/minutes)...")
+    df = load_player_season_stats(league_name, season_start_year)
+    if df is None or df.empty:
+        print(f"   FBref returned no rows for {league_name}; stats fall back to FPL.")
+        return {}, {}
 
     minutes_lookup: dict = {}
     signal_lookup: dict = {}
-    updated_rows = []
-    matched = 0
-    players = players_df[["name", "team"]].drop_duplicates()
-    print(f"   Loading {league_name} season stats from Transfermarkt (apps/goals/assists/minutes)...")
-
-    for _, player in players.iterrows():
-        name = str(player.get("name", "")).strip()
-        team = str(player.get("team", "")).strip()
-        key = (name.lower(), team.lower())
-
-        entry = cached_rows.get(key)
-        if entry is None:
-            try:
-                match = scraper.search_player(name, team_hint=team)
-                if match:
-                    stats = scraper.get_player_stats(match["slug"], match["player_id"], season=str(season))
-                    entry = {
-                        "minutes_played": int(stats.get("minutes_played", 0) or 0),
-                        "appearances": int(stats.get("appearances", 0) or 0),
-                        "goals": int(stats.get("goals", 0) or 0),
-                        "assists": int(stats.get("assists", 0) or 0),
-                    }
-                else:
-                    entry = {"minutes_played": 0, "appearances": 0, "goals": 0, "assists": 0}
-            except Exception as e:
-                logger.debug(f"Transfermarkt stats lookup failed for {name} ({team}): {e}")
-                entry = {"minutes_played": 0, "appearances": 0, "goals": 0, "assists": 0}
-
-        mins = int(entry.get("minutes_played", 0) or 0)
-        apps = int(entry.get("appearances", 0) or 0)
-        goals = int(entry.get("goals", 0) or 0)
-        assists = int(entry.get("assists", 0) or 0)
-        found = mins > 0 or apps > 0 or goals > 0 or assists > 0
-        if found:
-            matched += 1
+    for _, row in df.iterrows():
+        name = str(row.get("name", "")).strip()
+        if not name:
+            continue
+        # Prefer the squad's team string so keys line up with FPL/the squad.
+        team = squad_team_by_name.get(_normalize_player_key(name), str(row.get("team", "")).strip())
+        mins = int(row.get("season_minutes", 0) or 0)
+        apps = int(row.get("appearances", 0) or 0)
+        goals = int(row.get("goals", 0) or 0)
+        assists = int(row.get("assists", 0) or 0)
 
         _register_minutes_payload(
             minutes_lookup,
             name,
-            {"minutes_played": mins, "appearances": apps, "source": "transfermarkt"},
+            {"minutes_played": mins, "appearances": apps, "source": "fbref"},
             team,
         )
-        # Only register the signal when TM actually has the player, so the
-        # caller's FPL fallback fills the gaps instead of overwriting with 0/0.
-        if found:
-            per90 = 90.0 / mins if mins > 0 else 0.0
-            _register_signal_payload(
-                signal_lookup,
-                name,
-                {
-                    "goals": goals,
-                    "assists": assists,
-                    "goals_per_90": round(goals * per90, 3),
-                    "assists_per_90": round(assists * per90, 3),
-                    "minutes": mins,
-                },
-                team,
-            )
+        per90 = 90.0 / mins if mins > 0 else 0.0
+        _register_signal_payload(
+            signal_lookup,
+            name,
+            {
+                "goals": goals,
+                "assists": assists,
+                "goals_per_90": round(goals * per90, 3),
+                "assists_per_90": round(assists * per90, 3),
+                "minutes": mins,
+            },
+            team,
+        )
 
-        updated_rows.append({"name": name, "team": team, **entry})
-
-    try:
-        pd.DataFrame(updated_rows).to_csv(cache_file, index=False)
-    except Exception as e:
-        logger.warning(f"Failed to write Transfermarkt stats cache: {e}")
-
-    print(f"   Transfermarkt season stats matched {matched}/{len(players)} {league_name} players")
+    print(f"   FBref season stats: {len(df)} {league_name} players")
     return minutes_lookup, signal_lookup
 
 
@@ -1640,14 +1606,13 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
         return rows
 
     # --- Premier League ---
-    # Displayed season stats (apps/goals/assists/minutes) come from Transfermarkt
-    # so PL cards match what fans verify against; FPL fills only where TM has no
-    # record. FPL stays the live source for price/ownership/form at serve time.
-    pl_tm_minutes, pl_tm_signal = load_transfermarkt_stats_lookups(
-        players, season, league_name="Premier League"
-    )
-    pl_minutes_lookup = _merge_minutes_lookup(pl_tm_minutes, minutes_lookup)  # TM wins, FPL fills gaps
-    pl_signal_lookup = {**epl_signal_lookup, **pl_tm_signal}  # TM overwrites FPL where found
+    # Displayed season stats (apps/goals/assists/minutes) come from FBref so PL
+    # cards show real appearances and official goals/assists (matching what fans
+    # verify against), not FPL's minutes/90 proxy. FPL fills only where FBref has
+    # no record, and stays the live source for price/ownership/form at serve time.
+    pl_fb_minutes, pl_fb_signal = load_fbref_stats_lookups(players, league_name="Premier League")
+    pl_minutes_lookup = _merge_minutes_lookup(pl_fb_minutes, minutes_lookup)  # FBref wins, FPL fills gaps
+    pl_signal_lookup = {**epl_signal_lookup, **pl_fb_signal}  # FBref overwrites FPL where found
     epl_rows = _build_player_rows(
         players,
         matches,
@@ -2375,6 +2340,26 @@ def main():
         print("\nWARNING: La Liga players missing from result — skipping save to preserve existing pkl.")
         print("La Liga fetch must have failed. Existing predictions remain unchanged.")
         sys.exit(0)
+
+    # Per-league preservation guard: if a league's squad fetch degraded badly
+    # (e.g. football-data 403s on most Bundesliga teams), the fresh frame has far
+    # fewer players than before. Rather than ship that regression, keep the
+    # existing rows for any league that came back below 60% of its prior count.
+    # Mirrors the La Liga guard above but per-league and non-fatal.
+    existing_idf = artifacts.get("inference_df")
+    if existing_idf is not None and "league" in getattr(existing_idf, "columns", []) and not args.dry_run:
+        prior_counts = existing_idf["league"].value_counts().to_dict()
+        fresh_counts = inference_df["league"].value_counts().to_dict()
+        preserved = []
+        for league, prior_n in prior_counts.items():
+            fresh_n = fresh_counts.get(league, 0)
+            if prior_n >= 50 and fresh_n < 0.6 * prior_n:
+                print(f"\nWARNING: {league} returned {fresh_n}/{prior_n} players (<60%); "
+                      f"preserving existing {league} rows instead of shipping a regression.")
+                inference_df = inference_df[inference_df["league"] != league]
+                preserved.append(existing_idf[existing_idf["league"] == league])
+        if preserved:
+            inference_df = pd.concat([inference_df] + preserved, ignore_index=True)
 
     # Save
     if args.dry_run:
