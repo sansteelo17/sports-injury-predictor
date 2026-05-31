@@ -1,4 +1,4 @@
-import { PlayerSummary, PlayerRisk, TeamOverview, FPLInsights, LeagueStanding, StandingsSummary, WhatIfProjection, FPLSquadSync, LaLigaStandingRow, Competition } from '@/types/api';
+import { PlayerSummary, PlayerRisk, TeamOverview, FPLInsights, LeagueStanding, StandingsSummary, WhatIfProjection, FPLSquadSync, LaLigaStandingRow, Competition, WinnerOdds } from '@/types/api';
 
 const rawApiUrl = process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/+$/, '');
 const API_BASE = rawApiUrl
@@ -65,6 +65,10 @@ export async function getTeams(leagueOrCompetition?: string, competition?: strin
 
 export async function getCompetitions(): Promise<Competition[]> {
   return fetchAPI<Competition[]>('/competitions');
+}
+
+export async function getWinnerOdds(competition: string): Promise<WinnerOdds> {
+  return fetchAPI<WinnerOdds>(`/competitions/${encodeURIComponent(competition)}/winner-odds`);
 }
 
 export async function getTeamOverview(teamName: string): Promise<TeamOverview> {

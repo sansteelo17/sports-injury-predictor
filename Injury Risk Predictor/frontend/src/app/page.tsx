@@ -10,6 +10,7 @@ import {
   getTeamBadges,
   getFPLSquad,
   getLaLigaStandings,
+  getWinnerOdds,
 } from "@/lib/api";
 import {
   TeamOverview as TeamOverviewType,
@@ -18,6 +19,7 @@ import {
   StandingsSummary,
   FPLSquadSync,
   LaLigaStandingRow,
+  WinnerOdds,
 } from "@/types/api";
 import { TeamSelector } from "@/components/TeamSelector";
 import { TeamOverview } from "@/components/TeamOverview";
@@ -27,6 +29,7 @@ import { LabNotes } from "@/components/LabNotes";
 import { FPLInsights } from "@/components/FPLInsights";
 import { StandingsCards } from "@/components/StandingsCards";
 import { LaLigaStandingsCards } from "@/components/LaLigaStandingsCards";
+import { WinnerOddsCard } from "@/components/WinnerOddsCard";
 import { FPLSquadInput } from "@/components/FPLSquadInput";
 import { FPLSquadView } from "@/components/FPLSquadView";
 import {
@@ -52,6 +55,7 @@ export default function Home() {
   const [fplInsights, setFplInsights] = useState<FPLInsightsType | null>(null);
   const [standings, setStandings] = useState<StandingsSummary | null>(null);
   const [laLigaStandings, setLaLigaStandings] = useState<LaLigaStandingRow[]>([]);
+  const [winnerOdds, setWinnerOdds] = useState<WinnerOdds | null>(null);
   const [teamBadges, setTeamBadges] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -119,6 +123,17 @@ export default function Home() {
       .catch(() => console.log("La Liga standings unavailable"));
   }, [league]);
 
+  // Tournament-winner odds for the World Cup view (cleared otherwise).
+  useEffect(() => {
+    if (!isInternational) {
+      setWinnerOdds(null);
+      return;
+    }
+    getWinnerOdds(competitionId)
+      .then(setWinnerOdds)
+      .catch(() => setWinnerOdds(null));
+  }, [isInternational, competitionId]);
+
   const handleLeagueSwitch = (l: CompetitionChoice) => {
     if (l !== league) {
       setLeague(l);
@@ -129,13 +144,18 @@ export default function Home() {
 
   // Load team overview when team selected
   useEffect(() => {
-    if (!selectedTeam) {
-      setTeamOverview(null);
-      setSelectedPlayer(null);
-      setPlayerRisk(null);
-      return;
-    }
+    // Clear the previous team's overview, player, and standings immediately so
+    // nothing stale lingers while the new team loads (e.g. switching from an
+    // England WC view to Barcelona). Without this, the old content stays on
+    // screen until the new fetch resolves.
+    setTeamOverview(null);
+    setSelectedPlayer(null);
+    setPlayerRisk(null);
+    setStandings(null);
 
+    if (!selectedTeam) return;
+
+    let cancelled = false;
     setLoading(true);
     setError(null);
 
@@ -147,18 +167,22 @@ export default function Home() {
 
     Promise.all([getTeamOverview(selectedTeam), standingsPromise])
       .then(([teamData, standingsData]) => {
+        if (cancelled) return; // a newer team was selected; drop this response
         setTeamOverview(teamData);
-        if (skipFplStandings) {
-          setStandings(null);
-        } else {
+        if (!skipFplStandings) {
           setStandings(standingsData as StandingsSummary | null);
-          setLaLigaStandings([]);
         }
-        setSelectedPlayer(null);
-        setPlayerRisk(null);
       })
-      .catch(() => setError("Failed to load team data"))
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (!cancelled) setError("Failed to load team data");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedTeam, league]);
 
   // Load player risk when player selected
@@ -168,12 +192,24 @@ export default function Home() {
       return;
     }
 
+    let cancelled = false;
     setLoading(true);
     setView("overview");
+    setPlayerRisk(null); // drop the previous player's card before the new one loads
     getPlayerRisk(selectedPlayer, competitionId)
-      .then(setPlayerRisk)
-      .catch(() => setError("Failed to load player data"))
-      .finally(() => setLoading(false));
+      .then((data) => {
+        if (!cancelled) setPlayerRisk(data); // ignore a stale player's response
+      })
+      .catch(() => {
+        if (!cancelled) setError("Failed to load player data");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedPlayer, competitionId]);
 
   // Squad sync handler
@@ -405,6 +441,11 @@ export default function Home() {
             </>
           )}
         </div>
+
+        {/* Tournament winner odds (World Cup view) */}
+        {isInternational && winnerOdds && (
+          <WinnerOddsCard data={winnerOdds} darkMode={darkMode} />
+        )}
 
         {/* Error State */}
         {error && (

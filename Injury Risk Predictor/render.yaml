@@ -33,7 +33,7 @@ services:
       - key: OPENAI_REASONING_EFFORT
         value: low
       - key: NARRATIVE_LLM_TEMPERATURE
-        value: "0.7"
+        value: "0.8"
       - key: NARRATIVE_LLM_TIMEOUT_SECONDS
         value: "45"
       - key: OPENAI_API_KEY

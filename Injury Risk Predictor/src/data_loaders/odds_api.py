@@ -50,6 +50,7 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env")
 SPORT_KEY = "soccer_epl"
 SPORT_KEY_LA_LIGA = "soccer_spain_la_liga"
 SPORT_KEY_WORLD_CUP = "soccer_fifa_world_cup"
+SPORT_KEY_WORLD_CUP_WINNER = "soccer_fifa_world_cup_winner"
 
 # Market types we care about
 MARKETS = {
@@ -457,6 +458,60 @@ class OddsClient:
         except Exception as e:
             logger.debug("WC odds fetch failed for %s vs %s: %s", team_name, opponent, e)
             return None
+
+    def get_world_cup_winner_odds(self, top_n: int = 12) -> List[Dict]:
+        """Aggregated bookmaker outright (tournament winner) odds, or [].
+
+        Averages decimal odds per team across books, then reports a vig-adjusted
+        win probability (each team's implied chance normalised by the field, so
+        the column sums to ~100% instead of carrying the bookmaker margin).
+        Sorted shortest-price first. Empty on any failure.
+        """
+        if not self.api_key:
+            return []
+        cache_key = "wc_winner_odds"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        try:
+            resp = self.session.get(
+                f"{ODDS_API_URL}/sports/{SPORT_KEY_WORLD_CUP_WINNER}/odds",
+                params={
+                    "apiKey": self.api_key,
+                    "regions": "uk,eu,us",
+                    "markets": "outrights",
+                    "oddsFormat": "decimal",
+                },
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                logger.debug("WC winner odds HTTP %s", resp.status_code)
+                self._cache[cache_key] = []
+                return []
+            from collections import defaultdict
+            prices: Dict[str, List[float]] = defaultdict(list)
+            for event in resp.json() or []:
+                for bookie in event.get("bookmakers", []):
+                    for market in bookie.get("markets", []):
+                        if market.get("key") != "outrights":
+                            continue
+                        for o in market.get("outcomes", []):
+                            name, price = o.get("name"), o.get("price")
+                            if name and price and price > 0:
+                                prices[name].append(price)
+            rows = []
+            for team, plist in prices.items():
+                avg = sum(plist) / len(plist)
+                rows.append({"team": team, "decimal_odds": round(avg, 2), "_implied": 1.0 / avg, "books": len(plist)})
+            field = sum(r["_implied"] for r in rows) or 1.0
+            for r in rows:
+                r["win_probability"] = round(r.pop("_implied") / field, 4)
+            rows.sort(key=lambda r: r["decimal_odds"])
+            result = rows[:top_n]
+            self._cache[cache_key] = result
+            return result
+        except Exception as e:
+            logger.debug("WC winner odds failed: %s", e)
+            return []
 
     @staticmethod
     def _bookmaker_aliases() -> Dict[str, List[str]]:

@@ -166,6 +166,9 @@ def build_baseline_rows(
                 "position": p.get("position") or "Unknown",
                 "shirt_number": p.get("shirt_number"),
                 "age": p.get("age"),
+                # Carry DOB so the API can derive age consistently (and as a
+                # fallback when the squad age column is missing).
+                "date_of_birth": p.get("date_of_birth"),
                 "nationality": p.get("nationality"),
                 "national_group": groups.get(national_team),
                 "next_intl_opponent": nxt.get("opponent"),

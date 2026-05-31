@@ -147,6 +147,31 @@ def _normalize_team_key(team: str) -> str:
     return _LA_LIGA_TEAM_KEY_MAP.get(key, key)
 
 
+# Surname-only matching is inherently ambiguous: two players can share a surname
+# (Anthony vs Kaide Gordon, Bruno vs Mateus Fernandes). A flat surname key lets
+# the second registration overwrite the first, so a later lookup serves one
+# player's stats to another. Namespace surname keys and disable any that collide
+# so a wrong match is never returned — a miss is better than another player's
+# appearances/minutes/goals.
+_AMBIGUOUS = object()
+
+
+def _register_surname_key(lookup: dict, normalized_name: str, payload: dict) -> None:
+    parts = normalized_name.split()
+    if len(parts) < 2:
+        return  # mononyms are already covered by full-name keys
+    key = ("__surname__", parts[-1])
+    if key not in lookup:
+        lookup[key] = payload
+    elif lookup[key] is not payload:
+        lookup[key] = _AMBIGUOUS
+
+
+def _surname_candidate(normalized_name: str):
+    parts = normalized_name.split()
+    return ("__surname__", parts[-1]) if len(parts) >= 2 else None
+
+
 def _register_minutes_payload(lookup: dict, name: str, payload: dict, team: str | None = None):
     """Register a minutes payload under robust match keys."""
     if not name:
@@ -171,9 +196,7 @@ def _register_minutes_payload(lookup: dict, name: str, payload: dict, team: str 
         lookup[(normalized_name, normalized_team)] = payload
         lookup[(canonical_name, normalized_team)] = payload
 
-    parts = normalized_name.split()
-    if parts:
-        lookup[parts[-1]] = payload
+    _register_surname_key(lookup, normalized_name, payload)
 
 
 def _lookup_minutes_payload(lookup: dict, player_name: str, team_name: str | None = None):
@@ -192,13 +215,14 @@ def _lookup_minutes_payload(lookup: dict, player_name: str, team_name: str | Non
         normalized_name,
         canonical_name,
     ])
-    parts = normalized_name.split()
-    if parts:
-        candidates.append(parts[-1])
+    candidates.append(_surname_candidate(normalized_name))
 
     for key in candidates:
-        if key in lookup:
-            return lookup[key]
+        if key is None:
+            continue
+        val = lookup.get(key)
+        if val is not None and val is not _AMBIGUOUS:
+            return val
     return None
 
 
@@ -216,11 +240,9 @@ def _register_signal_payload(lookup: dict, name: str, payload: dict, team: str |
             (normalized_name, normalized_team),
             (canonical_name, normalized_team),
         ])
-    if normalized_name.split():
-        keys.append(normalized_name.split()[-1])
-
     for key in keys:
         lookup[key] = payload
+    _register_surname_key(lookup, normalized_name, payload)
 
 
 def _lookup_signal_payload(lookup: dict, player_name: str, team_name: str | None = None):
@@ -235,12 +257,14 @@ def _lookup_signal_payload(lookup: dict, player_name: str, team_name: str | None
             (canonical_name, normalized_team),
         ])
     candidates.extend([player_name, player_name.lower(), normalized_name, canonical_name])
-    if normalized_name.split():
-        candidates.append(normalized_name.split()[-1])
+    candidates.append(_surname_candidate(normalized_name))
 
     for key in candidates:
-        if key in lookup:
-            return lookup[key]
+        if key is None:
+            continue
+        val = lookup.get(key)
+        if val is not None and val is not _AMBIGUOUS:
+            return val
     return None
 
 
@@ -872,10 +896,9 @@ def load_transfermarkt_minutes_lookup(players_df, season: int, league_name: str 
             "appearances": int(entry.get("appearances", 0) or 0),
             "source": str(entry.get("source", "transfermarkt")),
         }
-        lookup[name] = payload
-        lookup[name.lower()] = payload
-        if " " in name:
-            lookup[name.split()[-1]] = payload
+        # Register through the shared helper so the surname key is ambiguity-safe
+        # (two players sharing a surname no longer overwrite each other's stats).
+        _register_minutes_payload(lookup, name, payload, team)
 
         updated_rows.append({
             "name": name,
