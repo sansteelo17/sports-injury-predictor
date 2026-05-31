@@ -127,6 +127,23 @@ SERIE_A = Competition(
 )
 
 
+LIGUE_1 = Competition(
+    id="ligue-1",
+    name="Ligue 1",
+    type="club",
+    capabilities=CompetitionCapabilities(
+        has_fpl=False,
+        has_club_acwr_thresholds=True,
+        has_team_badges=True,
+        standings_kind="league_table",
+        risk_calibration_cohort="self",
+        acwr_spike_threshold=1.8,
+        fixture_label="Matchday",
+    ),
+    league_label_aliases=("ligue 1", "ligue-1", "ligue1", "french ligue 1"),
+)
+
+
 WORLD_CUP_2026 = Competition(
     id="world-cup-2026",
     name="FIFA World Cup 2026",
@@ -147,7 +164,7 @@ WORLD_CUP_2026 = Competition(
 
 
 _REGISTRY: Dict[str, Competition] = {
-    c.id: c for c in (PREMIER_LEAGUE, LA_LIGA, BUNDESLIGA, SERIE_A, WORLD_CUP_2026)
+    c.id: c for c in (PREMIER_LEAGUE, LA_LIGA, BUNDESLIGA, SERIE_A, LIGUE_1, WORLD_CUP_2026)
 }
 
 

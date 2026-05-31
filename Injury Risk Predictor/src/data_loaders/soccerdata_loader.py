@@ -38,6 +38,7 @@ _LEAGUE_CODES = {
     "Premier League": "ENG-Premier League",
     "La Liga": "ESP-La Liga",
     "Serie A": "ITA-Serie A",
+    "Ligue 1": "FRA-Ligue 1",
 }
 
 
