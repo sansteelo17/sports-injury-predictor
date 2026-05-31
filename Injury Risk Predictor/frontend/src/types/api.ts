@@ -252,12 +252,19 @@ export interface WinnerOddsRow {
   decimal_odds: number;
   win_probability: number;
   books: number;
+  flag_url: string | null;
+}
+
+export interface BookmakerRef {
+  key: string;
+  title: string;
 }
 
 export interface WinnerOdds {
   competition_id: string;
   available: boolean;
   markets: WinnerOddsRow[];
+  bookmakers: BookmakerRef[];
   disclaimer: string;
 }
 
@@ -282,6 +289,8 @@ export interface InternationalContext {
   club_goals_per_90: number | null;
   club_assists_per_90: number | null;
   fifa_rating: number | null;
+  current_club: string | null;
+  recently_moved: boolean;
 }
 
 export interface TeamNextFixture {

@@ -1424,6 +1424,10 @@ class InternationalContext(BaseModel):
     club_goals_per_90: Optional[float] = None
     club_assists_per_90: Optional[float] = None
     fifa_rating: Optional[int] = None
+    # Verified current club (Transfermarkt). recently_moved is True when it
+    # differs from the season club the form stats come from.
+    current_club: Optional[str] = None
+    recently_moved: bool = False
 
 
 class NewsItem(BaseModel):
@@ -1956,8 +1960,78 @@ LA_LIGA_BADGE_MAP: Dict[str, str] = {
 }
 
 
+_EFL_CREST_STOPWORDS = {
+    "borussia", "hellas", "real", "calcio", "eintracht", "bayer", "werder",
+    "union", "fortuna", "athletic", "sporting", "united", "city",
+}
+_efl_crest_map: Optional[Dict[str, Any]] = None  # distinctive token -> crest url (or _AMBIGUOUS)
+_EFL_AMBIGUOUS = object()
+
+
+def _norm_club_tokens(name: str) -> List[str]:
+    import unicodedata
+    s = "".join(c for c in unicodedata.normalize("NFKD", str(name)) if not unicodedata.combining(c)).lower()
+    s = re.sub(r"[^a-z0-9 ]", " ", s)
+    return [t for t in s.split() if len(t) >= 4 and t not in _EFL_CREST_STOPWORDS and not t.isdigit()]
+
+
+def _load_efl_crests() -> Dict[str, Any]:
+    """Lazily fetch Bundesliga + Serie A crests from football-data.org and index
+    them by distinctive name token (ambiguity-guarded, like the stats fix)."""
+    global _efl_crest_map
+    if _efl_crest_map is not None:
+        return _efl_crest_map
+    mapping: Dict[str, Any] = {}
+    key = os.getenv("FOOTBALL_DATA_API_KEY", "")
+    if key:
+        for code in ("BL1", "SA"):
+            try:
+                resp = requests.get(
+                    f"https://api.football-data.org/v4/competitions/{code}/teams",
+                    headers={"X-Auth-Token": key},
+                    timeout=12,
+                )
+                if resp.status_code != 200:
+                    continue
+                for t in resp.json().get("teams", []):
+                    crest = t.get("crest")
+                    if not crest:
+                        continue
+                    tokens = set(_norm_club_tokens(t.get("name", "")) + _norm_club_tokens(t.get("shortName", "")))
+                    for tok in tokens:
+                        if tok not in mapping:
+                            mapping[tok] = crest
+                        elif mapping[tok] != crest:
+                            mapping[tok] = _EFL_AMBIGUOUS  # token shared by two clubs — unusable
+            except Exception as e:
+                logger.debug("EFL crest fetch failed for %s: %s", code, e)
+    _efl_crest_map = mapping
+    return mapping
+
+
+def _efl_crest_for(team_name: str) -> Optional[str]:
+    mapping = _load_efl_crests()
+    if not mapping:
+        return None
+    qtoks = _norm_club_tokens(team_name)
+    for tok in qtoks:
+        crest = mapping.get(tok)
+        if crest is not None and crest is not _EFL_AMBIGUOUS:
+            return crest
+    # Prefix fallback for surface drift like "Hamburg" vs "Hamburger SV".
+    for tok in qtoks:
+        if len(tok) < 5:
+            continue
+        for mk, crest in mapping.items():
+            if crest is _EFL_AMBIGUOUS or len(mk) < 5:
+                continue
+            if tok.startswith(mk) or mk.startswith(tok):
+                return crest
+    return None
+
+
 def get_team_badge_url(team_name: str) -> Optional[str]:
-    """Get badge URL for a team (EPL via FPL CDN, La Liga via football-data.org crests)."""
+    """Get badge URL for a team (EPL via FPL CDN, La Liga / Bundesliga / Serie A via football-data.org crests)."""
     team_lower = team_name.lower().strip()
 
     # La Liga — check static map first (no API dependency)
@@ -1990,6 +2064,11 @@ def get_team_badge_url(team_name: str) -> Optional[str]:
             continue
         if search in key or key in search:
             return f"https://resources.premierleague.com/premierleague/badges/50/t{fpl_team_ids[key]}@x2.png"
+
+    # Bundesliga / Serie A crests (football-data.org, lazily fetched + cached).
+    efl = _efl_crest_for(team_name)
+    if efl:
+        return efl
     return None
 
 
@@ -2554,6 +2633,34 @@ def _get_transfermarkt_scraper():
         from src.data_loaders.transfermarkt_scraper import TransfermarktScraper
         _tm_scraper_instance = TransfermarktScraper(cache_hours=168)
     return _tm_scraper_instance
+
+
+_current_club_cache: Dict[str, Optional[str]] = {}
+
+
+def _get_current_club_cached(player_name: str, club_hint: Optional[str] = None) -> Optional[str]:
+    """Verified current club from Transfermarkt (accounts for transfers/loans).
+
+    The season club in the model can be stale once a player moves; this is the
+    canonical source. ``club_hint`` disambiguates namesakes (so two players who
+    share a surname do not collide). In-memory cached per process; the scraper
+    disk-caches a week. Returns None on any failure so we show a verified club
+    or nothing, never a guess.
+    """
+    if not player_name:
+        return None
+    key = f"{_normalize_cache_key(player_name)}|{_normalize_cache_key(club_hint)}"
+    if key in _current_club_cache:
+        return _current_club_cache[key]
+    club = None
+    try:
+        match = _get_transfermarkt_scraper().search_player(player_name, team_hint=club_hint)
+        if match:
+            club = match.get("team")
+    except Exception as e:
+        logger.debug("Current-club lookup failed for %s: %s", player_name, e)
+    _current_club_cache[key] = club
+    return club
 
 
 def _get_transfermarkt_player_profile_cached(player_name: str, team_hint: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -5055,6 +5162,16 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
     # voice grounded in the same context chunks.
     intl_ctx = _build_international_context(row)
 
+    # Verified current club from Transfermarkt — catches transfer-window moves
+    # the season data predates (the form stats stay labelled as the old club).
+    if has_risk and intl_ctx.club_team:
+        _cur = _get_current_club_cached(player_name, intl_ctx.club_team)
+        if _cur:
+            intl_ctx.current_club = _cur
+            intl_ctx.recently_moved = (
+                _normalize_team_lookup_key(_cur) != _normalize_team_lookup_key(intl_ctx.club_team)
+            )
+
     # Hybrid news: deterministic fetch from trusted feeds, attributed. Yara may
     # summarise these but never sources or invents them; the cards render
     # straight from here regardless of the LLM.
@@ -5091,14 +5208,22 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
                 )
             chunks.append({"kind": "club", "text": ". ".join(club_bits) + "."})
         if has_risk:
+            # Translate the workload ratio into plain language so the narrative
+            # never echoes "ACWR" jargon (Yara is a pundit, not a dashboard).
+            _acwr = _safe_float(row.get("acwr"), 0.0)
+            if _acwr >= 1.5:
+                _load = "his workload has spiked, ramped up fast in recent weeks"
+            elif _acwr and _acwr < 0.8:
+                _load = "he is short of recent minutes and match sharpness"
+            else:
+                _load = "his minutes have been steady and well managed"
             chunks.append({
                 "kind": "risk",
                 # Quote the SAME number the card shows (the within-cohort
-                # normalised risk score), not the raw model probability. Feeding
-                # raw prob here made Yara say 51% while the header showed 64%.
+                # normalised risk score), not the raw model probability.
                 "text": (
-                    f"Two-week injury risk: {risk_pct}% (this is the number to quote). "
-                    f"ACWR {_safe_float(row.get('acwr'), 0.0):.2f}, "
+                    f"Two-week injury risk is {risk_pct} percent (state this exact figure, no quotation marks). "
+                    f"Workload signal: {_load}. "
                     f"{_safe_int(row.get('previous_injuries', 0))} prior injuries, "
                     f"{_safe_int(row.get('days_since_last_injury'), 365)} days since last injury."
                 ),
@@ -6370,15 +6495,21 @@ def get_competition_winner_odds(competition_id: str):
     """
     comp = resolve_competition(competition_id, None)
     markets: List[Dict[str, Any]] = []
+    bookmakers: List[Dict[str, Any]] = []
     if comp is not None and comp.id == WORLD_CUP_2026.id and odds_client is not None:
         try:
-            markets = odds_client.get_world_cup_winner_odds()
+            data = odds_client.get_world_cup_winner_odds(top_n=48) or {}
+            markets = data.get("markets", [])
+            for m in markets:
+                m["flag_url"] = wc_flag_url(m.get("team", ""))
+            bookmakers = data.get("bookmakers", [])
         except Exception as e:
             logger.warning("Winner odds fetch failed for %s: %s", competition_id, e)
     return {
         "competition_id": comp.id if comp else competition_id,
         "available": bool(markets),
         "markets": markets,
+        "bookmakers": bookmakers,
         "disclaimer": "Bookmaker odds aggregated across sportsbooks, vig-adjusted. "
                       "Not affiliated with any operator and not betting advice.",
     }
