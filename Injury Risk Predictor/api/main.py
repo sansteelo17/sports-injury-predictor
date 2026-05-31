@@ -5133,14 +5133,22 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
                 )
             chunks.append({"kind": "club", "text": ". ".join(club_bits) + "."})
         if has_risk:
+            # Translate the workload ratio into plain language so the narrative
+            # never echoes "ACWR" jargon (Yara is a pundit, not a dashboard).
+            _acwr = _safe_float(row.get("acwr"), 0.0)
+            if _acwr >= 1.5:
+                _load = "his workload has spiked, ramped up fast in recent weeks"
+            elif _acwr and _acwr < 0.8:
+                _load = "he is short of recent minutes and match sharpness"
+            else:
+                _load = "his minutes have been steady and well managed"
             chunks.append({
                 "kind": "risk",
                 # Quote the SAME number the card shows (the within-cohort
-                # normalised risk score), not the raw model probability. Feeding
-                # raw prob here made Yara say 51% while the header showed 64%.
+                # normalised risk score), not the raw model probability.
                 "text": (
-                    f"Two-week injury risk: {risk_pct}% (this is the number to quote). "
-                    f"ACWR {_safe_float(row.get('acwr'), 0.0):.2f}, "
+                    f"Two-week injury risk is {risk_pct} percent (state this exact figure, no quotation marks). "
+                    f"Workload signal: {_load}. "
                     f"{_safe_int(row.get('previous_injuries', 0))} prior injuries, "
                     f"{_safe_int(row.get('days_since_last_injury'), 365)} days since last injury."
                 ),
