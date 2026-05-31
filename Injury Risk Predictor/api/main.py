@@ -324,6 +324,28 @@ def _normalize_team_lookup_key(value: Optional[str]) -> str:
     return _normalize_cache_key(_strip_accents(raw))
 
 
+# Generic club-name tokens that carry no identifying signal. Stripped before
+# comparing two club strings from different providers so "Newcastle" and
+# "Newcastle United FC" are recognised as the same club.
+_CLUB_NOISE_TOKENS = {
+    "fc", "cf", "afc", "sc", "ssc", "ac", "as", "ssd", "calcio", "club",
+    "cd", "ud", "rc", "rcd", "sd", "sad", "futbol", "football", "the",
+}
+
+
+def _same_club_name(a: Optional[str], b: Optional[str]) -> bool:
+    """True if two club strings refer to the same club, tolerating provider
+    naming variants. Prevents the recently-moved badge from firing on a
+    cosmetic spelling difference (the real signal is a *different* club)."""
+    ta = {t for t in _normalize_team_lookup_key(a).split() if t not in _CLUB_NOISE_TOKENS}
+    tb = {t for t in _normalize_team_lookup_key(b).split() if t not in _CLUB_NOISE_TOKENS}
+    if not ta or not tb:
+        return False
+    # Equal, or one set of distinctive tokens is contained in the other
+    # ("newcastle" within "newcastle united").
+    return ta == tb or ta <= tb or tb <= ta
+
+
 def _require_refresh_token(x_refresh_token: Optional[str]) -> None:
     expected = (os.environ.get("REFRESH_CRON_TOKEN") or "").strip()
     if not expected:
@@ -5168,9 +5190,9 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
         _cur = _get_current_club_cached(player_name, intl_ctx.club_team)
         if _cur:
             intl_ctx.current_club = _cur
-            intl_ctx.recently_moved = (
-                _normalize_team_lookup_key(_cur) != _normalize_team_lookup_key(intl_ctx.club_team)
-            )
+            # Only a genuinely different club counts as a move; naming variants
+            # ("Newcastle" vs "Newcastle United FC") must not trip the badge.
+            intl_ctx.recently_moved = not _same_club_name(_cur, intl_ctx.club_team)
 
     # Hybrid news: deterministic fetch from trusted feeds, attributed. Yara may
     # summarise these but never sources or invents them; the cards render
