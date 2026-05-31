@@ -209,6 +209,17 @@ export function PlayerCard({ player, darkMode = true, seasonOver = false }: Play
                   <span className="hidden sm:inline">·</span>
                   <span className="text-sm">Age {player.age}</span>
                 </div>
+                {isInternational && intl?.recently_moved && intl?.current_club && (
+                  <span
+                    className={`inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-md text-[11px] font-medium ${
+                      darkMode
+                        ? "bg-[#86efac]/15 text-[#86efac] border border-[#86efac]/30"
+                        : "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                    }`}
+                  >
+                    Recently moved to {intl.current_club}
+                  </span>
+                )}
               </div>
               <div className="flex items-center justify-start sm:justify-end gap-2 w-full sm:w-auto flex-shrink-0">
                 {player.is_currently_injured ? (
@@ -626,6 +637,11 @@ export function PlayerCard({ player, darkMode = true, seasonOver = false }: Play
                 }`}>
                   <div className={`text-xs uppercase tracking-wider font-semibold mb-2 ${darkMode ? "text-gray-400" : "text-gray-600"}`}>
                     Club form · {intl.club_team}
+                    {intl.recently_moved && intl.current_club && (
+                      <span className={`ml-1 normal-case font-normal ${darkMode ? "text-gray-500" : "text-gray-500"}`}>
+                        (before moving to {intl.current_club})
+                      </span>
+                    )}
                   </div>
                   <div className="grid grid-cols-4 gap-2">
                     <div className="text-center">

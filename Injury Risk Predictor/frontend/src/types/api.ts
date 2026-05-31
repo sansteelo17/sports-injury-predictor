@@ -282,6 +282,8 @@ export interface InternationalContext {
   club_goals_per_90: number | null;
   club_assists_per_90: number | null;
   fifa_rating: number | null;
+  current_club: string | null;
+  recently_moved: boolean;
 }
 
 export interface TeamNextFixture {

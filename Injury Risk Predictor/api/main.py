@@ -1424,6 +1424,10 @@ class InternationalContext(BaseModel):
     club_goals_per_90: Optional[float] = None
     club_assists_per_90: Optional[float] = None
     fifa_rating: Optional[int] = None
+    # Verified current club (Transfermarkt). recently_moved is True when it
+    # differs from the season club the form stats come from.
+    current_club: Optional[str] = None
+    recently_moved: bool = False
 
 
 class NewsItem(BaseModel):
@@ -2554,6 +2558,34 @@ def _get_transfermarkt_scraper():
         from src.data_loaders.transfermarkt_scraper import TransfermarktScraper
         _tm_scraper_instance = TransfermarktScraper(cache_hours=168)
     return _tm_scraper_instance
+
+
+_current_club_cache: Dict[str, Optional[str]] = {}
+
+
+def _get_current_club_cached(player_name: str, club_hint: Optional[str] = None) -> Optional[str]:
+    """Verified current club from Transfermarkt (accounts for transfers/loans).
+
+    The season club in the model can be stale once a player moves; this is the
+    canonical source. ``club_hint`` disambiguates namesakes (so two players who
+    share a surname do not collide). In-memory cached per process; the scraper
+    disk-caches a week. Returns None on any failure so we show a verified club
+    or nothing, never a guess.
+    """
+    if not player_name:
+        return None
+    key = f"{_normalize_cache_key(player_name)}|{_normalize_cache_key(club_hint)}"
+    if key in _current_club_cache:
+        return _current_club_cache[key]
+    club = None
+    try:
+        match = _get_transfermarkt_scraper().search_player(player_name, team_hint=club_hint)
+        if match:
+            club = match.get("team")
+    except Exception as e:
+        logger.debug("Current-club lookup failed for %s: %s", player_name, e)
+    _current_club_cache[key] = club
+    return club
 
 
 def _get_transfermarkt_player_profile_cached(player_name: str, team_hint: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -5054,6 +5086,16 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
     # template above becomes the *fallback* and OpenAI rewrites it in Yara's
     # voice grounded in the same context chunks.
     intl_ctx = _build_international_context(row)
+
+    # Verified current club from Transfermarkt — catches transfer-window moves
+    # the season data predates (the form stats stay labelled as the old club).
+    if has_risk and intl_ctx.club_team:
+        _cur = _get_current_club_cached(player_name, intl_ctx.club_team)
+        if _cur:
+            intl_ctx.current_club = _cur
+            intl_ctx.recently_moved = (
+                _normalize_team_lookup_key(_cur) != _normalize_team_lookup_key(intl_ctx.club_team)
+            )
 
     # Hybrid news: deterministic fetch from trusted feeds, attributed. Yara may
     # summarise these but never sources or invents them; the cards render
