@@ -129,13 +129,18 @@ export default function Home() {
 
   // Load team overview when team selected
   useEffect(() => {
-    if (!selectedTeam) {
-      setTeamOverview(null);
-      setSelectedPlayer(null);
-      setPlayerRisk(null);
-      return;
-    }
+    // Clear the previous team's overview, player, and standings immediately so
+    // nothing stale lingers while the new team loads (e.g. switching from an
+    // England WC view to Barcelona). Without this, the old content stays on
+    // screen until the new fetch resolves.
+    setTeamOverview(null);
+    setSelectedPlayer(null);
+    setPlayerRisk(null);
+    setStandings(null);
 
+    if (!selectedTeam) return;
+
+    let cancelled = false;
     setLoading(true);
     setError(null);
 
@@ -147,18 +152,22 @@ export default function Home() {
 
     Promise.all([getTeamOverview(selectedTeam), standingsPromise])
       .then(([teamData, standingsData]) => {
+        if (cancelled) return; // a newer team was selected; drop this response
         setTeamOverview(teamData);
-        if (skipFplStandings) {
-          setStandings(null);
-        } else {
+        if (!skipFplStandings) {
           setStandings(standingsData as StandingsSummary | null);
-          setLaLigaStandings([]);
         }
-        setSelectedPlayer(null);
-        setPlayerRisk(null);
       })
-      .catch(() => setError("Failed to load team data"))
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (!cancelled) setError("Failed to load team data");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedTeam, league]);
 
   // Load player risk when player selected
@@ -168,12 +177,24 @@ export default function Home() {
       return;
     }
 
+    let cancelled = false;
     setLoading(true);
     setView("overview");
+    setPlayerRisk(null); // drop the previous player's card before the new one loads
     getPlayerRisk(selectedPlayer, competitionId)
-      .then(setPlayerRisk)
-      .catch(() => setError("Failed to load player data"))
-      .finally(() => setLoading(false));
+      .then((data) => {
+        if (!cancelled) setPlayerRisk(data); // ignore a stale player's response
+      })
+      .catch(() => {
+        if (!cancelled) setError("Failed to load player data");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedPlayer, competitionId]);
 
   // Squad sync handler
