@@ -215,14 +215,23 @@ def _post_openai_chat(
             # Models that require max_completion_tokens are reasoning models
             # (GPT-5.x, o-series): they spend part of the budget on hidden
             # reasoning, so a tight cap leaves the visible content empty. Floor
-            # it high enough that reasoning + answer both fit.
+            # it high enough that reasoning + answer both fit, and cap reasoning
+            # effort — a 3-sentence scouting note needs no deep reasoning, and
+            # the default effort pushes latency past the request timeout (the
+            # "only one player works" symptom: slow calls abort to template).
             requested = int(payload.pop("max_tokens") or 0)
             payload["max_completion_tokens"] = max(requested, 1200)
+            payload.setdefault("reasoning_effort", os.getenv("OPENAI_REASONING_EFFORT", "low"))
             mutated = True
         if "temperature" in low and "temperature" in payload and (
             "unsupported" in low or "does not support" in low or "only the default" in low
         ):
             payload.pop("temperature", None)
+            mutated = True
+        if "reasoning_effort" in low and "reasoning_effort" in payload and (
+            "unsupported" in low or "does not support" in low or "invalid" in low
+        ):
+            payload.pop("reasoning_effort", None)
             mutated = True
         if not mutated:
             return resp
