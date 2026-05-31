@@ -365,6 +365,63 @@ def build_artifact_minutes_lookup(players_df, artifact_df, league_name: str):
     return lookup
 
 
+def build_artifact_signal_lookup(players_df, artifact_df, league_name: str):
+    """Seed goals/assists from the existing inference artifact when the live
+    stat source (FBref) is unavailable.
+
+    On Render the refresh runs without Chrome, so FBref returns nothing and the
+    PL block would otherwise fall back to FPL — whose goals/assists differ from
+    what fans verify against. Preferring the previously-shipped (FBref-built)
+    artifact stats over FPL keeps the displayed numbers correct across refreshes.
+    """
+    if not isinstance(artifact_df, pd.DataFrame) or artifact_df.empty:
+        return {}
+
+    artifact = artifact_df.copy()
+    if "league" in artifact.columns:
+        artifact = artifact[artifact["league"].fillna("") == league_name]
+    if artifact.empty:
+        return {}
+
+    wanted = {
+        (_normalize_player_key(str(row["name"])), _normalize_team_key(str(row["team"])))
+        for _, row in players_df[["name", "team"]].drop_duplicates().iterrows()
+    }
+
+    lookup = {}
+    matched = 0
+    for _, row in artifact.iterrows():
+        name = str(row.get("name", "")).strip()
+        team = str(row.get("team", "") or row.get("player_team", "")).strip()
+        key = (_normalize_player_key(name), _normalize_team_key(team))
+        if key not in wanted:
+            continue
+
+        goals = int(row.get("goals", 0) or 0)
+        assists = int(row.get("assists", 0) or 0)
+        minutes = int(row.get("minutes_played", 0) or 0)
+        if goals <= 0 and assists <= 0 and minutes <= 0:
+            continue
+
+        _register_signal_payload(
+            lookup,
+            name,
+            {
+                "goals": goals,
+                "assists": assists,
+                "goals_per_90": float(row.get("goals_per_90", 0) or 0.0),
+                "assists_per_90": float(row.get("assists_per_90", 0) or 0.0),
+                "minutes": minutes,
+            },
+            team=team,
+        )
+        matched += 1
+
+    if matched:
+        logger.info(f"Seeded {matched} {league_name} players from cached artifact signals")
+    return lookup
+
+
 def compute_team_workload(matches_df, team, as_of_date):
     """
     Compute team-level workload metrics.
@@ -1611,8 +1668,16 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
     # verify against), not FPL's minutes/90 proxy. FPL fills only where FBref has
     # no record, and stays the live source for price/ownership/form at serve time.
     pl_fb_minutes, pl_fb_signal = load_fbref_stats_lookups(players, league_name="Premier League")
-    pl_minutes_lookup = _merge_minutes_lookup(pl_fb_minutes, minutes_lookup)  # FBref wins, FPL fills gaps
-    pl_signal_lookup = {**epl_signal_lookup, **pl_fb_signal}  # FBref overwrites FPL where found
+    # Precedence FBref > artifact(prior pkl) > FPL. On Render (no Chrome) FBref
+    # returns nothing, so the previously-shipped correct stats must beat FPL's
+    # minutes/90 "appearances" and divergent assists rather than reverting.
+    pl_artifact_minutes = build_artifact_minutes_lookup(players, artifacts.get("inference_df"), "Premier League")
+    pl_artifact_signal = build_artifact_signal_lookup(players, artifacts.get("inference_df"), "Premier League")
+    pl_minutes_lookup = _merge_minutes_lookup(
+        _merge_minutes_lookup(pl_fb_minutes, pl_artifact_minutes),  # FBref over artifact
+        minutes_lookup,  # FPL fills only players neither had
+    )
+    pl_signal_lookup = {**epl_signal_lookup, **pl_artifact_signal, **pl_fb_signal}  # fbref > artifact > fpl
     epl_rows = _build_player_rows(
         players,
         matches,
