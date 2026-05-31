@@ -215,7 +215,9 @@ def _lookup_minutes_payload(lookup: dict, player_name: str, team_name: str | Non
         normalized_name,
         canonical_name,
     ])
-    candidates.append(_surname_candidate(normalized_name))
+    # Surname-only fallback removed: with no team binding it served a namesake's
+    # stats across clubs (Kaide Gordon picked up Anthony Gordon's numbers because
+    # only one "Gordon" was in the source). A miss beats a wrong match.
 
     for key in candidates:
         if key is None:
@@ -257,7 +259,9 @@ def _lookup_signal_payload(lookup: dict, player_name: str, team_name: str | None
             (canonical_name, normalized_team),
         ])
     candidates.extend([player_name, player_name.lower(), normalized_name, canonical_name])
-    candidates.append(_surname_candidate(normalized_name))
+    # Surname-only fallback removed: with no team binding it served a namesake's
+    # stats across clubs (Kaide Gordon picked up Anthony Gordon's numbers because
+    # only one "Gordon" was in the source). A miss beats a wrong match.
 
     for key in candidates:
         if key is None:
