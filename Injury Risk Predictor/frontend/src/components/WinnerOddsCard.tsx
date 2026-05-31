@@ -24,29 +24,11 @@ export function WinnerOddsCard({ data, darkMode = true }: WinnerOddsCardProps) {
       <div className="flex items-center gap-1.5 mb-2">
         <Trophy size={13} className={darkMode ? "text-[#86efac]" : "text-emerald-600"} />
         <h3 className="text-xs font-semibold">Who wins it</h3>
-        <span className={`text-[9px] ${muted}`}>bookmaker market</span>
-        {data.bookmakers?.length > 0 && (
-          <span className={`ml-auto flex items-center gap-1 ${muted}`}>
-            {data.bookmakers.slice(0, 4).map((b) => (
-              <img
-                key={b.key}
-                src={`https://logo.clearbit.com/${bookieDomain(b.key, b.title)}`}
-                alt={b.title}
-                title={b.title}
-                width={12}
-                height={12}
-                className="rounded-sm opacity-80"
-                onError={(e) => {
-                  (e.currentTarget as HTMLImageElement).style.display = "none";
-                }}
-              />
-            ))}
-          </span>
-        )}
+        <span className={`text-[9px] ${muted}`}>top 10 · bookmaker market</span>
       </div>
 
       <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-        {data.markets.map((row) => (
+        {data.markets.slice(0, 10).map((row) => (
           <div key={row.team} className="flex items-center gap-1.5 min-w-0">
             {row.flag_url ? (
               <img
@@ -69,6 +51,28 @@ export function WinnerOddsCard({ data, darkMode = true }: WinnerOddsCardProps) {
           </div>
         ))}
       </div>
+
+      {data.bookmakers?.length > 0 && (
+        <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 mt-3 pt-2 border-t ${darkMode ? "border-[#1f1f1f]" : "border-gray-200"} ${muted}`}>
+          <span className="text-[9px]">Odds from</span>
+          {data.bookmakers.map((b) => (
+            <span key={b.key} className="inline-flex items-center gap-1">
+              <img
+                src={`https://logo.clearbit.com/${bookieDomain(b.key, b.title)}`}
+                alt=""
+                title={b.title}
+                width={12}
+                height={12}
+                className="rounded-sm opacity-80"
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).style.display = "none";
+                }}
+              />
+              <span className="text-[9px]">{b.title}</span>
+            </span>
+          ))}
+        </div>
+      )}
 
       <p className={`text-[10px] mt-2 ${muted}`}>Prediction shown is the bookmaker market, not betting advice.</p>
     </div>

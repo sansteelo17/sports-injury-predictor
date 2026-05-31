@@ -215,7 +215,9 @@ def _lookup_minutes_payload(lookup: dict, player_name: str, team_name: str | Non
         normalized_name,
         canonical_name,
     ])
-    candidates.append(_surname_candidate(normalized_name))
+    # Surname-only fallback removed: with no team binding it served a namesake's
+    # stats across clubs (Kaide Gordon picked up Anthony Gordon's numbers because
+    # only one "Gordon" was in the source). A miss beats a wrong match.
 
     for key in candidates:
         if key is None:
@@ -257,7 +259,9 @@ def _lookup_signal_payload(lookup: dict, player_name: str, team_name: str | None
             (canonical_name, normalized_team),
         ])
     candidates.extend([player_name, player_name.lower(), normalized_name, canonical_name])
-    candidates.append(_surname_candidate(normalized_name))
+    # Surname-only fallback removed: with no team binding it served a namesake's
+    # stats across clubs (Kaide Gordon picked up Anthony Gordon's numbers because
+    # only one "Gordon" was in the source). A miss beats a wrong match.
 
     for key in candidates:
         if key is None:
@@ -915,6 +919,110 @@ def load_transfermarkt_minutes_lookup(players_df, season: int, league_name: str 
     return lookup
 
 
+def load_transfermarkt_stats_lookups(players_df, season: int, league_name: str = "Premier League"):
+    """Scrape Transfermarkt once per player and build BOTH a minutes lookup
+    (real appearances + minutes) and a signal lookup (goals + assists + per-90).
+
+    Lets a league use Transfermarkt as the single source of displayed season
+    stats so the cards match what fans verify against, instead of FPL (whose
+    "appearances" is really minutes/90 and whose assist attribution differs).
+    Returns ``(minutes_lookup, signal_lookup)``. The signal lookup only holds
+    players TM actually found, so callers can fall back to FPL for the rest.
+    """
+    from src.data_loaders.transfermarkt_scraper import TransfermarktScraper
+
+    scraper = TransfermarktScraper(cache_hours=168)
+    cache_dir = Path(PROJECT_ROOT) / "data" / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = cache_dir / f"transfermarkt_stats_{league_name.lower().replace(' ', '_')}_{season}.csv"
+
+    cached_rows = {}
+    if cache_file.exists():
+        try:
+            cache_df = pd.read_csv(cache_file)
+            for _, row in cache_df.iterrows():
+                key = (str(row.get("name", "")).strip().lower(), str(row.get("team", "")).strip().lower())
+                cached_rows[key] = {
+                    "minutes_played": int(row.get("minutes_played", 0) or 0),
+                    "appearances": int(row.get("appearances", 0) or 0),
+                    "goals": int(row.get("goals", 0) or 0),
+                    "assists": int(row.get("assists", 0) or 0),
+                }
+        except Exception as e:
+            logger.warning(f"Failed to read Transfermarkt stats cache: {e}")
+
+    minutes_lookup: dict = {}
+    signal_lookup: dict = {}
+    updated_rows = []
+    matched = 0
+    players = players_df[["name", "team"]].drop_duplicates()
+    print(f"   Loading {league_name} season stats from Transfermarkt (apps/goals/assists/minutes)...")
+
+    for _, player in players.iterrows():
+        name = str(player.get("name", "")).strip()
+        team = str(player.get("team", "")).strip()
+        key = (name.lower(), team.lower())
+
+        entry = cached_rows.get(key)
+        if entry is None:
+            try:
+                match = scraper.search_player(name, team_hint=team)
+                if match:
+                    stats = scraper.get_player_stats(match["slug"], match["player_id"], season=str(season))
+                    entry = {
+                        "minutes_played": int(stats.get("minutes_played", 0) or 0),
+                        "appearances": int(stats.get("appearances", 0) or 0),
+                        "goals": int(stats.get("goals", 0) or 0),
+                        "assists": int(stats.get("assists", 0) or 0),
+                    }
+                else:
+                    entry = {"minutes_played": 0, "appearances": 0, "goals": 0, "assists": 0}
+            except Exception as e:
+                logger.debug(f"Transfermarkt stats lookup failed for {name} ({team}): {e}")
+                entry = {"minutes_played": 0, "appearances": 0, "goals": 0, "assists": 0}
+
+        mins = int(entry.get("minutes_played", 0) or 0)
+        apps = int(entry.get("appearances", 0) or 0)
+        goals = int(entry.get("goals", 0) or 0)
+        assists = int(entry.get("assists", 0) or 0)
+        found = mins > 0 or apps > 0 or goals > 0 or assists > 0
+        if found:
+            matched += 1
+
+        _register_minutes_payload(
+            minutes_lookup,
+            name,
+            {"minutes_played": mins, "appearances": apps, "source": "transfermarkt"},
+            team,
+        )
+        # Only register the signal when TM actually has the player, so the
+        # caller's FPL fallback fills the gaps instead of overwriting with 0/0.
+        if found:
+            per90 = 90.0 / mins if mins > 0 else 0.0
+            _register_signal_payload(
+                signal_lookup,
+                name,
+                {
+                    "goals": goals,
+                    "assists": assists,
+                    "goals_per_90": round(goals * per90, 3),
+                    "assists_per_90": round(assists * per90, 3),
+                    "minutes": mins,
+                },
+                team,
+            )
+
+        updated_rows.append({"name": name, "team": team, **entry})
+
+    try:
+        pd.DataFrame(updated_rows).to_csv(cache_file, index=False)
+    except Exception as e:
+        logger.warning(f"Failed to write Transfermarkt stats cache: {e}")
+
+    print(f"   Transfermarkt season stats matched {matched}/{len(players)} {league_name} players")
+    return minutes_lookup, signal_lookup
+
+
 def load_injury_history_lookup():
     """
     Load real injury history from scraped Transfermarkt data.
@@ -1532,13 +1640,21 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
         return rows
 
     # --- Premier League ---
+    # Displayed season stats (apps/goals/assists/minutes) come from Transfermarkt
+    # so PL cards match what fans verify against; FPL fills only where TM has no
+    # record. FPL stays the live source for price/ownership/form at serve time.
+    pl_tm_minutes, pl_tm_signal = load_transfermarkt_stats_lookups(
+        players, season, league_name="Premier League"
+    )
+    pl_minutes_lookup = _merge_minutes_lookup(pl_tm_minutes, minutes_lookup)  # TM wins, FPL fills gaps
+    pl_signal_lookup = {**epl_signal_lookup, **pl_tm_signal}  # TM overwrites FPL where found
     epl_rows = _build_player_rows(
         players,
         matches,
         "Premier League",
         snapshot_date,
-        minutes_lookup,
-        epl_signal_lookup,
+        pl_minutes_lookup,
+        pl_signal_lookup,
         epl_next_fixture_map,
         ref_now=now,
     )
