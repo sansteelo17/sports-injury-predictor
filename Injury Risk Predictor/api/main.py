@@ -5125,17 +5125,33 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
             os.environ["NARRATIVE_LLM_PROVIDER"] = intl_provider
         if intl_model:
             os.environ["OPENAI_MODEL"] = intl_model
+        # Independent LLM calls with similar inputs converge on the same pet
+        # aphorism (every player got "Load catches up..." / "Rhythm matters...").
+        # Hand each player a different, stable framing angle so openings diverge
+        # across the squad without losing grounding.
+        _angles = [
+            "the specific opponent he faces next and what that matchup asks of his body",
+            "his age and how it changes recovery between games",
+            "the stage of the tournament and the weight of the moment",
+            "his recent match sharpness and rhythm",
+            "the body's memory of his injury history",
+            "the raw workload stacking up in his legs this season",
+            "what a smart manager would protect, and when",
+            "the gap between his reputation and his current fitness",
+        ]
+        _angle = _angles[sum(ord(c) for c in player_name) % len(_angles)]
         try:
             story = generate_grounded_narrative(
                 task=(
-                    "Write a sharp injury-risk read on this World Cup player in Yara's voice. "
-                    "You predict injury risk and explain it. Lead with the risk number and what "
-                    "drives it (workload, minutes, age, injury history). Then say what it means "
-                    "for the next fixture you are given (opponent, home or away, stage). If a "
-                    "news item is provided, work in at most one and name the outlet (e.g. 'The "
-                    "Times reports'); treat reports as reports, never as fact, and never invent "
-                    "news. Tie the threads together into one injury-driven story. Do not use FPL "
-                    "language. Do not use em dashes."
+                    "Write a sharp, memorable injury-risk read on this World Cup player in "
+                    "Yara's voice: 2 to 3 sentences of brilliance, not a stat sheet. "
+                    f"Frame your opening around {_angle}. "
+                    "Do NOT start with 'I have {name} at' and do NOT open with a generic "
+                    "aphorism about load or rhythm. Work the risk read and the next fixture "
+                    "(opponent, home or away) into the story without reciting every figure. "
+                    "If a news item is given, rephrase at most one in your own words, name the "
+                    "outlet, punctuate it cleanly, and never paste the headline or state a "
+                    "rumour as fact. No FPL language. No em dashes."
                 ),
                 player_name=player_name,
                 context_chunks=chunks,
