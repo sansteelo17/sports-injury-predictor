@@ -6412,15 +6412,19 @@ def get_competition_winner_odds(competition_id: str):
     """
     comp = resolve_competition(competition_id, None)
     markets: List[Dict[str, Any]] = []
+    bookmakers: List[Dict[str, Any]] = []
     if comp is not None and comp.id == WORLD_CUP_2026.id and odds_client is not None:
         try:
-            markets = odds_client.get_world_cup_winner_odds()
+            data = odds_client.get_world_cup_winner_odds() or {}
+            markets = data.get("markets", [])
+            bookmakers = data.get("bookmakers", [])
         except Exception as e:
             logger.warning("Winner odds fetch failed for %s: %s", competition_id, e)
     return {
         "competition_id": comp.id if comp else competition_id,
         "available": bool(markets),
         "markets": markets,
+        "bookmakers": bookmakers,
         "disclaimer": "Bookmaker odds aggregated across sportsbooks, vig-adjusted. "
                       "Not affiliated with any operator and not betting advice.",
     }

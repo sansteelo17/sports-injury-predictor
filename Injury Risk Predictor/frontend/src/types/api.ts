@@ -254,10 +254,16 @@ export interface WinnerOddsRow {
   books: number;
 }
 
+export interface BookmakerRef {
+  key: string;
+  title: string;
+}
+
 export interface WinnerOdds {
   competition_id: string;
   available: boolean;
   markets: WinnerOddsRow[];
+  bookmakers: BookmakerRef[];
   disclaimer: string;
 }
 

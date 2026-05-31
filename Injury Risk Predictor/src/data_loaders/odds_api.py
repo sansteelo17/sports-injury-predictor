@@ -468,7 +468,7 @@ class OddsClient:
         Sorted shortest-price first. Empty on any failure.
         """
         if not self.api_key:
-            return []
+            return {"markets": [], "bookmakers": []}
         cache_key = "wc_winner_odds"
         if cache_key in self._cache:
             return self._cache[cache_key]
@@ -485,12 +485,16 @@ class OddsClient:
             )
             if resp.status_code != 200:
                 logger.debug("WC winner odds HTTP %s", resp.status_code)
-                self._cache[cache_key] = []
-                return []
+                self._cache[cache_key] = {"markets": [], "bookmakers": []}
+                return self._cache[cache_key]
             from collections import defaultdict
             prices: Dict[str, List[float]] = defaultdict(list)
+            books: Dict[str, str] = {}  # key -> title, for transparency
             for event in resp.json() or []:
                 for bookie in event.get("bookmakers", []):
+                    title = bookie.get("title") or bookie.get("key")
+                    if bookie.get("key"):
+                        books[bookie["key"]] = title
                     for market in bookie.get("markets", []):
                         if market.get("key") != "outrights":
                             continue
@@ -506,12 +510,15 @@ class OddsClient:
             for r in rows:
                 r["win_probability"] = round(r.pop("_implied") / field, 4)
             rows.sort(key=lambda r: r["decimal_odds"])
-            result = rows[:top_n]
+            result = {
+                "markets": rows[:top_n],
+                "bookmakers": [{"key": k, "title": t} for k, t in sorted(books.items(), key=lambda kv: kv[1])],
+            }
             self._cache[cache_key] = result
             return result
         except Exception as e:
             logger.debug("WC winner odds failed: %s", e)
-            return []
+            return {"markets": [], "bookmakers": []}
 
     @staticmethod
     def _bookmaker_aliases() -> Dict[str, List[str]]:

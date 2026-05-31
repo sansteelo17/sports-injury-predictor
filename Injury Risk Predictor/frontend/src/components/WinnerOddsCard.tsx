@@ -47,7 +47,80 @@ export function WinnerOddsCard({ data, darkMode = true }: WinnerOddsCardProps) {
         ))}
       </div>
 
+      {data.bookmakers?.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          <span className={`text-[10px] uppercase tracking-wider ${muted}`}>
+            {data.bookmakers.length} books
+          </span>
+          {data.bookmakers.map((b) => (
+            <span
+              key={b.key}
+              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] ${
+                darkMode ? "bg-[#1f1f1f] text-gray-400" : "bg-gray-100 text-gray-600"
+              }`}
+            >
+              <img
+                src={`https://logo.clearbit.com/${bookieDomain(b.key, b.title)}`}
+                alt=""
+                width={12}
+                height={12}
+                className="rounded-sm"
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).style.display = "none";
+                }}
+              />
+              {b.title}
+            </span>
+          ))}
+        </div>
+      )}
+
       <p className={`text-[11px] mt-3 ${muted}`}>{data.disclaimer}</p>
     </div>
   );
+}
+
+// Best-effort logo domains for common sportsbooks (Clearbit serves by domain).
+// Unknown books fall back to text only via the img onError handler.
+const BOOKIE_DOMAINS: Record<string, string> = {
+  bet365: "bet365.com",
+  williamhill: "williamhill.com",
+  williamhill_us: "williamhill.com",
+  betfair: "betfair.com",
+  betfair_ex_uk: "betfair.com",
+  unibet: "unibet.com",
+  unibet_uk: "unibet.co.uk",
+  pinnacle: "pinnacle.com",
+  betway: "betway.com",
+  ladbrokes_uk: "ladbrokes.com",
+  coral: "coral.co.uk",
+  skybet: "skybet.com",
+  paddypower: "paddypower.com",
+  draftkings: "draftkings.com",
+  fanduel: "fanduel.com",
+  betmgm: "betmgm.com",
+  betrivers: "betrivers.com",
+  pointsbetus: "pointsbet.com",
+  betonlineag: "betonline.ag",
+  bovada: "bovada.lv",
+  mybookieag: "mybookie.ag",
+  marathonbet: "marathonbet.com",
+  nordicbet: "nordicbet.com",
+  betsson: "betsson.com",
+  onexbet: "1xbet.com",
+  matchbook: "matchbook.com",
+  casumo: "casumo.com",
+  grosvenor: "grosvenorcasinos.com",
+  virginbet: "virginbet.com",
+  betvictor: "betvictor.com",
+  boylesports: "boylesports.com",
+  mrgreen: "mrgreen.com",
+  leovegas: "leovegas.com",
+};
+
+function bookieDomain(key: string, title: string): string {
+  if (BOOKIE_DOMAINS[key]) return BOOKIE_DOMAINS[key];
+  // Heuristic: collapse the title to a .com guess (works for many books).
+  const slug = title.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return `${slug}.com`;
 }
