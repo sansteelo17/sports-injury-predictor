@@ -26,12 +26,16 @@ services:
         value: openai_compatible
       - key: OPENAI_MODEL
         value: gpt-4o-mini
+      # gpt-5.4 for WC (full gpt-5.5 reasoning was too slow and timed out).
+      # reasoning_effort=low keeps latency ~2.3s, so the flagship fits the cap.
       - key: INTL_OPENAI_MODEL
-        value: gpt-5.5
+        value: gpt-5.4
+      - key: OPENAI_REASONING_EFFORT
+        value: low
       - key: NARRATIVE_LLM_TEMPERATURE
         value: "0.7"
       - key: NARRATIVE_LLM_TIMEOUT_SECONDS
-        value: "25"
+        value: "45"
       - key: OPENAI_API_KEY
         sync: false
     healthCheckPath: /api/health

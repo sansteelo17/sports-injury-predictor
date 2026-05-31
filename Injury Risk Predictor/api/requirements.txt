@@ -4,12 +4,13 @@ pydantic>=2.0.0
 pandas>=2.0.0
 numpy>=1.24.0
 scikit-learn>=1.3.0
-imbalanced-learn>=0.11.0
 catboost>=1.2.0
 lightgbm>=4.0.0
 xgboost>=2.0.0
-optuna>=3.3.0
-shap>=0.42.0
+# hdbscan is used at serving (startup archetype clustering); matplotlib is a
+# transitive import of xgboost/lightgbm. shap, optuna, and imbalanced-learn are
+# training-only and (with the lazy src/models package init) are never imported
+# at serving, so they are intentionally omitted here to shrink the build.
 hdbscan>=0.8.33
 matplotlib>=3.7.0
 joblib>=1.3.0
