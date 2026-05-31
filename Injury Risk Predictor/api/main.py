@@ -6342,6 +6342,29 @@ def list_competitions():
     return [_competition_to_dto(c) for c in all_competitions()]
 
 
+@app.get("/api/competitions/{competition_id}/winner-odds")
+def get_competition_winner_odds(competition_id: str):
+    """Aggregated bookmaker tournament-winner odds for a competition.
+
+    World Cup only for now (the only competition with a live outright market).
+    Returns an empty market list when odds are unavailable rather than guessing.
+    """
+    comp = resolve_competition(competition_id, None)
+    markets: List[Dict[str, Any]] = []
+    if comp is not None and comp.id == WORLD_CUP_2026.id and odds_client is not None:
+        try:
+            markets = odds_client.get_world_cup_winner_odds()
+        except Exception as e:
+            logger.warning("Winner odds fetch failed for %s: %s", competition_id, e)
+    return {
+        "competition_id": comp.id if comp else competition_id,
+        "available": bool(markets),
+        "markets": markets,
+        "disclaimer": "Bookmaker odds aggregated across sportsbooks, vig-adjusted. "
+                      "Not affiliated with any operator and not betting advice.",
+    }
+
+
 @app.get("/api/fpl/insights", response_model=FPLInsights)
 def get_fpl_insights_endpoint():
     """Get FPL insights including standings, fixtures, and double gameweeks."""

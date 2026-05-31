@@ -10,6 +10,7 @@ import {
   getTeamBadges,
   getFPLSquad,
   getLaLigaStandings,
+  getWinnerOdds,
 } from "@/lib/api";
 import {
   TeamOverview as TeamOverviewType,
@@ -18,6 +19,7 @@ import {
   StandingsSummary,
   FPLSquadSync,
   LaLigaStandingRow,
+  WinnerOdds,
 } from "@/types/api";
 import { TeamSelector } from "@/components/TeamSelector";
 import { TeamOverview } from "@/components/TeamOverview";
@@ -27,6 +29,7 @@ import { LabNotes } from "@/components/LabNotes";
 import { FPLInsights } from "@/components/FPLInsights";
 import { StandingsCards } from "@/components/StandingsCards";
 import { LaLigaStandingsCards } from "@/components/LaLigaStandingsCards";
+import { WinnerOddsCard } from "@/components/WinnerOddsCard";
 import { FPLSquadInput } from "@/components/FPLSquadInput";
 import { FPLSquadView } from "@/components/FPLSquadView";
 import {
@@ -52,6 +55,7 @@ export default function Home() {
   const [fplInsights, setFplInsights] = useState<FPLInsightsType | null>(null);
   const [standings, setStandings] = useState<StandingsSummary | null>(null);
   const [laLigaStandings, setLaLigaStandings] = useState<LaLigaStandingRow[]>([]);
+  const [winnerOdds, setWinnerOdds] = useState<WinnerOdds | null>(null);
   const [teamBadges, setTeamBadges] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -118,6 +122,17 @@ export default function Home() {
       .then(setLaLigaStandings)
       .catch(() => console.log("La Liga standings unavailable"));
   }, [league]);
+
+  // Tournament-winner odds for the World Cup view (cleared otherwise).
+  useEffect(() => {
+    if (!isInternational) {
+      setWinnerOdds(null);
+      return;
+    }
+    getWinnerOdds(competitionId)
+      .then(setWinnerOdds)
+      .catch(() => setWinnerOdds(null));
+  }, [isInternational, competitionId]);
 
   const handleLeagueSwitch = (l: CompetitionChoice) => {
     if (l !== league) {
@@ -426,6 +441,11 @@ export default function Home() {
             </>
           )}
         </div>
+
+        {/* Tournament winner odds (World Cup view) */}
+        {isInternational && winnerOdds && (
+          <WinnerOddsCard data={winnerOdds} darkMode={darkMode} />
+        )}
 
         {/* Error State */}
         {error && (

@@ -247,6 +247,20 @@ export interface NewsItem {
   published: string | null;
 }
 
+export interface WinnerOddsRow {
+  team: string;
+  decimal_odds: number;
+  win_probability: number;
+  books: number;
+}
+
+export interface WinnerOdds {
+  competition_id: string;
+  available: boolean;
+  markets: WinnerOddsRow[];
+  disclaimer: string;
+}
+
 export interface InternationalContext {
   country: string;
   club_team: string | null;
