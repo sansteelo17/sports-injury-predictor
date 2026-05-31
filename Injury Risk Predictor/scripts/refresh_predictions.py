@@ -196,8 +196,6 @@ def _register_minutes_payload(lookup: dict, name: str, payload: dict, team: str 
         lookup[(normalized_name, normalized_team)] = payload
         lookup[(canonical_name, normalized_team)] = payload
 
-    _register_surname_key(lookup, normalized_name, payload)
-
 
 def _lookup_minutes_payload(lookup: dict, player_name: str, team_name: str | None = None):
     """Resolve the best minutes payload using team-aware keys first."""
@@ -244,7 +242,6 @@ def _register_signal_payload(lookup: dict, name: str, payload: dict, team: str |
         ])
     for key in keys:
         lookup[key] = payload
-    _register_surname_key(lookup, normalized_name, payload)
 
 
 def _lookup_signal_payload(lookup: dict, player_name: str, team_name: str | None = None):
@@ -313,9 +310,11 @@ def _merge_minutes_lookup(base_lookup: dict, incoming_lookup: dict) -> dict:
     """
     merged = dict(base_lookup)
     for key, payload in (incoming_lookup or {}).items():
+        if not isinstance(payload, dict):
+            continue  # skip sentinels/placeholders (e.g. ambiguity markers)
         existing = merged.get(key)
-        existing_minutes = int((existing or {}).get("minutes_played", 0) or 0)
-        incoming_minutes = int((payload or {}).get("minutes_played", 0) or 0)
+        existing_minutes = int(existing.get("minutes_played", 0) or 0) if isinstance(existing, dict) else 0
+        incoming_minutes = int(payload.get("minutes_played", 0) or 0)
 
         if existing is None or existing_minutes <= 0 < incoming_minutes or existing_minutes <= 0:
             merged[key] = payload
