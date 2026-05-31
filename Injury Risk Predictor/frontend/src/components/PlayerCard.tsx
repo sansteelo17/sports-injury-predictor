@@ -262,7 +262,7 @@ export function PlayerCard({ player, darkMode = true, seasonOver = false }: Play
             )}
             {isInternational && intl?.has_risk_features && intl.club_team && (
               <p className={`text-xs mt-2 italic ${darkMode ? "text-gray-500" : "text-gray-500"}`}>
-                Risk derived from {intl.club_team}&apos;s end-of-season workload — international fixtures will refine this once the tournament kicks off.
+                Built from a full season of {intl.club_team} workload, minutes, and injury history.
               </p>
             )}
           </>

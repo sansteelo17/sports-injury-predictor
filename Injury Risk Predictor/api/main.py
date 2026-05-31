@@ -1858,9 +1858,19 @@ def get_risk_level(prob: float, row=None) -> str:
     # are ranked against WC players, not EPL players
     comp_id = None
     league_raw = None
-    if isinstance(row, dict):
-        comp_id = row.get("competition_id")
-        league_raw = row.get("league")
+    # Accept dict OR pandas Series. The team overview passes a Series, and the
+    # old ``isinstance(row, dict)`` check silently skipped it — so WC squad
+    # players were ranked against all 3,800+ players instead of the WC cohort,
+    # producing "99% Medium" and zero High-risk players. ``.get`` works on both.
+    if row is not None and hasattr(row, "get"):
+        try:
+            comp_id = row.get("competition_id")
+        except Exception:
+            comp_id = None
+        try:
+            league_raw = row.get("league")
+        except Exception:
+            league_raw = None
 
     league_key = _safe_league_label(league_raw)
     try:
@@ -5118,12 +5128,14 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
         try:
             story = generate_grounded_narrative(
                 task=(
-                    "Write a short, conversational scouting note about this World Cup player "
-                    "in Yara's voice. Lead with tournament context (country, caps, group, next "
-                    "fixture). If injury risk data is available, integrate it as a sentence. "
-                    "If a news item is provided, you may reference at most one and must name the "
-                    "outlet (e.g. 'Sky reports'); never state a rumour as fact and never invent "
-                    "news. Do not use FPL language. Do not use em dashes."
+                    "Write a sharp injury-risk read on this World Cup player in Yara's voice. "
+                    "You predict injury risk and explain it. Lead with the risk number and what "
+                    "drives it (workload, minutes, age, injury history). Then say what it means "
+                    "for the next fixture you are given (opponent, home or away, stage). If a "
+                    "news item is provided, work in at most one and name the outlet (e.g. 'The "
+                    "Times reports'); treat reports as reports, never as fact, and never invent "
+                    "news. Tie the threads together into one injury-driven story. Do not use FPL "
+                    "language. Do not use em dashes."
                 ),
                 player_name=player_name,
                 context_chunks=chunks,

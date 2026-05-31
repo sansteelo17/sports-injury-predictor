@@ -269,7 +269,7 @@ export default function Home() {
               <p
                 className={`text-[10px] sm:text-xs leading-tight max-w-[170px] sm:max-w-none ${mutedClass}`}
               >
-                Yara tracks injury risk for footballers across the globe.
+                Predicts injury risk. Tells the story behind it.
               </p>
             </div>
           </div>
@@ -308,9 +308,9 @@ export default function Home() {
               <strong
                 className={darkMode ? "text-[#86efac]" : "text-emerald-600"}
               >
-                Yara watches players around the world.
+                Yara predicts injury risk and writes the story behind it.
               </strong>{" "}
-              From the World Cup to the Premier League, La Liga, Bundesliga, and Serie A, she reads the workload, injury history, and fixture context and tells you who is breaking down.
+              She reads workload, injury history, fixtures, odds, and the latest news into one injury-driven narrative, for footballers worldwide. The World Cup, Premier League, La Liga, Bundesliga, and Serie A.
             </div>
           </div>
         </div>

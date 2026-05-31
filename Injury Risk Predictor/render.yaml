@@ -16,6 +16,24 @@ services:
         value: "3.11.9"
       - key: REFRESH_CRON_TOKEN
         sync: false
+      # Narrative LLM. Without these, Yara serves deterministic template text
+      # (no analysis, no news/fixture discussion). Club leagues run on the
+      # cheaper model; World Cup narratives route to GPT-5.5 via the scoped
+      # INTL override. OPENAI_API_KEY is a dashboard secret (never committed).
+      - key: NARRATIVE_LLM_PROVIDER
+        value: openai_compatible
+      - key: INTL_NARRATIVE_LLM_PROVIDER
+        value: openai_compatible
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: INTL_OPENAI_MODEL
+        value: gpt-5.5
+      - key: NARRATIVE_LLM_TEMPERATURE
+        value: "0.7"
+      - key: NARRATIVE_LLM_TIMEOUT_SECONDS
+        value: "25"
+      - key: OPENAI_API_KEY
+        sync: false
     healthCheckPath: /api/health
 
   # Next.js Frontend
