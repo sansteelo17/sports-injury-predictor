@@ -5093,8 +5093,11 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
         if has_risk:
             chunks.append({
                 "kind": "risk",
+                # Quote the SAME number the card shows (the within-cohort
+                # normalised risk score), not the raw model probability. Feeding
+                # raw prob here made Yara say 51% while the header showed 64%.
                 "text": (
-                    f"Two-week injury risk model output: {prob:.0%}. "
+                    f"Two-week injury risk: {risk_pct}% (this is the number to quote). "
                     f"ACWR {_safe_float(row.get('acwr'), 0.0):.2f}, "
                     f"{_safe_int(row.get('previous_injuries', 0))} prior injuries, "
                     f"{_safe_int(row.get('days_since_last_injury'), 365)} days since last injury."
@@ -5175,6 +5178,22 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
     else:
         story = template_story
 
+    # Lab Notes (the "for builders" technical breakdown) were never generated
+    # for international rows, so the tab was empty. Generate them for
+    # risk-featured WC players from the same club-derived features.
+    intl_lab_notes = None
+    if has_risk:
+        try:
+            _lab = generate_lab_notes(enriched_row)
+            if _lab:
+                intl_lab_notes = LabNotes(
+                    summary=_lab["summary"],
+                    key_drivers=[LabDriver(**d) for d in _lab["key_drivers"]],
+                    technical=TechnicalDetails(**_lab["technical"]),
+                )
+        except Exception as lab_err:
+            logger.warning("Intl lab notes failed for %s: %s", player_name, lab_err)
+
     prev_injuries = _safe_int(enriched_row.get("previous_injuries", 0))
     total_days = _safe_int(row.get("total_days_lost", 0))
     days_since = _safe_int(row.get("days_since_last_injury", 365), 365)
@@ -5243,7 +5262,7 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
         next_fixture=next_fixture,
         bookmaker_consensus=None,
         yara_response=None,
-        lab_notes=None,
+        lab_notes=intl_lab_notes,
         risk_percentile=None,
         player_image_url=get_player_image_url(player_name, row.get("club_team") or country),
         team_badge_url=wc_flag_url(country),
