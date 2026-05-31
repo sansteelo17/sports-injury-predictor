@@ -2341,6 +2341,26 @@ def main():
         print("La Liga fetch must have failed. Existing predictions remain unchanged.")
         sys.exit(0)
 
+    # Per-league preservation guard: if a league's squad fetch degraded badly
+    # (e.g. football-data 403s on most Bundesliga teams), the fresh frame has far
+    # fewer players than before. Rather than ship that regression, keep the
+    # existing rows for any league that came back below 60% of its prior count.
+    # Mirrors the La Liga guard above but per-league and non-fatal.
+    existing_idf = artifacts.get("inference_df")
+    if existing_idf is not None and "league" in getattr(existing_idf, "columns", []) and not args.dry_run:
+        prior_counts = existing_idf["league"].value_counts().to_dict()
+        fresh_counts = inference_df["league"].value_counts().to_dict()
+        preserved = []
+        for league, prior_n in prior_counts.items():
+            fresh_n = fresh_counts.get(league, 0)
+            if prior_n >= 50 and fresh_n < 0.6 * prior_n:
+                print(f"\nWARNING: {league} returned {fresh_n}/{prior_n} players (<60%); "
+                      f"preserving existing {league} rows instead of shipping a regression.")
+                inference_df = inference_df[inference_df["league"] != league]
+                preserved.append(existing_idf[existing_idf["league"] == league])
+        if preserved:
+            inference_df = pd.concat([inference_df] + preserved, ignore_index=True)
+
     # Save
     if args.dry_run:
         print("\n[DRY RUN - not saving]")
