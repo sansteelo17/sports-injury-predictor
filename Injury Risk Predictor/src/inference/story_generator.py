@@ -519,7 +519,9 @@ SECTION_QUERY_HINTS = {
 SECTION_PROMPT_GUIDANCE = {
     "story": (
         "Answer the injury-risk question in football language. Lead with the most distinctive player-specific driver. "
-        "Use workload, recency, injury history, and fixture pressure without sounding like a generic medical disclaimer."
+        "Use workload, recency, injury history, and fixture pressure without sounding like a generic medical disclaimer. "
+        "If there is attributed team news on his availability, weave it in with the outlet named and let it move the read, "
+        "but report only what the outlet stated and never upgrade a vague update into a fit or out verdict."
     ),
     "fpl": (
         "Answer the start-or-bench question directly. Lead with the most player-specific football fact available. "
