@@ -29,6 +29,7 @@ PREMIER_LEAGUE_ID = "PL"
 LA_LIGA_ID = "PD"
 BUNDESLIGA_ID = "BL1"
 SERIE_A_ID = "SA"
+LIGUE_1_ID = "FL1"
 CHAMPIONS_LEAGUE_ID = "CL"
 RATE_LIMIT_DELAY = 6.5  # seconds between requests (free tier: 10/min)
 
@@ -679,6 +680,120 @@ class FootballDataClient:
             "Venezia": "Venezia",
         }
         return name_map.get(name, name)
+
+    def get_ligue_1_matches(
+        self,
+        season: int = 2024,
+        status: str = "FINISHED",
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """Fetch Ligue 1 matches for a season. Same row shape as PL/Serie A.
+
+        Ligue 1 differs from the other leagues: the squad/roster comes from
+        FBref (football-data's /teams squad endpoint 403s on the free tier for
+        FL1), so the Home/Away strings here are normalised to the *FBref* club
+        names via ``_normalize_ligue_1_team``. That makes the match team set
+        identical to the FBref roster team set, so the workload join lines up
+        without any ``_TEAM_NAME_MAP`` entries.
+        """
+        params = {"season": season}
+        if status:
+            params["status"] = status
+        if date_from:
+            params["dateFrom"] = date_from
+        if date_to:
+            params["dateTo"] = date_to
+
+        data = self._get(f"competitions/{LIGUE_1_ID}/matches", params)
+        matches = data.get("matches", [])
+        logger.info(f"Fetched {len(matches)} Ligue 1 matches from API")
+
+        if not matches:
+            return pd.DataFrame()
+
+        rows = []
+        for m in matches:
+            if m["status"] != "FINISHED":
+                continue
+            home_goals = m["score"]["fullTime"]["home"]
+            away_goals = m["score"]["fullTime"]["away"]
+            if home_goals is None or away_goals is None:
+                continue
+            ftr = "H" if home_goals > away_goals else ("A" if away_goals > home_goals else "D")
+            rows.append({
+                "Season_End_Year": season + 1,
+                "Wk": m.get("matchday", 0),
+                "Date": m["utcDate"][:10],
+                "Home": self._normalize_ligue_1_team(m["homeTeam"]),
+                "Away": self._normalize_ligue_1_team(m["awayTeam"]),
+                "HomeGoals": home_goals,
+                "AwayGoals": away_goals,
+                "FTR": ftr,
+                "league": "Ligue 1",
+            })
+
+        df = pd.DataFrame(rows)
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date").reset_index(drop=True)
+        logger.info(f"Processed {len(df)} finished Ligue 1 matches")
+        return df
+
+    def _normalize_ligue_1_team(self, team) -> str:
+        """Map a football-data.org Ligue 1 team to the FBref club string.
+
+        FBref is the roster source for Ligue 1, so FBref's name is canonical.
+        ``team`` is the football-data team dict (has ``name`` + ``shortName``);
+        we key on both so a shortName change still resolves. Covers the 18
+        clubs of the 2025-26 season; unknown names fall through unchanged.
+        """
+        # football-data name OR shortName -> FBref canonical club string
+        name_map = {
+            # full names
+            "Angers SCO": "Angers",
+            "AJ Auxerre": "Auxerre",
+            "Stade Brestois 29": "Brest",
+            "Le Havre AC": "Le Havre",
+            "Racing Club de Lens": "Lens",
+            "Lille OSC": "Lille",
+            "FC Lorient": "Lorient",
+            "Olympique Lyonnais": "Lyon",
+            "Olympique de Marseille": "Marseille",
+            "FC Metz": "Metz",
+            "AS Monaco FC": "Monaco",
+            "FC Nantes": "Nantes",
+            "OGC Nice": "Nice",
+            "Paris FC": "Paris FC",
+            "Paris Saint-Germain FC": "Paris Saint-Germain",
+            "Stade Rennais FC 1901": "Rennes",
+            "RC Strasbourg Alsace": "Strasbourg",
+            "Toulouse FC": "Toulouse",
+            # short names
+            "Angers SCO ": "Angers",
+            "Auxerre": "Auxerre",
+            "Brest": "Brest",
+            "Le Havre": "Le Havre",
+            "RC Lens": "Lens",
+            "Lille": "Lille",
+            "Lorient": "Lorient",
+            "Olympique Lyon": "Lyon",
+            "Marseille": "Marseille",
+            "Monaco": "Monaco",
+            "Nantes": "Nantes",
+            "Nice": "Nice",
+            "Rennes": "Rennes",
+            "Stade Rennais": "Rennes",
+            "Strasbourg": "Strasbourg",
+            "Toulouse": "Toulouse",
+            "PSG": "Paris Saint-Germain",
+        }
+        if isinstance(team, dict):
+            for key in (team.get("name"), team.get("shortName"), team.get("tla")):
+                if key and key in name_map:
+                    return name_map[key]
+            # Unknown: prefer shortName, then name, unchanged.
+            return team.get("shortName") or team.get("name") or ""
+        return name_map.get(str(team), str(team))
 
     def get_team_squad(
         self,

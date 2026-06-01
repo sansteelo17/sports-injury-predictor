@@ -48,6 +48,36 @@ def _season_code(season_start_year: int) -> str:
     return f"{season_start_year % 100:02d}{end:02d}"
 
 
+# FBref ships position as compact codes (GK/DF/MF/FW), sometimes combined like
+# "MF,FW" with the primary role first. Translate the primary code to the full
+# word the narrative layer's ``_position_group`` recognises — its token list
+# matches "goalkeeper"/"defender"/"midfielder"/"forward" but not "DF"/"MF"/"FW".
+_FBREF_POS_TO_WORD = {
+    "GK": "Goalkeeper",
+    "DF": "Defender",
+    "MF": "Midfielder",
+    "FW": "Forward",
+}
+
+
+def _fbref_position_word(pos) -> str:
+    primary = str(pos or "").split(",")[0].strip().upper()
+    return _FBREF_POS_TO_WORD.get(primary, "Unknown")
+
+
+def _fbref_age_int(age) -> int:
+    """FBref age is usually a plain int (35); some stat tables ship "35-103"
+    (years-days). Take the leading integer; default 25 when unparseable."""
+    text = str(age or "").strip()
+    if not text:
+        return 25
+    head = text.split("-")[0].strip()
+    try:
+        return int(float(head))
+    except (TypeError, ValueError):
+        return 25
+
+
 def load_player_season_stats(
     league_name: str,
     season_start_year: int,
@@ -97,6 +127,11 @@ def load_player_season_stats(
     out = pd.DataFrame({
         "name": df["player"].astype(str),
         "team": df["team"].astype(str),
+        # position/age make FBref usable as a roster source (needed for Ligue 1,
+        # where football-data's /teams squad endpoint 403s so there's no other
+        # source for player position/age).
+        "position": df.get("pos").map(_fbref_position_word) if "pos" in df.columns else "Unknown",
+        "age": df.get("age").map(_fbref_age_int) if "age" in df.columns else 25,
         "appearances": pd.to_numeric(df.get("Playing Time__MP"), errors="coerce").fillna(0).astype(int),
         "starts": pd.to_numeric(df.get("Playing Time__Starts"), errors="coerce").fillna(0).astype(int),
         "season_minutes": pd.to_numeric(df.get("Playing Time__Min"), errors="coerce").fillna(0).astype(int),

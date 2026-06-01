@@ -1899,11 +1899,70 @@ def refresh_with_api(artifacts, api_key, dry_run=False):
         else:
             sa_rows = []
 
-    all_rows = epl_rows + la_liga_rows + bl_rows + sa_rows
+    # --- Ligue 1 ---
+    # Unlike the other leagues, the roster + season stats come from FBref:
+    # football-data's /teams squad endpoint 403s on the free tier for FL1, so
+    # there's no other source for player identity/position/age. Match workload
+    # still comes from football-data; both sides use the FBref club strings
+    # (get_ligue_1_matches normalises to them), so the workload join lines up
+    # without any _TEAM_NAME_MAP entries. FBref needs Chrome, so on Render's
+    # cron the roster fetch returns nothing and the except branch preserves the
+    # previously-shipped Ligue 1 rows rather than dropping the league.
+    print("\n   Fetching Ligue 1 roster (FBref) and matches (football-data)...")
+    try:
+        from src.data_loaders.soccerdata_loader import load_player_season_stats
+        fl1_players = load_player_season_stats("Ligue 1", season)
+        if fl1_players is None or fl1_players.empty:
+            raise RuntimeError("FBref returned no Ligue 1 roster (no Chrome on this host?)")
+        fl1_matches = client.get_ligue_1_matches(season=season, status="FINISHED")
+        if fl1_matches is None or fl1_matches.empty:
+            raise RuntimeError("football-data returned no finished Ligue 1 matches")
+        print(f"   Ligue 1: {len(fl1_players)} players, {len(fl1_matches)} Ligue 1 matches")
+
+        # Minutes + signal both from FBref (re-keyed to the squad team strings,
+        # which are already the FBref names). No FPL fallback for Ligue 1; the
+        # artifact (prior pkl) preserves stats if a later FBref fetch comes up
+        # empty. Precedence: FBref > artifact.
+        fl1_fb_minutes, fl1_fb_signal = load_fbref_stats_lookups(fl1_players, league_name="Ligue 1")
+        fl1_artifact_minutes = build_artifact_minutes_lookup(
+            fl1_players, artifacts.get("inference_df"), "Ligue 1",
+        )
+        fl1_artifact_signal = build_artifact_signal_lookup(
+            fl1_players, artifacts.get("inference_df"), "Ligue 1",
+        )
+        fl1_minutes_lookup = _merge_minutes_lookup(fl1_fb_minutes, fl1_artifact_minutes)
+        fl1_signal_lookup = {**fl1_artifact_signal, **fl1_fb_signal}
+
+        total_fl1 = len(fl1_players)
+        final_fl1_matches = _count_minutes_matches(fl1_players, fl1_minutes_lookup)
+        print(f"   Ligue 1 minutes coverage: {final_fl1_matches}/{total_fl1} players")
+
+        fl1_rows = _build_player_rows(
+            fl1_players,
+            fl1_matches,
+            "Ligue 1",
+            snapshot_date,
+            fl1_minutes_lookup,
+            fl1_signal_lookup,
+            {},   # no next-fixture map yet
+            ref_now=now,
+        )
+    except Exception as e:
+        print(f"   Warning: could not fetch Ligue 1 data ({e}). Preserving existing predictions.")
+        existing_df = artifacts.get("inference_df")
+        if existing_df is not None and "league" in existing_df.columns:
+            existing_fl1 = existing_df[existing_df["league"] == "Ligue 1"]
+            fl1_rows = existing_fl1.to_dict("records") if not existing_fl1.empty else []
+            print(f"   Preserved {len(fl1_rows)} existing Ligue 1 predictions.")
+        else:
+            fl1_rows = []
+
+    all_rows = epl_rows + la_liga_rows + bl_rows + sa_rows + fl1_rows
     snapshots_df = pd.DataFrame(all_rows)
     print(
         f"\n   Total: {len(epl_rows)} EPL + {len(la_liga_rows)} La Liga + "
-        f"{len(bl_rows)} Bundesliga + {len(sa_rows)} Serie A = {len(snapshots_df)} players"
+        f"{len(bl_rows)} Bundesliga + {len(sa_rows)} Serie A + "
+        f"{len(fl1_rows)} Ligue 1 = {len(snapshots_df)} players"
     )
     return snapshots_df
 
