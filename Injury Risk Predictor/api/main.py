@@ -2011,6 +2011,34 @@ LA_LIGA_BADGE_MAP: Dict[str, str] = {
 }
 
 
+# Ligue 1 badge URLs from football-data.org crests, keyed on the FBref club
+# strings carried in the inference_df ``team`` column (FBref is the FL1 roster
+# source). Static like La Liga because the generic token-matcher misses two
+# clubs: "Paris FC" collides with PSG on the "paris" token (ambiguous), and
+# "Rennes" doesn't prefix-match football-data's "Stade Rennais". Crest IDs are
+# stable. Checked before the token path so all 18 resolve.
+LIGUE_1_BADGE_MAP: Dict[str, str] = {
+    "angers": "https://crests.football-data.org/532.png",
+    "auxerre": "https://crests.football-data.org/519.png",
+    "brest": "https://crests.football-data.org/512.png",
+    "le havre": "https://crests.football-data.org/533.png",
+    "lens": "https://crests.football-data.org/546.png",
+    "lille": "https://crests.football-data.org/521.png",
+    "lorient": "https://crests.football-data.org/525.png",
+    "lyon": "https://crests.football-data.org/523.png",
+    "marseille": "https://crests.football-data.org/516.png",
+    "metz": "https://crests.football-data.org/545.png",
+    "monaco": "https://crests.football-data.org/548.png",
+    "nantes": "https://crests.football-data.org/543.png",
+    "nice": "https://crests.football-data.org/522.png",
+    "paris fc": "https://crests.football-data.org/1045.png",
+    "paris saint-germain": "https://crests.football-data.org/524.png",
+    "rennes": "https://crests.football-data.org/529.png",
+    "strasbourg": "https://crests.football-data.org/576.png",
+    "toulouse": "https://crests.football-data.org/511.png",
+}
+
+
 _EFL_CREST_STOPWORDS = {
     "borussia", "hellas", "real", "calcio", "eintracht", "bayer", "werder",
     "union", "fortuna", "athletic", "sporting", "united", "city",
@@ -2090,6 +2118,11 @@ def get_team_badge_url(team_name: str) -> Optional[str]:
     # La Liga — check static map first (no API dependency)
     if team_lower in LA_LIGA_BADGE_MAP:
         return LA_LIGA_BADGE_MAP[team_lower]
+
+    # Ligue 1 — static map (FBref club strings); covers the two clubs the
+    # token-matcher can't disambiguate (Paris FC vs PSG, Rennes vs Rennais).
+    if team_lower in LIGUE_1_BADGE_MAP:
+        return LIGUE_1_BADGE_MAP[team_lower]
 
     # La Liga — fallback to cached live standings crest if available.
     try:
