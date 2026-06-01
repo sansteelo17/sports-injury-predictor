@@ -63,7 +63,7 @@ export default function Home() {
   const [view, setView] = useState<"overview" | "lab">("overview");
 
   // Competition (international tournament leads while the WC is active).
-  type CompetitionChoice = "FIFA World Cup 2026" | "Premier League" | "La Liga" | "Bundesliga" | "Serie A";
+  type CompetitionChoice = "FIFA World Cup 2026" | "Premier League" | "La Liga" | "Bundesliga" | "Serie A" | "Ligue 1";
   const [league, setLeague] = useState<CompetitionChoice>("FIFA World Cup 2026");
   const isInternational = league === "FIFA World Cup 2026";
   const competitionId =
@@ -75,7 +75,9 @@ export default function Home() {
           ? "bundesliga"
           : league === "Serie A"
             ? "serie-a"
-            : "world-cup-2026";
+            : league === "Ligue 1"
+              ? "ligue-1"
+              : "world-cup-2026";
 
   // Squad sync state
   const [mode, setMode] = useState<"browse" | "squad">("browse");
@@ -265,8 +267,8 @@ export default function Home() {
   // matchday count. Market panels, fixture odds, and Fantasy tabs all become
   // noise post-final-day. International is never "over" in this sense (the
   // tournament is itself an active competition).
-  // Bundesliga is 34 matchdays; EPL + La Liga + Serie A are 38.
-  const clubMatchdays = league === "Bundesliga" ? 34 : 38;
+  // Bundesliga + Ligue 1 (18 teams in 2025-26) are 34 matchdays; EPL + La Liga + Serie A are 38.
+  const clubMatchdays = league === "Bundesliga" || league === "Ligue 1" ? 34 : 38;
   const seasonOver = isInternational
     ? false
     : league === "La Liga"
@@ -346,7 +348,7 @@ export default function Home() {
               >
                 Yara predicts injury risk and writes the story behind it.
               </strong>{" "}
-              She reads workload, injury history, fixtures, odds, and the latest news into one injury-driven narrative, for footballers worldwide. The World Cup, Premier League, La Liga, Bundesliga, and Serie A.
+              She reads workload, injury history, fixtures, odds, and the latest news into one injury-driven narrative, for footballers worldwide. The World Cup, Premier League, La Liga, Bundesliga, Serie A, and Ligue 1.
             </div>
           </div>
         </div>
@@ -355,7 +357,7 @@ export default function Home() {
         <div className="mb-4 sm:mb-6">
           {/* League switcher — scrollable on mobile, wrapping on desktop */}
           <div className="flex gap-1 mb-3 overflow-x-auto sm:flex-wrap pb-2 sm:pb-0">
-            {(["FIFA World Cup 2026", "Premier League", "La Liga", "Bundesliga", "Serie A"] as const).map((l) => (
+            {(["FIFA World Cup 2026", "Premier League", "La Liga", "Bundesliga", "Serie A", "Ligue 1"] as const).map((l) => (
               <button
                 key={l}
                 onClick={() => handleLeagueSwitch(l)}
@@ -377,7 +379,9 @@ export default function Home() {
                       ? "🇩🇪 Bundesliga"
                       : l === "Serie A"
                         ? "🇮🇹 Serie A"
-                        : "🏆 WC26"}
+                        : l === "Ligue 1"
+                          ? "🇫🇷 Ligue 1"
+                          : "🏆 WC26"}
               </button>
             ))}
           </div>

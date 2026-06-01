@@ -1998,15 +1998,17 @@ def _norm_club_tokens(name: str) -> List[str]:
 
 
 def _load_efl_crests() -> Dict[str, Any]:
-    """Lazily fetch Bundesliga + Serie A crests from football-data.org and index
-    them by distinctive name token (ambiguity-guarded, like the stats fix)."""
+    """Lazily fetch Bundesliga + Serie A + Ligue 1 crests from football-data.org
+    and index them by distinctive name token (ambiguity-guarded, like the stats
+    fix). Token matching bridges FBref club names (e.g. "Lyon") to football-data
+    crest names (e.g. "Olympique Lyonnais") via shared/prefix tokens."""
     global _efl_crest_map
     if _efl_crest_map is not None:
         return _efl_crest_map
     mapping: Dict[str, Any] = {}
     key = os.getenv("FOOTBALL_DATA_API_KEY", "")
     if key:
-        for code in ("BL1", "SA"):
+        for code in ("BL1", "SA", "FL1"):
             try:
                 resp = requests.get(
                     f"https://api.football-data.org/v4/competitions/{code}/teams",
@@ -2053,7 +2055,7 @@ def _efl_crest_for(team_name: str) -> Optional[str]:
 
 
 def get_team_badge_url(team_name: str) -> Optional[str]:
-    """Get badge URL for a team (EPL via FPL CDN, La Liga / Bundesliga / Serie A via football-data.org crests)."""
+    """Get badge URL for a team (EPL via FPL CDN, La Liga / Bundesliga / Serie A / Ligue 1 via football-data.org crests)."""
     team_lower = team_name.lower().strip()
 
     # La Liga — check static map first (no API dependency)
