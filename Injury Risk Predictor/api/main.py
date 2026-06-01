@@ -899,16 +899,25 @@ def assign_rule_based_archetypes(df):
         if ((count >= 4 and avg_sev >= 45 and worst >= 75) or
                 (count >= 3 and avg_sev >= 60 and worst >= 75)):
             return "Fragile"
-        # Recurring Issues: frequent, recent, AND not just minor knocks (check before Injury Prone)
-        if count >= 5 and days_since < 90 and avg_sev >= 20:
+        # Recurring Issues: frequent and recent (checked before Injury Prone so a
+        # run of recent knocks isn't mislabeled "prone").
+        if count >= 5 and days_since < 90 and avg_sev >= 15:
             return "Recurring Issues"
-        # Injury Prone: many injuries AND they're not just minor knocks
-        if count >= 5 and avg_sev >= 20:
+        # Injury Prone: frequent AND genuinely serious — a moderate-or-worse
+        # average (>=25 days) plus at least one real (>4-week) layoff. Injury
+        # COUNT alone is not enough; a pile of minor knocks is not injury-prone.
+        if count >= 5 and avg_sev >= 25 and worst >= 28:
             return "Injury Prone"
+        # Frequent but not serious and still recent: recurring pattern, not "prone".
+        # (Frequent-but-minor-and-dormant falls through to the Durable rules below,
+        # which is the right read: minor knocks long ago, handled well.)
+        if count >= 5 and days_since < 180:
+            return "Recurring Issues"
         # Durable: few injuries, long time since last
         if count <= 2 and days_since > 365:
             return "Durable"
-        # Durable: many minor knocks (avg < 20 days) with no recent issues
+        # Durable: minor knocks (avg < 20 days) with no recent issues — now also
+        # reachable for high-count players (the frequent-minor-dormant case).
         if avg_sev < 20 and days_since > 180:
             return "Durable"
         return "Moderate Risk"
@@ -1098,10 +1107,17 @@ def assign_hybrid_archetypes(df):
             entropy = float(row.get("body_area_entropy", 0) or 0)
             trend = float(row.get("severity_trend", 0) or 0)
 
+            # Severity gate for "Injury Prone": a cluster of many MINOR knocks is
+            # not injury-prone in any meaningful sense. Scale the frequency signal
+            # by how serious the injuries actually are — avg_severity ramping to
+            # full weight at ~25 days, plus the rate of >28-day spells — so injury
+            # COUNT alone can no longer win the Injury Prone axis (the old
+            # injuries*8 term let a high-count/low-severity cluster dominate).
+            sev_factor = min(1.0, (avg_sev / 25.0) + (high_sev * 0.5))
             scores = {
                 # max_sev removed — a single outlier injury was dominating all clusters
-                "Fragile":          (avg_sev * 1.8) + (high_sev * 30) - (injuries * 1.5),
-                "Injury Prone":     (injuries * 8.0) + (high_sev * 8) + max(0, 100 - avg_gap) * 0.05,
+                "Fragile":          (avg_sev * 1.8) + (high_sev * 30) - (injuries * 1.0),
+                "Injury Prone":     (injuries * 7.0) * sev_factor + (high_sev * 18) + max(0, 100 - avg_gap) * 0.05,
                 "Recurring Issues": (reinjury * 90) + (injuries * 3.5) + max(0, 100 - avg_gap) * 0.04,
                 "Unpredictable":    (variability * 32) + (entropy * 8) + (abs(trend) * 4) + (injuries * 2),
                 "Durable":          max(0, 25 - avg_sev) * 1.5 + max(0, 3 - injuries) * 12 + (avg_gap * 0.07) + max(0, 0.35 - reinjury) * 35,
@@ -1180,12 +1196,21 @@ def assign_hybrid_archetypes(df):
             days_since = pd.to_numeric(tmp.get("days_since_last_injury", 365), errors="coerce").fillna(365)
             avg_sev = days_lost.divide(inj.where(inj > 0, 1))
 
+            # Normalise count, average severity, and total burden to comparable
+            # [0,1] scales so severity weighs as much as frequency. The old
+            # composite (inj*0.65 + avg_sev*0.08) ranked almost purely on count,
+            # so the top percentiles — stamped Injury Prone/Fragile below — were
+            # whoever had the most injuries regardless of how serious they were.
+            inj_n = (inj / 10.0).clip(0, 1)         # cap at 10 injuries
+            sev_n = (avg_sev / 45.0).clip(0, 1)      # cap at 45-day average (serious)
+            burden_n = (days_lost / 270.0).clip(0, 1)
             composite = (
-                inj * 0.65
-                + avg_sev * 0.08
-                + (days_since < 60).astype(float) * 6.0
-                + (days_since < 180).astype(float) * 2.0
-                - (days_since > 365).astype(float) * 2.5
+                inj_n * 0.34
+                + sev_n * 0.34
+                + burden_n * 0.12
+                + (days_since < 60).astype(float) * 0.30
+                + (days_since < 180).astype(float) * 0.10
+                - (days_since > 365).astype(float) * 0.12
             )
             rank = composite.rank(pct=True)
 
@@ -1194,10 +1219,14 @@ def assign_hybrid_archetypes(df):
                     return "Clean Record"
                 if since < 60:
                     return "Currently Vulnerable"
+                # Top tiers split on severity: only genuinely serious histories
+                # become Fragile/Injury Prone; frequent-but-minor is Recurring.
                 if pct >= 0.88:
-                    return "Fragile" if sev >= 45 else "Injury Prone"
+                    if sev >= 45:
+                        return "Fragile"
+                    return "Injury Prone" if sev >= 22 else "Recurring Issues"
                 if pct >= 0.70:
-                    return "Injury Prone"
+                    return "Injury Prone" if sev >= 22 else "Recurring Issues"
                 if pct >= 0.52:
                     return "Recurring Issues"
                 if pct >= 0.32:
