@@ -92,7 +92,7 @@ from src.competitions import (
     resolve as resolve_competition,
 )
 from src.data_loaders.international_squads import WORLD_CUP_2026_SEASON
-from src.data_loaders.news_feed import fetch_player_news
+from src.data_loaders.news_feed import fetch_player_news, fetch_matchup_news
 from src.competitions.country_flags import flag_url as wc_flag_url
 # Archetype clustering imports are done lazily inside assign_hybrid_archetypes()
 # to avoid importing all of src.models (which pulls in lightgbm, xgboost, etc.)
@@ -5658,11 +5658,27 @@ def player_row_to_risk(row) -> PlayerRisk:
         enriched_row["previous_injuries"] = prev_injuries
         enriched_row["total_days_lost"] = total_days
 
+    # Matchup news: trusted-aggregator items narrowed to the player's
+    # availability/fitness for this fixture — the one matchup signal the
+    # structured dossier cannot hold. Attributed; the narrative may cite but
+    # never invents. Cached per player, empty on any failure.
+    try:
+        matchup_news_items = fetch_matchup_news(
+            player_name,
+            team,
+            opponent=(next_fixture_data or {}).get("opponent"),
+            limit=3,
+        )
+    except Exception as mnews_err:
+        logger.warning("Matchup news fetch failed for %s: %s", player_name, mnews_err)
+        matchup_news_items = []
+
     narrative_context = {
         "next_fixture": next_fixture_data,
         "fixture_history": fixture_history_data,
         "bookmaker_consensus": bookmaker_consensus_data,
         "matchup_context": matchup_context_data,
+        "matchup_news": matchup_news_items,
         "injury_records": injury_records,
         "player_importance": importance_data,
     }
