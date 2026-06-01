@@ -144,6 +144,32 @@ LIGUE_1 = Competition(
 )
 
 
+CHAMPIONS_LEAGUE = Competition(
+    id="champions-league",
+    name="UEFA Champions League",
+    # Club, not international: covered-club rows carry real club risk (their UCL
+    # workload is already folded into acute load), so they must route through the
+    # club risk builder, not the national-team one. Clubs outside our covered
+    # leagues ride along as baseline (identity-only) rows, distinguished per-row
+    # by ``has_risk_features`` rather than by competition type.
+    type="club",
+    capabilities=CompetitionCapabilities(
+        has_fpl=False,
+        has_club_acwr_thresholds=True,
+        has_team_badges=True,
+        # New 36-team league phase renders as a single table.
+        standings_kind="league_table",
+        risk_calibration_cohort="self",
+        acwr_spike_threshold=1.8,
+        fixture_label="Matchday",
+    ),
+    league_label_aliases=(
+        "champions league", "uefa champions league", "ucl",
+        "uefa champions league 2025-26", "uefa champions league 2025/26",
+    ),
+)
+
+
 WORLD_CUP_2026 = Competition(
     id="world-cup-2026",
     name="FIFA World Cup 2026",
@@ -164,7 +190,7 @@ WORLD_CUP_2026 = Competition(
 
 
 _REGISTRY: Dict[str, Competition] = {
-    c.id: c for c in (PREMIER_LEAGUE, LA_LIGA, BUNDESLIGA, SERIE_A, LIGUE_1, WORLD_CUP_2026)
+    c.id: c for c in (PREMIER_LEAGUE, LA_LIGA, BUNDESLIGA, SERIE_A, LIGUE_1, CHAMPIONS_LEAGUE, WORLD_CUP_2026)
 }
 
 
