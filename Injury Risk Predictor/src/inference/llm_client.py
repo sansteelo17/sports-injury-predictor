@@ -158,6 +158,10 @@ def _clean_output(text: str) -> str:
     cleaned = re.sub(r"__(.+?)__", r"\1", cleaned)
     # Strip bullet points or list markers
     cleaned = re.sub(r"^[\-\*•]\s+", "", cleaned, flags=re.MULTILINE)
+    # No em/en dashes: the model occasionally ignores the system rule. Convert
+    # to a comma break and tidy any resulting double punctuation.
+    cleaned = re.sub(r"\s*[—–―]\s*", ", ", cleaned)
+    cleaned = re.sub(r",\s*,", ",", cleaned)
     # Collapse line breaks into one flowing paragraph (no two-paragraph notes).
     cleaned = re.sub(r"\s*\n+\s*", " ", cleaned)
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
@@ -256,7 +260,7 @@ def _post_openai_chat(
 def _call_openai_compatible(system_prompt: str, user_prompt: str, max_output_tokens: int = 300) -> Optional[str]:
     base_url = (os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") or "").rstrip("/")
     api_key = os.getenv("OPENAI_API_KEY", "")
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    model = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
     temperature = float(os.getenv("NARRATIVE_LLM_TEMPERATURE", "0.6"))
     timeout = float(os.getenv("NARRATIVE_LLM_TIMEOUT_SECONDS", "10"))
 
@@ -324,7 +328,7 @@ def probe_openai_models() -> None:
         return
 
     base_url = (os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1") or "").rstrip("/")
-    club_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    club_model = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
     intl_model = (os.getenv("INTL_OPENAI_MODEL", "") or "").strip()
 
     # {model: which-narratives-it-serves} so the log says what breaks if it fails.
