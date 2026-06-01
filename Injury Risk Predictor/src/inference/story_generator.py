@@ -1682,15 +1682,14 @@ def calculate_scoring_odds(player_data: Dict, extra_context: Optional[Dict] = No
     if any(token in position for token in ["def", "gk", "goalkeeper", "back"]):
         return None
 
-    goals_per_90 = player_data.get("goals_per_90", 0)
-    assists_per_90 = player_data.get("assists_per_90", 0)
-    injury_prob = player_data.get("ensemble_prob", 0.5)
-    minutes = player_data.get("minutes", 0)
+    goals_per_90 = _safe_float(player_data.get("goals_per_90", 0), 0.0)
+    assists_per_90 = _safe_float(player_data.get("assists_per_90", 0), 0.0)
+    injury_prob = _safe_float(player_data.get("ensemble_prob", 0.5), 0.5)
+    minutes = _safe_int(player_data.get("minutes", 0), 0)
 
     if minutes < 270:
         return None
 
-    base_score_prob = min(goals_per_90, 1.5)
     availability = 1 - (injury_prob * 0.5)
     matchup_context = (extra_context or {}).get("matchup_context") or {}
     opponent_defense = matchup_context.get("opponent_defense") or {}
@@ -1710,8 +1709,16 @@ def calculate_scoring_odds(player_data: Dict, extra_context: Optional[Dict] = No
     elif fixture_edge_score <= -0.8:
         opponent_factor *= 0.94
 
-    score_prob = max(0.02, min(0.85, base_score_prob * availability * opponent_factor))
-    involvement_prob = min((goals_per_90 + assists_per_90) * availability, 0.95)
+    # goals_per_90 is a scoring RATE, not a probability. Convert the
+    # opponent-adjusted expected rate (lambda) to P(scores >=1) via Poisson:
+    # 1 - e^(-lambda). The opponent/fixture factor scales the expected goal
+    # rate, not the probability (the old code multiplied a clamped rate
+    # directly as if it were a probability, overstating prolific scorers).
+    goal_rate = max(0.0, goals_per_90) * opponent_factor
+    base_score_prob = 1.0 - math.exp(-goal_rate)
+    score_prob = max(0.02, min(0.92, base_score_prob * availability))
+    involve_rate = max(0.0, goals_per_90 + assists_per_90)
+    involvement_prob = min(0.97, (1.0 - math.exp(-involve_rate)) * availability)
     odds = _prob_to_odds(score_prob)
 
     player_call_name = _call_name(player_data)
@@ -2146,9 +2153,12 @@ def generate_yara_response(player_data: Dict, market_odds: Optional[Dict] = None
     if minutes < 270:
         return None
 
-    # Yara's projection: scoring probability adjusted for availability
+    # Yara's projection: scoring probability adjusted for availability. This is
+    # compared directly against the bookmaker's implied P(score) below, so it
+    # must be a real probability — convert the goals/90 RATE via Poisson
+    # (1 - e^(-lambda)) rather than treating the rate as a probability.
     availability = 1 - (injury_prob * 0.5)
-    yara_prob = max(0.02, min(0.85, goals_per_90 * availability))
+    yara_prob = max(0.02, min(0.92, (1.0 - math.exp(-max(0.0, _safe_float(goals_per_90, 0.0)))) * availability))
 
     # For defenders/GKs, use clean sheet angle instead
     pos_lower = position.lower()
