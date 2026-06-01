@@ -436,6 +436,32 @@ def _matchup_synthesis_sentence(
     return None
 
 
+def _matchup_news_sentence(matchup_news, first_name: str) -> Optional[str]:
+    """Surface ONE attributed availability/fitness headline for this fixture.
+
+    Hybrid-news rule: Yara may present what a trusted outlet reported, with the
+    source named, but never sources or invents. We quote the headline verbatim
+    and attribute it — no paraphrase that could drift into a fabricated fact.
+    Prefer a fitness-flagged item; fall back to the top item otherwise.
+    """
+    if not matchup_news or not isinstance(matchup_news, list):
+        return None
+    chosen = None
+    for it in matchup_news:
+        if isinstance(it, dict) and it.get("matchup_relevant"):
+            chosen = it
+            break
+    if chosen is None and isinstance(matchup_news[0], dict):
+        chosen = matchup_news[0]
+    if not chosen:
+        return None
+    headline = str(chosen.get("title") or "").strip().rstrip(".")
+    source = str(chosen.get("source") or "").strip()
+    if not headline or not source:
+        return None
+    return f"On the team news, {source} are reporting: {headline}."
+
+
 def _show_fantasy_price(player_data: Dict, price: float) -> bool:
     league = str(player_data.get("league", "Premier League") or "Premier League").strip()
     return league == "Premier League" and price > 0
@@ -889,6 +915,10 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
         first_name, role, risk_pct, prob, acwr, days_since, opponent, is_home,
         opp_conceded, opp_goals_for, recent_gi, recent_samples,
     ) if opponent else None
+    # Layer 2: one attributed availability/fitness headline (the matchup signal
+    # the structured dossier can't hold). Grounded retrieval only; cite, never
+    # invent. Not gated on opponent — availability stands alone.
+    matchup_news_line = _matchup_news_sentence(extra_context.get("matchup_news"), first_name)
 
     # Per-injury detail records (sorted most recent first)
     injury_records = extra_context.get("injury_records") or []
@@ -1169,6 +1199,11 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
             f"At {age}, the body is still developing, which can be protective but also unpredictable."
         )
 
+    # TEAM NEWS — attributed availability/fitness headline (Layer 2). Ungated on
+    # opponent; high value because it is the one signal the dossier cannot hold.
+    if matchup_news_line:
+        sentences.append(matchup_news_line.rstrip("."))
+
     # FIXTURE — layer all 3 data dimensions: recent form, opponent defense, player H2H
     if opponent:
         team = team_name
@@ -1337,7 +1372,7 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
         ),
         top_k=10,
         include_open_question=True,
-        extra_seed_lines=[matchup_synthesis_line, importance_line, season_output_line, fixture_form_line],
+        extra_seed_lines=[matchup_synthesis_line, matchup_news_line, importance_line, season_output_line, fixture_form_line],
     )
 
 
