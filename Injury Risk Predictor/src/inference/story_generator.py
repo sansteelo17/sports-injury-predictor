@@ -361,6 +361,81 @@ def _fixture_form_sentence(team_form: Dict, opponent_form: Dict, team: str, oppo
     return None
 
 
+def _matchup_synthesis_sentence(
+    first_name: str,
+    role: str,
+    risk_pct: int,
+    prob: float,
+    acwr: float,
+    days_since: int,
+    opponent: str,
+    is_home,
+    opp_conceded: float,
+    opp_goals_for: float,
+    recent_gi: int,
+    recent_samples: int,
+) -> Optional[str]:
+    """Weigh the player's risk/fitness AGAINST this specific opponent's profile.
+
+    The rest of generate_player_story discusses injury/fitness and the opponent
+    in parallel; this is the one line that makes them intersect — does the
+    fixture's reward (attacker vs a leaky defence) justify the fitness gamble,
+    or is the defensive ask (clean sheet vs a hot attack) the bigger question?
+    Fully grounded in signals we already hold; returns None without enough.
+    """
+    opp = _display_team_name(opponent)
+    if not opp:
+        return None
+    elevated = prob >= 0.40 or risk_pct >= 60
+    fragile_fitness = days_since < 60 or acwr >= 1.6
+    venue = "at home to" if is_home else "away at" if is_home is not None else "against"
+    in_form = recent_samples > 0 and recent_gi >= 2
+
+    if role in ("defender", "goalkeeper"):
+        if opp_goals_for <= 0:
+            return None
+        # Clean-sheet ask is the lens for defenders/keepers.
+        if opp_goals_for >= 1.6:
+            lead = (
+                f"The clean-sheet ask is the real question here, not the fitness one: "
+                f"{opp} are scoring about {opp_goals_for:.1f} a game"
+            )
+            if elevated:
+                return lead + f", so {risk_pct}% risk into that attack is a hard sell."
+            return lead + f", so even a fit {first_name} is up against it."
+        if opp_goals_for < 1.0:
+            lead = f"{opp} have gone quiet in attack, around {opp_goals_for:.1f} a game"
+            if fragile_fitness:
+                return lead + f", which is the one thing keeping a shaky-fit {first_name} interesting here."
+            return lead + f", which gives a fit {first_name} a real clean-sheet platform in this one."
+        return None
+
+    # Attackers / midfielders: reward axis is the opponent's leakiness + own form.
+    if opp_conceded <= 0:
+        return None
+    if elevated and opp_conceded >= 1.3:
+        return (
+            f"Even with the risk at {risk_pct}%, {opp} leaking about {opp_conceded:.1f} a game is exactly "
+            f"the fixture where {first_name} pays off if he is passed fit, so this one is worth the gamble."
+        )
+    if elevated and opp_conceded < 0.9:
+        return (
+            f"At {risk_pct}% and {venue} a {opp} side giving up almost nothing lately, there is little "
+            f"reward on offer to justify the fitness gamble on {first_name}."
+        )
+    if not elevated and opp_conceded >= 1.3 and in_form:
+        return (
+            f"Low risk, in rhythm, and {opp} have been generous at the back at around {opp_conceded:.1f} a game, "
+            f"so this fixture sets up well for {first_name}."
+        )
+    if fragile_fitness and opp_conceded >= 1.3:
+        return (
+            f"{opp} concede enough ({opp_conceded:.1f} a game) to make {first_name} tempting, but {days_since} days "
+            f"back and a workload ratio of {acwr:.2f} mean the start has to come first."
+        )
+    return None
+
+
 def _show_fantasy_price(player_data: Dict, price: float) -> bool:
     league = str(player_data.get("league", "Premier League") or "Premier League").strip()
     return league == "Premier League" and price > 0
@@ -805,9 +880,15 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
     if is_home is None:
         is_home = next_fixture.get("is_home")
     team_name = _display_team_name(str(player_data.get("team", "") or ""))
+    opp_goals_for = _safe_float(opponent_form.get("avg_goals_for_last5", 0.0), 0.0)
     season_output_line = _season_output_sentence(player_data, first_name, role)
     importance_line = _build_importance_sentence(player_importance, first_name, risk_pct)
     fixture_form_line = _fixture_form_sentence(team_form, opponent_form, team_name, opponent)
+    # The one line that makes injury/fitness intersect with THIS opponent.
+    matchup_synthesis_line = _matchup_synthesis_sentence(
+        first_name, role, risk_pct, prob, acwr, days_since, opponent, is_home,
+        opp_conceded, opp_goals_for, recent_gi, recent_samples,
+    ) if opponent else None
 
     # Per-injury detail records (sorted most recent first)
     injury_records = extra_context.get("injury_records") or []
@@ -1093,6 +1174,11 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
         team = team_name
         venue_word = "at home" if is_home else "away" if is_home is not None else ""
 
+        # 0. Matchup synthesis — lead the fixture talk by weighing risk/fitness
+        # against THIS opponent's profile before the supporting detail lines.
+        if matchup_synthesis_line:
+            sentences.append(matchup_synthesis_line)
+
         # 1. Player's recent form (role-aware) — full sentence
         if role in ("defender", "goalkeeper"):
             if recent_samples > 0 and recent_clean_sheets >= 2:
@@ -1119,9 +1205,10 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
             elif season_output_line:
                 sentences.append(season_output_line)
 
-        # 2. Opponent defense — full sentence
+        # 2. Opponent defense — full sentence (skip if the synthesis lead already
+        # framed the opponent, so we don't say the conceding stat twice).
         conceded_line = _natural_conceding_line(opponent, opp_conceded)
-        if conceded_line:
+        if conceded_line and not matchup_synthesis_line:
             sentences.append(f"{conceded_line}.")
 
         if fixture_form_line:
@@ -1250,7 +1337,7 @@ def generate_player_story(player_data: Dict, extra_context: Optional[Dict] = Non
         ),
         top_k=10,
         include_open_question=True,
-        extra_seed_lines=[importance_line, season_output_line, fixture_form_line],
+        extra_seed_lines=[matchup_synthesis_line, importance_line, season_output_line, fixture_form_line],
     )
 
 
