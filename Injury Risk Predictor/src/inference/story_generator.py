@@ -665,7 +665,12 @@ def generate_section_narrative(
         fallback_text=fallback_text,
         require_open_question=include_open_question,
     )
-    return re.sub(r"\s{2,}", " ", (narrative or fallback_text)).strip()
+    out = narrative or fallback_text
+    # No em/en dashes anywhere in surfaced copy (covers deterministic fallbacks
+    # and any verbatim-quoted headline that carried one).
+    out = re.sub(r"\s*[—–―]\s*", ", ", out)
+    out = re.sub(r",\s*,", ",", out)
+    return re.sub(r"\s{2,}", " ", out).strip()
 
 
 def generate_player_narrative_bundle(
