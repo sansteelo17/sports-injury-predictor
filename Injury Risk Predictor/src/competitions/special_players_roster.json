@@ -1,0 +1,17 @@
+{
+  "_comment": "Curated 'Special Players' watch-list: marquee players OUTSIDE our covered European leagues (MLS, Saudi Pro League, Brasileirao, etc.). Hand-curated by George. The build sources each player's injury history from Transfermarkt (they are not in our league data), then shows a history/age-based read rather than the ensemble. 'club'/'league' are hints for display + TM lookup; verify/refresh as transfers happen. Edit freely.",
+  "players": [
+    {"name": "Lionel Messi", "club": "Inter Miami", "league": "MLS", "country": "Argentina", "position": "Forward"},
+    {"name": "Cristiano Ronaldo", "club": "Al-Nassr", "league": "Saudi Pro League", "country": "Portugal", "position": "Forward"},
+    {"name": "Neymar", "club": "Santos", "league": "Brasileirao", "country": "Brazil", "position": "Forward"},
+    {"name": "Luis Suarez", "club": "Inter Miami", "league": "MLS", "country": "Uruguay", "position": "Forward"},
+    {"name": "Sergio Busquets", "club": "Inter Miami", "league": "MLS", "country": "Spain", "position": "Midfielder"},
+    {"name": "Jordi Alba", "club": "Inter Miami", "league": "MLS", "country": "Spain", "position": "Defender"},
+    {"name": "Karim Benzema", "club": "Al-Ittihad", "league": "Saudi Pro League", "country": "France", "position": "Forward"},
+    {"name": "Sadio Mane", "club": "Al-Nassr", "league": "Saudi Pro League", "country": "Senegal", "position": "Forward"},
+    {"name": "Riyad Mahrez", "club": "Al-Ahli", "league": "Saudi Pro League", "country": "Algeria", "position": "Forward"},
+    {"name": "N'Golo Kante", "club": "Al-Ittihad", "league": "Saudi Pro League", "country": "France", "position": "Midfielder"},
+    {"name": "Roberto Firmino", "club": "Al-Ahli", "league": "Saudi Pro League", "country": "Brazil", "position": "Forward"},
+    {"name": "Kalidou Koulibaly", "club": "Al-Hilal", "league": "Saudi Pro League", "country": "Senegal", "position": "Defender"}
+  ]
+}

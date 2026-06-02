@@ -189,8 +189,33 @@ WORLD_CUP_2026 = Competition(
 )
 
 
+SPECIAL_PLAYERS = Competition(
+    id="special-players",
+    name="Special Players",
+    # A curated, flat list of marquee players OUTSIDE our covered leagues
+    # (Messi, Ronaldo, Neymar, …). We have no workload data for their leagues,
+    # so the ensemble can't score them: these rows carry has_risk_features=False
+    # and a history/age-based read instead of an ensemble probability. No teams,
+    # no standings — just the watch-list.
+    type="club",
+    capabilities=CompetitionCapabilities(
+        has_fpl=False,
+        has_club_acwr_thresholds=False,
+        has_team_badges=True,
+        standings_kind="none",
+        risk_calibration_cohort="self",
+        acwr_spike_threshold=1.8,
+        fixture_label="Matchday",
+    ),
+    league_label_aliases=("special players", "specials", "stars", "special"),
+)
+
+
 _REGISTRY: Dict[str, Competition] = {
-    c.id: c for c in (PREMIER_LEAGUE, LA_LIGA, BUNDESLIGA, SERIE_A, LIGUE_1, CHAMPIONS_LEAGUE, WORLD_CUP_2026)
+    c.id: c for c in (
+        PREMIER_LEAGUE, LA_LIGA, BUNDESLIGA, SERIE_A, LIGUE_1,
+        CHAMPIONS_LEAGUE, SPECIAL_PLAYERS, WORLD_CUP_2026,
+    )
 }
 
 
