@@ -114,6 +114,10 @@ export async function getFPLSquad(teamId: string): Promise<FPLSquadSync> {
   return fetchAPI<FPLSquadSync>(`/fpl/squad/${encodeURIComponent(teamId)}`);
 }
 
+export async function getUclStandings(): Promise<LaLigaStandingRow[]> {
+  return fetchAPI<LaLigaStandingRow[]>('/champions-league/standings');
+}
+
 export async function getLaLigaStandings(): Promise<LaLigaStandingRow[]> {
   return fetchAPI<LaLigaStandingRow[]>('/la-liga/standings');
 }
