@@ -811,6 +811,32 @@ def _load_models_blocking():
         except Exception as intl_err:
             logger.warning(f"Failed to merge international predictions: {intl_err}")
 
+    # Merge UEFA Champions League predictions, if a build artifact exists.
+    # Covered-club rows carry real club risk (competition_id=champions-league,
+    # has_risk_features=True); the rest are baseline identity-only rows. Routing
+    # is per-row in player_row_to_risk (covered → club risk; baseline → Unknown),
+    # not by competition type, so this only needs to concat the frame.
+    if inference_df is not None:
+        try:
+            import pandas as pd
+            ucl_path = os.path.join(
+                PROJECT_ROOT, "data", "processed",
+                "inference_champions_league_2026.pkl",
+            )
+            if os.path.exists(ucl_path):
+                ucl_df = pd.read_pickle(ucl_path)
+                if not ucl_df.empty:
+                    inference_df = pd.concat([inference_df, ucl_df], ignore_index=True, sort=False)
+                    print(
+                        f"Merged UCL predictions: +{len(ucl_df)} rows "
+                        f"({ucl_df['team'].nunique()} clubs)"
+                    )
+            else:
+                logger.info("No UCL predictions pickle at %s — run "
+                            "scripts/build_ucl_predictions.py", ucl_path)
+        except Exception as ucl_err:
+            logger.warning(f"Failed to merge UCL predictions: {ucl_err}")
+
     # Apply isotonic probability calibrator if available.
     # Calibration is applied by refresh_predictions.py before saving inference_df.pkl.
     # Do NOT re-apply here — double calibration maps 0.78-0.80 inputs to 0.99 for everyone.
@@ -5496,14 +5522,72 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
     )
 
 
+def _baseline_club_row_to_risk(row: Dict[str, Any], comp: Competition) -> PlayerRisk:
+    """PlayerRisk for a club-competition baseline row.
+
+    A player whose club is IN the competition (e.g. a UEFA Champions League
+    club) but outside the leagues we track ball by ball, so there is no
+    workload/injury signal. Identity + Unknown risk only — no FPL/odds, and no
+    national-team framing (this is club-side, unlike the WC baseline path).
+    """
+    name = row.get("name") or "Unknown"
+    club = row.get("team") or row.get("club_team") or "Unknown"
+    story = (
+        f"{name} is in {club}'s squad. {club} sits outside the leagues I track "
+        f"ball by ball, so I have no workload or injury history to model here. "
+        f"No risk read on this one."
+    )
+    return PlayerRisk(
+        name=name,
+        team=club,
+        position=row.get("position") or "Unknown",
+        league=row.get("league") or comp.name,
+        shirt_number=_safe_int(row.get("shirt_number"), 0) or None,
+        age=_derive_age(row),
+        risk_level="Unknown",
+        risk_probability=0.0,
+        archetype="Unknown",
+        archetype_description="No club-side data tracked for this player.",
+        factors=RiskFactors(
+            previous_injuries=0, total_days_lost=0,
+            days_since_last_injury=365, avg_days_per_injury=0,
+        ),
+        model_predictions=ModelPredictions(ensemble=0.0, lgb=0.0, xgb=0.0, catboost=0.0),
+        recommendations=["No club-side workload data is tracked for this player's league."],
+        story=story,
+        implied_odds=calculate_implied_odds(0.5),
+        last_injury_date=None,
+        next_fixture=None,
+        injury_records=[],
+        player_image_url=get_player_image_url(name, club),
+        team_badge_url=get_team_badge_url(club),
+        competition_id=comp.id,
+        competition_type=comp.type,
+        international_context=None,
+        news=[],
+    )
+
+
 def player_row_to_risk(row) -> PlayerRisk:
     """Convert a DataFrame row to a PlayerRisk response."""
+    comp = _competition_from_row(row)
     # International rows go through a separate builder — they don't have FPL
     # stats, scorer odds, or bookmaker markets, and trying to fetch them
     # would either 404 or return nonsense (an FPL search for "Cristiano
     # Ronaldo" matches a different person).
-    if _competition_from_row(row).type == "international":
+    if comp.type == "international":
         return _international_row_to_risk(dict(row))
+
+    # Club-competition baseline rows (e.g. UCL clubs outside our covered
+    # leagues) carry no workload/injury signal. Route them to the identity-only
+    # builder rather than the club risk path, which would read a NaN prob and
+    # fetch FPL/odds that don't apply. ``has_risk_features`` is only set on the
+    # UCL/WC frames; normal club rows have NaN here (treated as risk-featured).
+    hrf = row.get("has_risk_features", True)
+    if isinstance(hrf, float) and math.isnan(hrf):
+        hrf = True
+    if not bool(hrf):
+        return _baseline_club_row_to_risk(dict(row), comp)
 
     prob = _safe_float(row.get("ensemble_prob", row.get("calibrated_prob", 0.5)), 0.5)
     # Use player_injury_count (has data) instead of previous_injuries (all zeros in inference_df)
@@ -6460,7 +6544,7 @@ def _international_team_next_fixture(team_df) -> Optional[Dict[str, Any]]:
 
 
 @app.get("/api/teams/{team_name}/overview", response_model=TeamOverview)
-def get_team_overview(team_name: str):
+def get_team_overview(team_name: str, competition_id: Optional[str] = None):
     """Get risk overview for an entire team."""
     started = time.perf_counter()
     if inference_df is None:
@@ -6471,6 +6555,15 @@ def get_team_overview(team_name: str):
     team_df = inference_df[team_norm == lookup_key]
     if team_df.empty:
         raise HTTPException(status_code=404, detail=f"Team '{team_name}' not found")
+
+    # A club can now appear under more than one competition (its domestic league
+    # AND the Champions League, which reuses the same team string). Without this
+    # filter the overview merges both frames and doubles the squad. Filter to the
+    # requested competition when given; fall back to all rows if it has none.
+    if competition_id and "competition_id" in team_df.columns:
+        sub = team_df[team_df["competition_id"].astype(str) == str(competition_id)]
+        if not sub.empty:
+            team_df = sub
 
     team_df = team_df.copy()
     team_df["risk_level"] = team_df.apply(lambda r: get_risk_level(r.get("ensemble_prob", 0.5), r), axis=1)
