@@ -838,6 +838,27 @@ def _load_models_blocking():
         except Exception as ucl_err:
             logger.warning(f"Failed to merge UCL predictions: {ucl_err}")
 
+    # Merge Special Players, if a build artifact exists. These are marquee
+    # players outside our covered leagues, so they carry no ensemble score
+    # (has_risk_features=False, ensemble_prob=NaN) — only injury history + age,
+    # which player_row_to_risk turns into a history-based read.
+    if inference_df is not None:
+        try:
+            import pandas as pd
+            sp_path = os.path.join(
+                PROJECT_ROOT, "data", "processed", "inference_special_players.pkl",
+            )
+            if os.path.exists(sp_path):
+                sp_df = pd.read_pickle(sp_path)
+                if not sp_df.empty:
+                    inference_df = pd.concat([inference_df, sp_df], ignore_index=True, sort=False)
+                    print(f"Merged Special Players: +{len(sp_df)} players")
+            else:
+                logger.info("No Special Players pickle at %s — run "
+                            "scripts/build_special_players.py", sp_path)
+        except Exception as sp_err:
+            logger.warning(f"Failed to merge Special Players: {sp_err}")
+
     # Apply isotonic probability calibrator if available.
     # Calibration is applied by refresh_predictions.py before saving inference_df.pkl.
     # Do NOT re-apply here — double calibration maps 0.78-0.80 inputs to 0.99 for everyone.
@@ -853,6 +874,14 @@ def _load_models_blocking():
         if os.path.exists(detail_path):
             injury_detail_df = pd.read_pickle(detail_path)
             print(f"Loaded {len(injury_detail_df)} injury detail records for {injury_detail_df['name'].nunique()} players")
+        # Append Special Players' injury detail (scraped separately) so their
+        # injury map + archetype + narrative have per-injury records too.
+        sp_detail_path = os.path.join(PROJECT_ROOT, "data", "processed", "special_players_injuries_detail.pkl")
+        if os.path.exists(sp_detail_path):
+            sp_detail = pd.read_pickle(sp_detail_path)
+            if injury_detail_df is not None and not sp_detail.empty:
+                injury_detail_df = pd.concat([injury_detail_df, sp_detail], ignore_index=True, sort=False)
+                print(f"Merged {len(sp_detail)} Special Players injury detail records")
     except Exception as e:
         print(f"WARNING: Failed to load injury detail: {e}")
 
@@ -1936,6 +1965,19 @@ def get_risk_level(prob: float, row=None) -> str:
 
     For international rows, uses competition_id directly to avoid comparing WC players to club leagues.
     """
+    # Special Players carry no ensemble prob — classify from the history+age read.
+    if row is not None and hasattr(row, "get"):
+        try:
+            if row.get("competition_id") == "special-players":
+                ds = _safe_int(row.get("days_since_last_injury", 365), 365)
+                p = _special_player_history_prob(
+                    _safe_int(row.get("player_injury_count", 0)),
+                    _safe_float(row.get("player_avg_severity"), 0.0),
+                    ds, _derive_age(row),
+                )
+                return "High" if (p >= 0.6 or ds < 21) else "Medium" if p >= 0.38 else "Low"
+        except Exception:
+            pass
     # For international rows, use competition_id if available to ensure WC players
     # are ranked against WC players, not EPL players
     comp_id = None
@@ -5581,9 +5623,109 @@ def _baseline_club_row_to_risk(row: Dict[str, Any], comp: Competition) -> Player
     )
 
 
+def _special_player_history_prob(count: int, avg_sev: float, days_since: int, age: int) -> float:
+    """A history + age read for marquee players we can't score with the ensemble
+    (no workload data). Weighs recency of the last injury, career frequency,
+    average severity, and age. NOT an ensemble probability — a transparent
+    heuristic surfaced as such in the narrative."""
+    recency = (1.0 if days_since < 21 else 0.7 if days_since < 60
+               else 0.45 if days_since < 120 else 0.2 if days_since < 365 else 0.08)
+    freq = min(count, 15) / 15.0
+    sev = min(avg_sev, 60.0) / 60.0
+    age_f = min(max(0.0, (age - 30) / 12.0), 1.0) if age else 0.0
+    prob = 0.42 * recency + 0.20 * freq + 0.22 * sev + 0.16 * age_f
+    return max(0.05, min(0.95, round(prob, 3)))
+
+
+def _special_player_row_to_risk(row: Dict[str, Any], comp: Competition) -> PlayerRisk:
+    """PlayerRisk for a curated 'Special Players' row — a marquee player outside
+    our covered leagues. No ensemble (no workload data); a history + age read
+    built from Transfermarkt injury history, with FPL/odds skipped."""
+    name = row.get("name") or "Unknown"
+    club = row.get("team") or row.get("club_team") or "Unknown"
+    count = _safe_int(row.get("player_injury_count", row.get("previous_injuries", 0)))
+    days_lost = _safe_int(row.get("total_days_lost", 0))
+    days_since = _safe_int(row.get("days_since_last_injury", 365), 365)
+    age = _derive_age(row)
+    avg_sev = _safe_float(row.get("player_avg_severity"), (days_lost / count) if count else 0.0)
+    prob = _special_player_history_prob(count, avg_sev, days_since, age)
+    risk_level = "High" if (prob >= 0.6 or days_since < 21) else "Medium" if prob >= 0.38 else "Low"
+
+    # Per-injury records for the injury map + a richer narrative.
+    injury_records: List[Dict[str, Any]] = []
+    if injury_detail_df is not None and "name" in getattr(injury_detail_df, "columns", []):
+        pdet = injury_detail_df[injury_detail_df["name"].astype(str).str.lower() == name.lower()]
+        for _, ir in pdet.sort_values("injury_datetime", ascending=False, na_position="last").iterrows():
+            injury_records.append({
+                "date": str(ir.get("date"))[:10] if ir.get("date") is not None else None,
+                "body_area": ir.get("body_area", "unknown"),
+                "injury_type": ir.get("injury_type", "unknown"),
+                "injury_raw": ir.get("injury_raw", ""),
+                "severity_days": _safe_int(ir.get("severity_days", 0)),
+                "games_missed": _safe_int(ir.get("games_missed", 0)),
+            })
+
+    enriched = dict(row)
+    enriched["ensemble_prob"] = prob
+    enriched["risk_score_pct"] = round(prob * 100)
+    enriched["previous_injuries"] = count
+    archetype = _safe_str(row.get("archetype"), "Unknown")
+
+    framing = (
+        f"{name} plays for {club} ({row.get('club_league') or 'outside the leagues I track'}), "
+        f"so this is a history and age read, not my live workload model."
+    )
+    try:
+        base_story = generate_player_story(enriched, extra_context={"injury_records": injury_records})
+        story = f"{framing} {base_story}".strip()
+    except Exception as story_err:
+        logger.warning("Special Players story failed for %s: %s", name, story_err)
+        story = framing
+
+    try:
+        news = [NewsItem(**n) for n in fetch_player_news(name, club)]
+    except Exception:
+        news = []
+
+    return PlayerRisk(
+        name=name,
+        team=club,
+        position=_safe_str(row.get("position")),
+        league=row.get("league") or comp.name,
+        age=age,
+        risk_level=risk_level,
+        risk_probability=prob,
+        archetype=archetype,
+        archetype_description=ARCHETYPE_DESCRIPTIONS.get(archetype, "History-based injury profile."),
+        factors=RiskFactors(
+            previous_injuries=count,
+            total_days_lost=days_lost,
+            days_since_last_injury=days_since,
+            avg_days_per_injury=round(avg_sev, 1),
+        ),
+        model_predictions=ModelPredictions(ensemble=prob, lgb=prob, xgb=prob, catboost=prob),
+        recommendations=get_personalized_insights(enriched),
+        story=story,
+        implied_odds=calculate_implied_odds(prob),
+        last_injury_date=str(row.get("last_injury_date")) if row.get("last_injury_date") else None,
+        next_fixture=None,
+        injury_records=[InjuryRecord(**ir) for ir in injury_records],
+        player_image_url=get_player_image_url(name, club),
+        team_badge_url=get_team_badge_url(club),
+        competition_id=comp.id,
+        competition_type=comp.type,
+        international_context=None,
+        news=news,
+    )
+
+
 def player_row_to_risk(row) -> PlayerRisk:
     """Convert a DataFrame row to a PlayerRisk response."""
     comp = _competition_from_row(row)
+    # Special Players: marquee names outside our leagues. No ensemble score, but
+    # we have injury history + age, so surface a history-based read (not "Unknown").
+    if comp.id == "special-players":
+        return _special_player_row_to_risk(dict(row), comp)
     # International rows go through a separate builder — they don't have FPL
     # stats, scorer odds, or bookmaker markets, and trying to fetch them
     # would either 404 or return nonsense (an FPL search for "Cristiano
@@ -6157,10 +6299,21 @@ def list_players(
         name = row.get("name", "Unknown")
         row_league = row.get("league", "Premier League")
         is_la_liga = _is_la_liga_league(row_league)
-        fpl = None if is_la_liga else get_fpl_stats_for_player(name, team_hint=row.get("team", ""))
+        is_special = row.get("competition_id") == "special-players"
+        # No FPL for special players (an FPL name search would match a different
+        # person) or La Liga.
+        fpl = None if (is_la_liga or is_special) else get_fpl_stats_for_player(name, team_hint=row.get("team", ""))
         minutes = _resolve_display_minutes(row, fpl)
         fpl_status = fpl.get("status", "a") if fpl else "a"
-        display_prob = round(normalize_risk_score(prob, row_league) / 100, 3)
+        if is_special:
+            display_prob = _special_player_history_prob(
+                _safe_int(row.get("player_injury_count", 0)),
+                _safe_float(row.get("player_avg_severity"), 0.0),
+                _safe_int(row.get("days_since_last_injury", 365), 365),
+                _derive_age(row),
+            )
+        else:
+            display_prob = round(normalize_risk_score(prob, row_league) / 100, 3)
         players.append(PlayerSummary(
             name=name,
             team=row.get("team", "Unknown"),

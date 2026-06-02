@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import {
   getTeams,
+  getPlayers,
   getTeamOverview,
   getPlayerRisk,
   getFPLInsights,
@@ -16,6 +17,7 @@ import {
 import {
   TeamOverview as TeamOverviewType,
   PlayerRisk,
+  PlayerSummary,
   FPLInsights as FPLInsightsType,
   StandingsSummary,
   FPLSquadSync,
@@ -60,6 +62,7 @@ const LEAGUE_META: { id: string; label: string; flag: string }[] = [
   { id: "Serie A", label: "Serie A", flag: "🇮🇹" },
   { id: "Ligue 1", label: "Ligue 1", flag: "🇫🇷" },
   { id: "Champions League", label: "Champions League", flag: "🇪🇺" },
+  { id: "Special Players", label: "Special Players", flag: "⭐" },
 ];
 
 // Coarse season calendar — the client has no per-league fixture feed, so this
@@ -73,6 +76,8 @@ function leagueStatus(id: string, now: Date): LeagueStatus {
     if (now <= end) return "active";
     return "offseason";
   }
+  // Special Players is an evergreen watch-list, never off-season.
+  if (id === "Special Players") return "active";
   const m = now.getUTCMonth(); // 0=Jan … 11=Dec
   if (id === "Champions League") {
     // League phase Sep, knockouts to late May; off June–August.
@@ -97,6 +102,7 @@ export default function Home() {
   const [standings, setStandings] = useState<StandingsSummary | null>(null);
   const [laLigaStandings, setLaLigaStandings] = useState<LaLigaStandingRow[]>([]);
   const [uclStandings, setUclStandings] = useState<LaLigaStandingRow[]>([]);
+  const [specialsPlayers, setSpecialsPlayers] = useState<PlayerSummary[]>([]);
   const [winnerOdds, setWinnerOdds] = useState<WinnerOdds | null>(null);
   const [teamBadges, setTeamBadges] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
@@ -106,9 +112,10 @@ export default function Home() {
   const [leagueMenuOpen, setLeagueMenuOpen] = useState(false);
 
   // Competition (international tournament leads while the WC is active).
-  type CompetitionChoice = "FIFA World Cup 2026" | "Premier League" | "La Liga" | "Bundesliga" | "Serie A" | "Ligue 1" | "Champions League";
+  type CompetitionChoice = "FIFA World Cup 2026" | "Premier League" | "La Liga" | "Bundesliga" | "Serie A" | "Ligue 1" | "Champions League" | "Special Players";
   const [league, setLeague] = useState<CompetitionChoice>("FIFA World Cup 2026");
   const isInternational = league === "FIFA World Cup 2026";
+  const isSpecial = league === "Special Players";
   const competitionId =
     league === "Premier League"
       ? "premier-league"
@@ -122,7 +129,9 @@ export default function Home() {
               ? "ligue-1"
               : league === "Champions League"
                 ? "champions-league"
-                : "world-cup-2026";
+                : league === "Special Players"
+                  ? "special-players"
+                  : "world-cup-2026";
 
   // Squad sync state
   const [mode, setMode] = useState<"browse" | "squad">("browse");
@@ -177,6 +186,17 @@ export default function Home() {
       .then(setUclStandings)
       .catch(() => console.log("UCL standings unavailable"));
   }, [league]);
+
+  // Special Players is a flat watch-list (no teams): load all of them directly.
+  useEffect(() => {
+    if (!isSpecial) {
+      setSpecialsPlayers([]);
+      return;
+    }
+    getPlayers(undefined, undefined, "special-players")
+      .then(setSpecialsPlayers)
+      .catch(() => console.log("Special Players unavailable"));
+  }, [isSpecial]);
 
   // Tournament-winner odds for the World Cup view (cleared otherwise).
   useEffect(() => {
@@ -314,7 +334,7 @@ export default function Home() {
     ? "bg-[#141414] border-[#1f1f1f]"
     : "bg-white border-gray-200";
 
-  const hasContent = mode === "browse" ? !!teamOverview : !!fplSquad;
+  const hasContent = mode === "browse" ? (isSpecial ? specialsPlayers.length > 0 : !!teamOverview) : !!fplSquad;
 
   // Club season is "over" once the leader has played the league's full
   // matchday count. Market panels, fixture odds, and Fantasy tabs all become
@@ -564,6 +584,10 @@ export default function Home() {
               error={squadError}
               darkMode={darkMode}
             />
+          ) : isSpecial ? (
+            <label className={`block text-sm font-medium mb-2 ${mutedClass}`}>
+              ⭐ Marquee players worldwide — a history and age read (no live model)
+            </label>
           ) : (
             <>
               <label className={`block text-sm font-medium mb-2 ${mutedClass}`}>
@@ -616,6 +640,21 @@ export default function Home() {
                   onRefresh={() => lastSyncedId && handleSquadSync(lastSyncedId)}
                   darkMode={darkMode}
                 />
+              ) : isSpecial ? (
+                <div className={`holo-panel ${cardClass} border rounded-xl p-3 sm:p-4`}>
+                  <h3 className={`font-semibold mb-3 flex items-center gap-2 text-sm sm:text-base ${textClass}`}>
+                    <Shield size={16} className={darkMode ? "text-[#86efac]" : "text-emerald-600"} />
+                    Special Players
+                  </h3>
+                  <div className="max-h-[50vh] sm:max-h-[36rem] overflow-y-auto">
+                    <PlayerList
+                      players={specialsPlayers}
+                      onSelectPlayer={handlePlayerSelected}
+                      selectedPlayer={selectedPlayer || undefined}
+                      darkMode={darkMode}
+                    />
+                  </div>
+                </div>
               ) : teamOverview ? (
                 <>
                   <TeamOverview team={teamOverview} darkMode={darkMode} seasonOver={seasonOver} />
