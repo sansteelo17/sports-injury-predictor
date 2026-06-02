@@ -10,6 +10,7 @@ import {
   getTeamBadges,
   getFPLSquad,
   getLaLigaStandings,
+  getUclStandings,
   getWinnerOdds,
 } from "@/lib/api";
 import {
@@ -29,6 +30,7 @@ import { LabNotes } from "@/components/LabNotes";
 import { FPLInsights } from "@/components/FPLInsights";
 import { StandingsCards } from "@/components/StandingsCards";
 import { LaLigaStandingsCards } from "@/components/LaLigaStandingsCards";
+import { UclStandingsCards } from "@/components/UclStandingsCards";
 import { WinnerOddsCard } from "@/components/WinnerOddsCard";
 import { FPLSquadInput } from "@/components/FPLSquadInput";
 import { FPLSquadView } from "@/components/FPLSquadView";
@@ -94,6 +96,7 @@ export default function Home() {
   const [fplInsights, setFplInsights] = useState<FPLInsightsType | null>(null);
   const [standings, setStandings] = useState<StandingsSummary | null>(null);
   const [laLigaStandings, setLaLigaStandings] = useState<LaLigaStandingRow[]>([]);
+  const [uclStandings, setUclStandings] = useState<LaLigaStandingRow[]>([]);
   const [winnerOdds, setWinnerOdds] = useState<WinnerOdds | null>(null);
   const [teamBadges, setTeamBadges] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
@@ -165,6 +168,14 @@ export default function Home() {
     getLaLigaStandings()
       .then(setLaLigaStandings)
       .catch(() => console.log("La Liga standings unavailable"));
+  }, [league]);
+
+  // Load Champions League league-phase table once per league switch.
+  useEffect(() => {
+    if (league !== "Champions League") return;
+    getUclStandings()
+      .then(setUclStandings)
+      .catch(() => console.log("UCL standings unavailable"));
   }, [league]);
 
   // Tournament-winner odds for the World Cup view (cleared otherwise).
@@ -620,6 +631,14 @@ export default function Home() {
                   {laLigaStandings.length > 0 && league === "La Liga" && (
                     <LaLigaStandingsCards
                       standings={laLigaStandings}
+                      selectedTeam={selectedTeam}
+                      darkMode={darkMode}
+                    />
+                  )}
+
+                  {uclStandings.length > 0 && league === "Champions League" && (
+                    <UclStandingsCards
+                      standings={uclStandings}
                       selectedTeam={selectedTeam}
                       darkMode={darkMode}
                     />

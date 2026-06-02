@@ -259,6 +259,7 @@ _fpl_insights_cache: Dict[str, Any] = {"data": None, "expires": None}  # FPL ins
 _player_risk_cache: Dict[str, Dict[str, Any]] = BoundedTTLCache(maxsize=512)  # player name (lower) -> {"data": ..., "expires": ...}
 _narrative_bundle_cache: Dict[str, Dict[str, Any]] = BoundedTTLCache(maxsize=512)
 _la_liga_standings_cache: Dict[str, Any] = {"data": None, "expires": None}
+_ucl_standings_cache: Dict[str, Any] = {"data": None, "expires": None}
 _la_liga_fixture_dataset_cache: Dict[str, Any] = {"season": None, "data": None, "expires": None}
 _la_liga_team_fixtures_cache: Dict[str, Dict[str, Any]] = BoundedTTLCache(maxsize=128)
 _la_liga_moneyline_cache: Dict[str, Dict[str, Any]] = BoundedTTLCache(maxsize=128)
@@ -3037,6 +3038,18 @@ def _safe_int(val, default=0) -> int:
         return default
 
 
+def _safe_str(val, default: str = "Unknown") -> str:
+    """Coerce to a non-empty string. Float NaN (from merged frames where a
+    column is missing on some rows) and blanks fall back to ``default`` so
+    pydantic string fields never see a NaN."""
+    if val is None:
+        return default
+    if isinstance(val, float) and math.isnan(val):
+        return default
+    s = str(val).strip()
+    return s if s else default
+
+
 def _safe_float(val, default=0.0) -> float:
     try:
         if val is None:
@@ -5462,7 +5475,7 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
     return PlayerRisk(
         name=player_name,
         team=country,
-        position=row.get("position") or "Unknown",
+        position=_safe_str(row.get("position")),
         league=row.get("league") or comp.name,
         shirt_number=_safe_int(row.get("shirt_number"), 0) or None,
         age=_derive_age(row),
@@ -5540,7 +5553,7 @@ def _baseline_club_row_to_risk(row: Dict[str, Any], comp: Competition) -> Player
     return PlayerRisk(
         name=name,
         team=club,
-        position=row.get("position") or "Unknown",
+        position=_safe_str(row.get("position")),
         league=row.get("league") or comp.name,
         shirt_number=_safe_int(row.get("shirt_number"), 0) or None,
         age=_derive_age(row),
@@ -6151,7 +6164,7 @@ def list_players(
         players.append(PlayerSummary(
             name=name,
             team=row.get("team", "Unknown"),
-            position=row.get("position", "Unknown"),
+            position=_safe_str(row.get("position")),
             shirt_number=_resolve_shirt_number(
                 name,
                 fpl,
@@ -6595,7 +6608,7 @@ def get_team_overview(team_name: str, competition_id: Optional[str] = None):
         players.append(PlayerSummary(
             name=name,
             team=row.get("team", "Unknown"),
-            position=row.get("position", "Unknown"),
+            position=_safe_str(row.get("position")),
             shirt_number=_resolve_shirt_number(
                 name,
                 fpl,
@@ -6767,6 +6780,57 @@ def get_la_liga_standings():
         return rows
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"La Liga standings unavailable: {str(e)}")
+
+
+def _build_ucl_standings_rows(table: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Project the football-data CL league-phase table into the same row shape
+    the frontend standings cards consume. UCL crests come straight from
+    football-data, so no badge-map lookup is needed."""
+    rows = []
+    for row in table:
+        team = row.get("team", {})
+        rows.append({
+            "position": row.get("position"),
+            "name": team.get("shortName") or team.get("name", ""),
+            "full_name": team.get("name", ""),
+            "badge_url": team.get("crest"),
+            "played": row.get("playedGames", 0),
+            "won": row.get("won", 0),
+            "draw": row.get("draw", 0),
+            "lost": row.get("lost", 0),
+            "goals_for": row.get("goalsFor", 0),
+            "goals_against": row.get("goalsAgainst", 0),
+            "goal_difference": row.get("goalDifference", 0),
+            "points": row.get("points", 0),
+            "form": row.get("form"),
+        })
+    return rows
+
+
+def _get_ucl_standings_cached() -> List[Dict[str, Any]]:
+    """Champions League league-phase table, cached like La Liga's."""
+    global _ucl_standings_cache
+    if _cache_entry_is_fresh(_ucl_standings_cache):
+        return _ucl_standings_cache["data"] or []
+    client = MatchHistoryApiClient()
+    data = client._get("competitions/CL/standings")
+    # New format: a single 36-team league phase lives in standings[0].table.
+    table = data.get("standings", [{}])[0].get("table", [])
+    rows = _build_ucl_standings_rows(table)
+    _ucl_standings_cache = {
+        "data": rows,
+        "expires": datetime.utcnow() + _LA_LIGA_STANDINGS_TTL,
+    }
+    return rows
+
+
+@app.get("/api/champions-league/standings")
+def get_ucl_standings():
+    """Get the current Champions League league-phase table from football-data.org."""
+    try:
+        return _get_ucl_standings_cached()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"UCL standings unavailable: {str(e)}")
 
 
 @app.get("/api/player-photo/tm")
