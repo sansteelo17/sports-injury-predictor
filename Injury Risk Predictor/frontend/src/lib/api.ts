@@ -71,8 +71,12 @@ export async function getWinnerOdds(competition: string): Promise<WinnerOdds> {
   return fetchAPI<WinnerOdds>(`/competitions/${encodeURIComponent(competition)}/winner-odds`);
 }
 
-export async function getTeamOverview(teamName: string): Promise<TeamOverview> {
-  return fetchAPI<TeamOverview>(`/teams/${encodeURIComponent(teamName)}/overview`);
+export async function getTeamOverview(teamName: string, competition?: string): Promise<TeamOverview> {
+  // Pass the active competition so a club that plays in both its domestic
+  // league and the Champions League resolves to the right frame instead of
+  // merging both (which would double the squad).
+  const query = competition ? `?competition_id=${encodeURIComponent(competition)}` : "";
+  return fetchAPI<TeamOverview>(`/teams/${encodeURIComponent(teamName)}/overview${query}`);
 }
 
 export async function getArchetypes(): Promise<Record<string, string>> {

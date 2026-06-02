@@ -57,6 +57,7 @@ const LEAGUE_META: { id: string; label: string; flag: string }[] = [
   { id: "Bundesliga", label: "Bundesliga", flag: "🇩🇪" },
   { id: "Serie A", label: "Serie A", flag: "🇮🇹" },
   { id: "Ligue 1", label: "Ligue 1", flag: "🇫🇷" },
+  { id: "Champions League", label: "Champions League", flag: "🇪🇺" },
 ];
 
 // Coarse season calendar — the client has no per-league fixture feed, so this
@@ -70,8 +71,12 @@ function leagueStatus(id: string, now: Date): LeagueStatus {
     if (now <= end) return "active";
     return "offseason";
   }
-  // European club leagues run ~August through May; June/July is the off-season.
   const m = now.getUTCMonth(); // 0=Jan … 11=Dec
+  if (id === "Champions League") {
+    // League phase Sep, knockouts to late May; off June–August.
+    return m >= 8 || m <= 4 ? "active" : "offseason";
+  }
+  // European club leagues run ~August through May; June/July is the off-season.
   return m >= 7 || m <= 4 ? "active" : "offseason";
 }
 
@@ -98,7 +103,7 @@ export default function Home() {
   const [leagueMenuOpen, setLeagueMenuOpen] = useState(false);
 
   // Competition (international tournament leads while the WC is active).
-  type CompetitionChoice = "FIFA World Cup 2026" | "Premier League" | "La Liga" | "Bundesliga" | "Serie A" | "Ligue 1";
+  type CompetitionChoice = "FIFA World Cup 2026" | "Premier League" | "La Liga" | "Bundesliga" | "Serie A" | "Ligue 1" | "Champions League";
   const [league, setLeague] = useState<CompetitionChoice>("FIFA World Cup 2026");
   const isInternational = league === "FIFA World Cup 2026";
   const competitionId =
@@ -112,7 +117,9 @@ export default function Home() {
             ? "serie-a"
             : league === "Ligue 1"
               ? "ligue-1"
-              : "world-cup-2026";
+              : league === "Champions League"
+                ? "champions-league"
+                : "world-cup-2026";
 
   // Squad sync state
   const [mode, setMode] = useState<"browse" | "squad">("browse");
@@ -202,7 +209,7 @@ export default function Home() {
       ? Promise.resolve(null)
       : getStandingsSummary(selectedTeam).catch(() => null);
 
-    Promise.all([getTeamOverview(selectedTeam), standingsPromise])
+    Promise.all([getTeamOverview(selectedTeam, competitionId), standingsPromise])
       .then(([teamData, standingsData]) => {
         if (cancelled) return; // a newer team was selected; drop this response
         setTeamOverview(teamData);
