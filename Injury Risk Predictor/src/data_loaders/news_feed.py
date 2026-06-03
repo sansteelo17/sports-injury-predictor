@@ -19,6 +19,8 @@ import html
 import re
 import time
 import unicodedata
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from dataclasses import asdict, dataclass
 from typing import Dict, List, Optional
 from urllib.parse import quote_plus
@@ -45,6 +47,26 @@ REPUTABLE_SOURCES = {
     "fabrizio romano", "athletic", "evening standard", "manchester evening news",
     "liverpool echo", "football.london", "the mirror", "mirror",
 }
+
+
+# Drop anything older than this so Yara never surfaces last season's news
+# (e.g. a months-old Ballon d'Or headline). Google News carries a pubDate.
+_MAX_NEWS_AGE_DAYS = 45
+
+
+def _age_days(published: Optional[str]) -> Optional[float]:
+    """Age of an RSS item in days from its pubDate, or None if unparseable."""
+    if not published:
+        return None
+    try:
+        dt = parsedate_to_datetime(published)
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+    except Exception:
+        return None
 
 
 def _normalize(text: str) -> str:
@@ -157,16 +179,21 @@ def fetch_player_news(player_name: str, team: Optional[str] = None, limit: int =
         logger.warning("News fetch failed for %s: %s", player_name, e)
         items = []
 
-    # Drop obvious dupes, prefer reputable sources, cap to limit.
+    # Recency first: drop stale/undated items so we never surface last season's
+    # headline, then rank recent items newest-first with reputable as a tiebreak
+    # (3-day buckets so a tabloid an hour newer doesn't outrank The Athletic).
     seen = set()
-    deduped: List[NewsItem] = []
-    for it in sorted(items, key=_rank):
-        key = it.url
-        if key in seen:
+    candidates = []
+    for it in items:
+        if it.url in seen:
             continue
-        seen.add(key)
-        deduped.append(it)
-    result = [d.to_dict() for d in deduped[:limit]]
+        seen.add(it.url)
+        age = _age_days(it.published)
+        if age is None or age > _MAX_NEWS_AGE_DAYS:
+            continue
+        candidates.append((round(age / 3.0), _rank(it), it))
+    candidates.sort(key=lambda x: (x[0], x[1]))
+    result = [it.to_dict() for _, _, it in candidates[:limit]]
 
     _news_cache[cache_key] = {"expires": now + _TTL_SECONDS, "items": result}
     return result
@@ -261,13 +288,17 @@ def fetch_matchup_news(
         headline_norm = _normalize(it.title)
         if not _player_mentioned(headline_norm, player_name):
             continue  # off-target: drop rather than risk a wrong-player item
+        age = _age_days(it.published)
+        if age is None or age > _MAX_NEWS_AGE_DAYS:
+            continue  # stale/undated — never surface last season's news
         seen.add(it.url)
         fitness = _is_fitness_item(headline_norm)
         mentions_opp = bool(opp_norm) and opp_norm in headline_norm
         reputable = _normalize(it.source) in REPUTABLE_SOURCES
         # Sort key (ascending): fitness items first, then opponent mentions, then
-        # reputable outlets; feed order (roughly recency) breaks ties.
-        sort_key = (0 if fitness else 1, 0 if mentions_opp else 1, 0 if reputable else 1)
+        # recency (3-day buckets), then reputable outlets.
+        sort_key = (0 if fitness else 1, 0 if mentions_opp else 1,
+                    round(age / 3.0), 0 if reputable else 1)
         d = it.to_dict()
         d["matchup_relevant"] = fitness
         scored.append((sort_key, d))
