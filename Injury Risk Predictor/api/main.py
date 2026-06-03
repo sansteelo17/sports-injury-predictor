@@ -5400,13 +5400,9 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
                 "kind": "news",
                 "text": f"{n.source} reports: {n.title}",
             })
-        chunks.append({
-            "kind": "calibration",
-            "text": (
-                "Tournament workload is denser than a club season, so risk thresholds "
-                "should be read as approximate when applied to World Cup minutes."
-            ),
-        })
+        # (Removed the always-on "tournament workload is denser than a club
+        # season" calibration chunk — feeding it to every WC player made the LLM
+        # parrot the same generic line instead of writing a player-specific read.)
 
         # If INTL provider override is set, swap env for the duration of the
         # call so generate_grounded_narrative routes to it without altering
@@ -5514,6 +5510,26 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
             difficulty=None,
         )
 
+    # Club-form scoring / clean-sheet odds so the WC card's Odds tab isn't empty
+    # for covered players. Pure goals/90 math (no live market), deterministic
+    # analysis. The WC frame stores club minutes as ``minutes_played``; map it to
+    # the ``minutes`` key the calculators read. One of the two returns None by
+    # position (scoring -> attackers, clean sheet -> defenders/keepers).
+    intl_scoring_odds = None
+    intl_clean_sheet_odds = None
+    if has_risk:
+        odds_row = dict(enriched_row)
+        odds_row.setdefault("minutes", _safe_int(row.get("minutes_played", row.get("minutes", 0))))
+        _odds_ctx = {"_skip_section_llm": True}
+        try:
+            intl_scoring_odds = calculate_scoring_odds(odds_row, extra_context=_odds_ctx)
+        except Exception as _so_err:
+            logger.warning("Intl scoring odds failed for %s: %s", player_name, _so_err)
+        try:
+            intl_clean_sheet_odds = calculate_clean_sheet_odds(odds_row, extra_context=_odds_ctx)
+        except Exception as _cs_err:
+            logger.warning("Intl clean-sheet odds failed for %s: %s", player_name, _cs_err)
+
     return PlayerRisk(
         name=player_name,
         team=country,
@@ -5548,9 +5564,9 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
         last_injury_date=str(row.get("last_injury_date")) if row.get("last_injury_date") else None,
         # FPL-flavoured fields stay None for international rows.
         fpl_insight=None,
-        scoring_odds=None,
+        scoring_odds=intl_scoring_odds,
         fpl_value=None,
-        clean_sheet_odds=None,
+        clean_sheet_odds=intl_clean_sheet_odds,
         next_fixture=next_fixture,
         bookmaker_consensus=None,
         yara_response=None,
