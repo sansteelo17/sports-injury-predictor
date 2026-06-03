@@ -352,8 +352,12 @@ export default function Home() {
   // each group keeping its default order. Off-season leagues stay reachable,
   // just visibly secondary.
   const _now = new Date();
+  // Special Players is a curated extra — always pin it last, regardless of its
+  // (evergreen "active") status.
+  const _rank = (m: { id: string; status: LeagueStatus }) =>
+    m.id === "Special Players" ? 99 : STATUS_RANK[m.status];
   const orderedLeagues = LEAGUE_META.map((m) => ({ ...m, status: leagueStatus(m.id, _now) })).sort(
-    (a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status],
+    (a, b) => _rank(a) - _rank(b),
   );
   const currentLeagueMeta = LEAGUE_META.find((m) => m.id === league) ?? LEAGUE_META[0];
   const currentStatus = leagueStatus(String(league), _now);
