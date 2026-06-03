@@ -58,12 +58,12 @@ export function WinnerOddsCard({ data, darkMode = true }: WinnerOddsCardProps) {
           {data.bookmakers.map((b) => (
             <span key={b.key} className="inline-flex items-center gap-1">
               <img
-                src={`https://logo.clearbit.com/${bookieDomain(b.key, b.title)}`}
+                src={`https://www.google.com/s2/favicons?sz=64&domain=${bookieDomain(b.key, b.title)}`}
                 alt=""
                 title={b.title}
-                width={12}
-                height={12}
-                className="rounded-sm opacity-80"
+                width={14}
+                height={14}
+                className="rounded-sm opacity-90"
                 onError={(e) => {
                   (e.currentTarget as HTMLImageElement).style.display = "none";
                 }}
@@ -79,8 +79,9 @@ export function WinnerOddsCard({ data, darkMode = true }: WinnerOddsCardProps) {
   );
 }
 
-// Best-effort logo domains for common sportsbooks (Clearbit serves by domain).
-// Unknown books fall back to text only via the img onError handler.
+// Best-effort logo domains for common sportsbooks. Logos are served by domain
+// via Google's favicon service (Clearbit's logo API was shut down). Unknown
+// books fall back to text only via the img onError handler.
 const BOOKIE_DOMAINS: Record<string, string> = {
   bet365: "bet365.com",
   williamhill: "williamhill.com",
