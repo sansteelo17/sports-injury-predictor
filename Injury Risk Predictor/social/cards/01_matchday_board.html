@@ -1,0 +1,188 @@
+<!doctype html>
+<!-- Card 01 - Matchday risk board. Reads ?data=<base64 JSON> and renders. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Matchday risk board</title>
+<link rel="stylesheet" href="_card.css">
+<style>
+  .board-row { display: grid; grid-template-columns: 56px 100px 240px 200px 130px 1fr 100px; align-items: center; gap: 24px; padding: 22px 0; border-bottom: 1px solid var(--rule); }
+  .board-row.alt { background: var(--bg-alt); margin: 0 -56px; padding-left: 56px; padding-right: 56px; }
+  .board-row .rank { font-size: 26px; font-weight: 600; color: var(--muted-2); font-variant-numeric: tabular-nums; }
+  .board-row .name .first { font-size: 14px; color: var(--ink-2); font-weight: 500; }
+  .board-row .name .last { font-size: 26px; font-weight: 900; letter-spacing: -0.01em; text-transform: uppercase; line-height: 1; }
+  .board-row .name .meta { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-top: 6px; }
+  .board-row .name .meta .pos { color: var(--green); font-weight: 700; margin-left: 4px; }
+  .board-row .num { font-size: 48px; font-weight: 900; letter-spacing: -0.04em; line-height: 0.9; font-variant-numeric: tabular-nums; }
+  .board-row .num .pct { font-size: 0.55em; font-weight: 800; margin-left: 1px; }
+  .board-row .num.high { color: var(--red); }
+  .board-row .num.med { color: var(--amber); }
+  .board-row .num.low { color: var(--green); }
+  .board-row .num.inactive { color: var(--muted-2); }
+  .board-row .meter-wrap { width: 110px; height: 5px; background: #ececec; border-radius: 3px; position: relative; overflow: hidden; margin-top: 8px; }
+  .board-row .meter-wrap > i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; }
+  .board-row .meter-wrap.high > i { background: var(--red); }
+  .board-row .meter-wrap.med  > i { background: var(--amber); }
+  .board-row .meter-wrap.low  > i { background: var(--green); }
+  .board-row .meter-wrap.inactive > i { background: var(--muted-2); }
+  .board-row .signal { font-size: 15px; color: var(--ink-2); font-weight: 500; line-height: 1.4; }
+  .board-row .delta { justify-self: end; }
+  .err { padding: 80px; font-family: ui-monospace, monospace; color: var(--red-d); font-size: 16px; line-height: 1.5; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div class="card landscape" id="card">
+  <div class="stripe"></div>
+  <div class="pad">
+    <div class="mast">
+      <div>
+        <h1 style="font-size:46px; text-transform: uppercase; letter-spacing: -0.02em;">Matchday Risk Board</h1>
+        <div class="sub">Top 5 Players Ranked by Injury Probability</div>
+      </div>
+      <div class="right">
+        <div class="gw" id="gw">GW -</div>
+        <div class="league" id="league">Premier League</div>
+      </div>
+    </div>
+
+    <div class="board-row" style="padding: 12px 0; border-bottom: 1px solid var(--rule);">
+      <span></span>
+      <span class="eyebrow">Player</span>
+      <span></span>
+      <span class="eyebrow">Risk</span>
+      <span class="eyebrow">Archetype</span>
+      <span class="eyebrow">Major signal</span>
+      <span class="eyebrow text-right">wk</span>
+    </div>
+
+    <div id="rows"></div>
+
+    <div class="foot">
+      <span class="url">yaraspeaks.com</span>
+      <span class="right">Injury risk probabilities are model outputs, not medical advice</span>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  function readPayload() {
+    var p = new URLSearchParams(location.search);
+    var raw = p.get("data");
+    if (!raw) return null;
+    try {
+      var decoded;
+      try { decoded = decodeURIComponent(escape(atob(raw))); }
+      catch (_) { decoded = decodeURIComponent(raw); }
+      return JSON.parse(decoded);
+    } catch (e) {
+      return { __error: "payload_parse_failed: " + e.message };
+    }
+  }
+
+  var TEAM_TO_CLUB = {
+    "arsenal": "ars", "liverpool": "liv",
+    "manchester city": "mc", "man city": "mc",
+    "chelsea": "che", "tottenham": "tot", "spurs": "tot",
+    "manchester united": "mun", "man utd": "mun", "man united": "mun",
+    "newcastle": "new", "newcastle united": "new",
+    "aston villa": "avl", "brighton": "bha", "brentford": "bre",
+    "bournemouth": "bou", "crystal palace": "cry", "west ham": "whu",
+    "fulham": "ful", "nottingham forest": "nfo", "everton": "eve", "wolves": "wol"
+  };
+
+  var POSITION_SHORT = {
+    "Goalkeeper": "GK",
+    "Centre-Back": "DEF", "Left-Back": "DEF", "Right-Back": "DEF", "Defender": "DEF",
+    "Defensive Midfield": "MID", "Central Midfield": "MID", "Attacking Midfield": "MID",
+    "Left Midfield": "MID", "Right Midfield": "MID", "Midfield": "MID", "Midfielder": "MID",
+    "Left Winger": "FWD", "Right Winger": "FWD", "Centre-Forward": "FWD", "Forward": "FWD",
+    "Offence": "FWD", "Defence": "DEF"
+  };
+
+  function clubClass(team) {
+    if (!team) return "j-na";
+    var key = String(team).toLowerCase().trim();
+    return TEAM_TO_CLUB[key] ? "j-" + TEAM_TO_CLUB[key] : "j-na";
+  }
+  function riskBand(pct) { var n = Number(pct) || 0; if (n >= 75) return "high"; if (n >= 50) return "med"; return "low"; }
+  function splitName(full) {
+    if (!full) return { first: "", last: "" };
+    var parts = String(full).trim().split(/\s+/);
+    if (parts.length === 1) return { first: "", last: parts[0] };
+    return { first: parts[0], last: parts.slice(1).join(" ") };
+  }
+  function archetypeLabel(arch) {
+    if (!arch) return { label: "", cls: "arch-monitor" };
+    var m = String(arch).toLowerCase();
+    if (/headline|fragile|currently vulnerable/.test(m)) return { label: "Fragile",  cls: "arch-fragile" };
+    if (/managed|tension|injury prone/.test(m))         return { label: "Managed",  cls: "arch-managed" };
+    if (/beneficiary|durable|robust|safe|clean/.test(m)) return { label: "Robust",   cls: "arch-robust"  };
+    if (/sleeper|monitor|unpredictable|recurring/.test(m)) return { label: "Monitor", cls: "arch-monitor" };
+    return { label: String(arch).replace(/_/g, " "), cls: "arch-monitor" };
+  }
+  function deltaCell(d) {
+    if (d === null || d === undefined || d === "") return "";
+    var n = Number(d);
+    if (Number.isNaN(n)) return '<span class="delta delta-flat">' + escapeHtml(d) + '</span>';
+    if (n > 0)  return '<span class="delta delta-up">&#9650; +' + n + '%</span>';
+    if (n < 0)  return '<span class="delta delta-down">&#9660; ' + n + '%</span>';
+    return '<span class="delta delta-flat">0%</span>';
+  }
+  function fmtMatchday(m) {
+    if (!m) return "GW -";
+    if (typeof m === "number") return "GW" + m;
+    if (/^(GW|MD|R|QF|SF|F)/i.test(m)) return m;
+    if (/^\d+$/.test(m)) return "GW" + m;
+    return m;
+  }
+  function escapeHtml(s) {
+    return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  function renderError(msg) {
+    document.getElementById("rows").innerHTML = '<div class="err">RENDER ERROR\n' + escapeHtml(msg) + '</div>';
+    document.documentElement.setAttribute("data-rendered", "1");
+  }
+  function render(payload) {
+    if (!payload) return renderError("no ?data= query param provided");
+    if (payload.__error) return renderError(payload.__error);
+    var top = payload.top_5 || payload.players || [];
+    if (!Array.isArray(top) || top.length === 0) return renderError("payload.top_5 is empty or missing");
+    document.getElementById("gw").textContent = fmtMatchday(payload.matchday);
+    document.getElementById("league").textContent = payload.league || "Premier League";
+    var html = "";
+    top.slice(0, 5).forEach(function (p, i) {
+      var name = splitName(p.player_name || p.name || "");
+      var pct = Math.round(Number(p.risk_score_pct != null ? p.risk_score_pct : (p.risk_probability ? p.risk_probability * 100 : 0)));
+      var band = riskBand(pct);
+      var arch = archetypeLabel(p.archetype);
+      var pos = POSITION_SHORT[p.position] || (p.position ? String(p.position).slice(0,3).toUpperCase() : "");
+      var club = clubClass(p.team);
+      var altCls = i % 2 === 1 ? " alt" : "";
+      var rank = String(i + 1).padStart(2, "0");
+      html +=
+        '<div class="board-row' + altCls + '">' +
+          '<span class="rank">' + rank + '</span>' +
+          '<span class="thumb ' + club + '"><span class="silhouette"></span></span>' +
+          '<div class="name">' +
+            '<div class="first">' + escapeHtml(name.first) + '</div>' +
+            '<div class="last">'  + escapeHtml(name.last)  + '</div>' +
+            '<div class="meta">'  + escapeHtml(p.team || "") + (pos ? '<span class="pos">' + pos + '</span>' : "") + '</div>' +
+          '</div>' +
+          '<div>' +
+            '<div class="num ' + band + '"><span>' + pct + '</span><span class="pct">%</span></div>' +
+            '<div class="meter-wrap ' + band + '"><i style="width:' + Math.min(100, pct) + '%;"></i></div>' +
+          '</div>' +
+          '<span><span class="arch ' + arch.cls + '">' + escapeHtml(arch.label) + '</span></span>' +
+          '<span class="signal">' + escapeHtml(p.signal_one_liner || p.signal || "") + '</span>' +
+          '<span class="delta">' + deltaCell(p.delta_pct != null ? p.delta_pct : (p.delta != null ? p.delta : "")) + '</span>' +
+        '</div>';
+    });
+    document.getElementById("rows").innerHTML = html;
+    document.documentElement.setAttribute("data-rendered", "1");
+  }
+  render(readPayload());
+})();
+</script>
+</body>
+</html>

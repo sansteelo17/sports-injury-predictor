@@ -198,3 +198,4 @@ notebooks/catboost_info/
 frontend/node_modules/
 frontend/.next/
 models/archetype_cache.pkl
+social/out/

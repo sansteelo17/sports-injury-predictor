@@ -6358,6 +6358,52 @@ def list_players(
     return players
 
 
+@app.get("/api/board-candidates")
+def board_candidates(competition: str, limit: int = 30):
+    """Lean candidate pool for social cards: top risk-featured players in a
+    competition, with just the fields a card needs. Skips the per-player image
+    URL / shirt-number / FPL work that makes /api/players too slow for a
+    1200-row competition like the World Cup."""
+    if inference_df is None:
+        raise HTTPException(status_code=503, detail="Models not loaded")
+    comp = competition_for_id(competition)
+    if comp is None:
+        raise HTTPException(status_code=400, detail=f"Unknown competition '{competition}'")
+    df = inference_df
+    if "competition_id" in df.columns:
+        df = df[df["competition_id"] == comp.id]
+    is_special = comp.id == "special-players"
+    out = []
+    for _, r in df.iterrows():
+        level = get_risk_level(r.get("ensemble_prob", 0.5), r)  # special-aware
+        if str(level).lower() in ("", "unknown"):
+            continue
+        if is_special:
+            pct = round(_special_player_history_prob(
+                _safe_int(r.get("player_injury_count", 0)),
+                _safe_float(r.get("player_avg_severity"), 0.0),
+                _safe_int(r.get("days_since_last_injury", 365), 365),
+                _derive_age(r),
+            ) * 100)
+        else:
+            # Raw model probability (the card says "ranked by injury
+            # probability"); differentiates the top instead of saturating at the
+            # percentile ceiling, and surfaces the genuinely highest-risk names.
+            pct = round(_safe_float(r.get("ensemble_prob"), 0.0) * 100)
+        out.append({
+            "name": _safe_str(r.get("name")),
+            "team": _safe_str(r.get("team")),
+            "position": _safe_str(r.get("position")),
+            "risk_score_pct": pct,
+            "risk_level": level,
+            "archetype": _safe_str(r.get("archetype"), "Unknown"),
+            "days_since_last_injury": _safe_int(r.get("days_since_last_injury", 365), 365),
+            "injury_news": (r.get("injury_news") if isinstance(r.get("injury_news"), str) else None),
+        })
+    out.sort(key=lambda x: x["risk_score_pct"], reverse=True)
+    return out[: max(1, min(limit, 100))]
+
+
 def _prediction_risk_label(score: float) -> str:
     if score >= 0.65:
         return "HIGH"
