@@ -37,9 +37,13 @@ DO NOT:
 - Do not go down the list in rank order. Do not say "matchday board", "top 5",
   "here are", or "swipe".
 
-X POST (hard constraints):
-- ONE post, 270 characters maximum. Count them. The occasion, the juxtaposition,
-  a number. No markdown, no hashtags, no emojis, no em dashes, no quotation marks.
+X POST (we have X Premium, so there is room now):
+- Two or three short paragraphs, roughly 500 to 800 characters. Use the room to
+  set the occasion, build the juxtaposition, and land the read. Still tight, no
+  rambling, every line earns its place.
+- Open on the occasion, carry one through-line across two or three marquee names,
+  close with the call. At least one number.
+- No markdown, no hashtags, no emojis, no em dashes, no quotation marks.
 
 REDDIT POST:
 - 3 short paragraphs: open on the occasion, develop the two or three names and the
@@ -90,6 +94,7 @@ def write(payload: Dict) -> Tuple[str, str]:
             f"{lead.get('risk_score_pct','')}% going into {payload.get('matchday','')}. "
             "Full board: yaraspeaks.com")
         reddit = x_post
-    if len(x_post) > 280:
-        x_post = x_post[:277].rstrip() + "..."
+    # Premium ceiling. We target 500-800 chars; this just guards a runaway.
+    if len(x_post) > 1100:
+        x_post = x_post[:1097].rstrip() + "..."
     return x_post, reddit
