@@ -56,7 +56,22 @@ logger = get_logger(__name__)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.utils.model_io import load_artifacts
+from src.utils.model_io import load_artifacts, _strip_stringdtype
+
+
+def _safe_concat(base, frame):
+    """Concat two frames under pandas 3.0 without the StringDtype upcast crash.
+
+    The merged competition frames (WC/UCL/Special) are pickled with pandas-3.0
+    string columns; concatenating them against the object-dtype club frame
+    raises a StringDtype error. Coerce both sides (and the result) to plain
+    object so the merges never fail and a competition silently vanishes.
+    """
+    import pandas as _pd
+    return _strip_stringdtype(
+        _pd.concat([_strip_stringdtype(base), _strip_stringdtype(frame)],
+                   ignore_index=True, sort=False)
+    )
 from src.inference.story_generator import (
     generate_player_story,
     generate_risk_factors_list,
@@ -801,7 +816,7 @@ def _load_models_blocking():
                 if not intl_df.empty:
                     # Align columns: any missing club column gets NaN, any extra
                     # international column is preserved on concat.
-                    inference_df = pd.concat([inference_df, intl_df], ignore_index=True, sort=False)
+                    inference_df = _safe_concat(inference_df, intl_df)
                     print(
                         f"Merged international predictions: +{len(intl_df)} "
                         f"rows ({intl_df['team'].nunique()} national teams)"
@@ -827,7 +842,7 @@ def _load_models_blocking():
             if os.path.exists(ucl_path):
                 ucl_df = pd.read_pickle(ucl_path)
                 if not ucl_df.empty:
-                    inference_df = pd.concat([inference_df, ucl_df], ignore_index=True, sort=False)
+                    inference_df = _safe_concat(inference_df, ucl_df)
                     print(
                         f"Merged UCL predictions: +{len(ucl_df)} rows "
                         f"({ucl_df['team'].nunique()} clubs)"
@@ -851,7 +866,7 @@ def _load_models_blocking():
             if os.path.exists(sp_path):
                 sp_df = pd.read_pickle(sp_path)
                 if not sp_df.empty:
-                    inference_df = pd.concat([inference_df, sp_df], ignore_index=True, sort=False)
+                    inference_df = _safe_concat(inference_df, sp_df)
                     print(f"Merged Special Players: +{len(sp_df)} players")
             else:
                 logger.info("No Special Players pickle at %s — run "
@@ -880,7 +895,7 @@ def _load_models_blocking():
         if os.path.exists(sp_detail_path):
             sp_detail = pd.read_pickle(sp_detail_path)
             if injury_detail_df is not None and not sp_detail.empty:
-                injury_detail_df = pd.concat([injury_detail_df, sp_detail], ignore_index=True, sort=False)
+                injury_detail_df = _safe_concat(injury_detail_df, sp_detail)
                 print(f"Merged {len(sp_detail)} Special Players injury detail records")
     except Exception as e:
         print(f"WARNING: Failed to load injury detail: {e}")
