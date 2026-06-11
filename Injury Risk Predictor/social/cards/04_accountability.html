@@ -1,0 +1,70 @@
+<!doctype html>
+<!-- Card 04 - Accountability (hits & misses). Reads ?data=<base64 JSON>. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>How we did</title>
+<link rel="stylesheet" href="_card.css">
+<style>
+  .ac-mast { display:flex; align-items:flex-start; justify-content:space-between; gap: 24px; padding-bottom: 18px; border-bottom: 1px solid var(--rule); }
+  .ac-mast h1 { font-size: 44px; font-weight: 900; letter-spacing: -0.02em; text-transform: uppercase; }
+  .ac-score { display: flex; align-items: baseline; gap: 12px; padding: 24px 0; border-bottom: 1px solid var(--rule); }
+  .ac-score .n { font-size: 96px; font-weight: 900; line-height: 0.85; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; color: var(--green-d); }
+  .ac-score .out-of { font-size: 26px; color: var(--muted); font-weight: 700; }
+  .ac-score .lab { margin-left: auto; text-align: right; font-size: 13px; color: var(--muted); line-height: 1.5; max-width: 40ch; }
+  .ac-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; flex: 1; }
+  .ac-grid > div { padding: 22px 36px 22px 0; }
+  .ac-grid > div + div { padding-left: 36px; border-left: 1px solid var(--rule); padding-right: 0; }
+  .ac-grid h3 { font-size: 11px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; }
+  .ac-item { display:grid; grid-template-columns: 1fr auto; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--rule); align-items: baseline; }
+  .ac-item:last-child { border-bottom: none; }
+  .ac-item .who { font-size: 17px; font-weight: 800; letter-spacing: -0.01em; }
+  .ac-item .who small { display:block; font-size: 12px; color: var(--muted); font-weight: 500; margin-top: 2px; letter-spacing: 0.04em; text-transform: uppercase; }
+  .ac-item .v { font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .ac-item .v.hit { color: var(--green-d); }
+  .ac-item .v.miss { color: var(--red); }
+  .ac-item .note { grid-column: 1 / -1; font-size: 12px; color: var(--ink-2); line-height: 1.45; margin-top: 2px; }
+  .err { padding: 60px; font-family: ui-monospace, monospace; color: var(--red-d); font-size: 15px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div class="card landscape" id="card">
+  <div class="stripe"></div>
+  <div class="pad">
+    <div class="ac-mast">
+      <div><div class="eyebrow green" id="eyebrow">Accountability</div><h1>How We Did</h1></div>
+      <div class="text-right"><div class="eyebrow" id="when" style="color:var(--ink);font-size:13px;">Matchday</div><div class="eyebrow" id="league" style="color:var(--muted-2);margin-top:4px;">World Cup</div></div>
+    </div>
+    <div class="ac-score"><span class="n" id="score">0</span><span class="out-of" id="outof">/ 0 calls landed</span><span class="lab" id="lab">We post our hits and our misses. The number is the model holding itself to account.</span></div>
+    <div class="ac-grid"><div><h3>Calls that held</h3><div id="hits"></div></div><div><h3>Where we missed</h3><div id="misses"></div></div></div>
+    <div class="foot"><span class="url">yaraspeaks.com</span><span class="right" id="foot">Injury risk probabilities are model outputs, not medical advice</span></div>
+  </div>
+</div>
+<script>
+(function(){
+  function readPayload(){var p=new URLSearchParams(location.search),raw=p.get("data");if(!raw)return null;try{var d;try{d=decodeURIComponent(escape(atob(raw)))}catch(_){d=decodeURIComponent(raw)}return JSON.parse(d)}catch(e){return{__error:e.message}}}
+  function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+  function err(m){document.getElementById("hits").innerHTML='<div class="err">RENDER ERROR\n'+esc(m)+'</div>';document.documentElement.setAttribute("data-rendered","1")}
+  function items(arr, cls){
+    if(!arr||!arr.length) return '<div class="ac-item"><div class="who">Nothing here</div></div>';
+    return arr.map(function(p){
+      return '<div class="ac-item"><div class="who">'+esc(p.player_name)+'<small>'+esc(p.team||"")+'</small></div>'+
+        '<span class="v '+cls+'">'+(p.predicted_risk!=null?p.predicted_risk+'% · ':'')+(cls==="hit"?"hit":"miss")+'</span>'+
+        (p.note?'<div class="note">'+esc(p.note)+'</div>':'')+'</div>';
+    }).join("");
+  }
+  function render(d){
+    if(!d) return err("no ?data=");
+    if(d.__error) return err(d.__error);
+    document.getElementById("when").textContent=d.matchday||"Matchday";
+    document.getElementById("league").textContent=d.league||"World Cup";
+    document.getElementById("score").textContent=(d.score!=null?d.score:0);
+    document.getElementById("outof").textContent="/ "+(d.out_of!=null?d.out_of:0)+" calls landed";
+    document.getElementById("hits").innerHTML=items(d.hits,"hit");
+    document.getElementById("misses").innerHTML=items(d.misses,"miss");
+    document.documentElement.setAttribute("data-rendered","1");
+  }
+  render(readPayload());
+})();
+</script>
+</body></html>

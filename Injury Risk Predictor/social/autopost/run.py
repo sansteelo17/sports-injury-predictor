@@ -76,10 +76,104 @@ def _run_battle(args) -> int:
     return 0
 
 
+def _emit(args, fmt: str, payload: Dict) -> int:
+    """Shared tail: render, write copy, dry-run or email, record the post."""
+    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_png = config.OUT_DIR / f"{fmt}_{args.competition}_{stamp}.png"
+    render.render_card(fmt, payload, out_png)
+    print(f"[render] {out_png}")
+    x_post, reddit_post = copywriter.write(payload)
+    print("\n--- X POST (" + str(len(x_post)) + " chars) ---\n" + x_post)
+    print("\n--- REDDIT ---\n" + reddit_post + "\n")
+    if args.dry_run:
+        print(f"[dry-run] no email sent. card at {out_png}")
+        return 0
+    emailer.send_draft(payload, x_post, reddit_post, out_png)
+    for p in payload.get("top_5", []):
+        memory.record_post(p.get("player_name", ""), fmt)
+    print(f"[memory] recorded {fmt} post")
+    return 0
+
+
+def _run_spike(args) -> int:
+    """Players whose risk jumped 15+ points since their last logged reading."""
+    league = args.league or LEAGUE_NAMES.get(args.competition, args.competition)
+    today = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+    print(f"[run] risk_spike | {league} | API={config.API_BASE}")
+    cands = fetch.fetch_candidates(args.competition, pool=100)
+    spikers = []
+    for c in cands:
+        prev = memory.last_risk(c["player_name"], args.competition, today)
+        cur = c.get("risk_score_pct")
+        if prev and cur is not None and (cur - prev[0]) >= 15:
+            if memory.on_cooldown(c["player_name"], "risk_spike"):
+                continue
+            d = dict(c)
+            d["delta_pct"] = cur - prev[0]
+            d["signal_one_liner"] = (c.get("injury_news")
+                                     or f"Up {cur - prev[0]} points since the last read.")
+            spikers.append(d)
+    if not spikers:
+        print("[run] no risk spikes (>=15) since last reading. Nothing to post.")
+        return 0
+    spikers.sort(key=lambda p: p["delta_pct"], reverse=True)
+    spikers = spikers[:5]
+    for p in spikers:
+        if not p.get("image_url"):
+            p["image_url"] = photos.wikipedia_photo(p.get("player_name", ""))
+    payload = {
+        "post_type": "risk_spike", "matchday": "This week", "league": league,
+        "title": "Biggest Risk Risers",
+        "subtitle": "Sharpest week-over-week jumps in injury risk",
+        "top_5": spikers,
+        "narrative_spine": (f"{spikers[0]['player_name']} leads the risers, up "
+                            f"{spikers[0]['delta_pct']} points since the last read."),
+    }
+    print("[spike] " + ", ".join(f"{p['player_name']} +{p['delta_pct']}" for p in spikers))
+    return _emit(args, "risk_spike", payload)
+
+
+def _run_accountability(args) -> int:
+    """Score the calls logged for a past matchday and post hits and misses."""
+    league = args.league or LEAGUE_NAMES.get(args.competition, args.competition)
+    date = args.date or (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1)).strftime("%Y-%m-%d")
+    print(f"[run] accountability | {league} | scoring {date} | API={config.API_BASE}")
+    calls = memory.pending_calls(args.competition, date)
+    if not calls:
+        print(f"[run] no pending calls for {date}. Nothing to score.")
+        return 0
+    # Current status of the called players decides the outcome.
+    status = {c["player_name"].lower(): c
+              for c in fetch.fetch_candidates(args.competition, pool=100, date=date)}
+    hits, misses = [], []
+    for call in calls:
+        nm = call["player_name"]
+        pred = call["predicted_risk"] or 0
+        cur = status.get((nm or "").lower(), {})
+        flagged = bool(cur.get("injury_news")) or cur.get("risk_level") == "High"
+        landed = flagged if pred >= 60 else (not flagged)  # high call lands if it broke down
+        outcome = "flagged or hurt" if flagged else "came through clean"
+        memory.score_call(call["id"], outcome, landed)
+        rec = {"player_name": nm, "team": cur.get("team", ""),
+               "predicted_risk": pred, "outcome": outcome,
+               "note": (cur.get("injury_news") or "")[:90]}
+        (hits if landed else misses).append(rec)
+    total = len(hits) + len(misses)
+    payload = {
+        "post_type": "accountability", "matchday": date, "league": league,
+        "score": len(hits), "out_of": total, "hits": hits, "misses": misses,
+        "top_5": hits + misses,
+        "narrative_spine": f"{len(hits)} of {total} calls landed on {date}.",
+    }
+    print(f"[accountability] {len(hits)}/{total} landed")
+    return _emit(args, "accountability", payload)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--format", default="matchday_board",
-                    choices=["matchday_board", "riskiest_xi", "battle_card"])
+                    choices=["matchday_board", "riskiest_xi", "battle_card",
+                             "risk_spike", "accountability"])
     ap.add_argument("--competition", default="world-cup-2026")
     ap.add_argument("--matchday", default="MD1", help="round label e.g. MD1, R16, GW1")
     ap.add_argument("--league", default=None, help="display name; defaults from competition")
@@ -91,6 +185,10 @@ def main() -> int:
 
     if args.format == "battle_card":
         return _run_battle(args)
+    if args.format == "risk_spike":
+        return _run_spike(args)
+    if args.format == "accountability":
+        return _run_accountability(args)
 
     spec = FORMAT_SPEC[args.format]
     league = args.league or LEAGUE_NAMES.get(args.competition, args.competition)

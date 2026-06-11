@@ -17,6 +17,8 @@ CARD_FILES = {
     "matchday_board": "01_matchday_board.html",
     "riskiest_xi": "05_riskiest_xi.html",
     "battle_card": "10_battle_card.html",
+    "risk_spike": "01_matchday_board.html",       # reuses the board card
+    "accountability": "04_accountability.html",
 }
 
 # Each card owns its canvas size; screenshot at the matching viewport.
@@ -24,6 +26,8 @@ CARD_VIEWPORT = {
     "matchday_board": (1600, 900),   # landscape
     "riskiest_xi": (1080, 1350),     # portrait
     "battle_card": (1600, 900),      # landscape
+    "risk_spike": (1600, 900),       # landscape (board card)
+    "accountability": (1600, 900),   # landscape
 }
 
 
