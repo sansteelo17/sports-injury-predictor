@@ -1,0 +1,812 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//YaraSports//WC 2026 Post Schedule//EN
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Yara WC 2026 Posts
+BEGIN:VEVENT
+UID:yara-wc-2026-06-11@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260611T190000Z
+DTEND:20260611T193000Z
+SUMMARY:Yara post: WC Group Stage (1 game)
+DESCRIPTION:Post the matchday risk board for 2026-06-11. First up: Mexico vs South Africa. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-11
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: Mexico vs South Africa
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: Mexico vs South Africa
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: Mexico vs South Africa
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-12@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260612T020000Z
+DTEND:20260612T023000Z
+SUMMARY:Yara post: WC Group Stage (2 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-12. First up: South Korea vs Czechia +1 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-12
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: South Korea vs Czechia
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: South Korea vs Czechia
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: South Korea vs Czechia
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-13@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260613T010000Z
+DTEND:20260613T013000Z
+SUMMARY:Yara post: WC Group Stage (3 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-13. First up: United States vs Paraguay +2 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-13
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: United States vs Paraguay
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: United States vs Paraguay
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: United States vs Paraguay
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-14@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260614T010000Z
+DTEND:20260614T013000Z
+SUMMARY:Yara post: WC Group Stage (5 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-14. First up: Haiti vs Scotland +4 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-14
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: Haiti vs Scotland
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: Haiti vs Scotland
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: Haiti vs Scotland
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-15@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260615T020000Z
+DTEND:20260615T023000Z
+SUMMARY:Yara post: WC Group Stage (4 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-15. First up: Sweden vs Tunisia +3 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-15
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: Sweden vs Tunisia
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: Sweden vs Tunisia
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: Sweden vs Tunisia
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-16@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260616T010000Z
+DTEND:20260616T013000Z
+SUMMARY:Yara post: WC Group Stage (3 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-16. First up: Iran vs New Zealand +2 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-16
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: Iran vs New Zealand
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: Iran vs New Zealand
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: Iran vs New Zealand
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-17@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260617T010000Z
+DTEND:20260617T013000Z
+SUMMARY:Yara post: WC Group Stage (5 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-17. First up: Argentina vs Algeria +4 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-17
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: Argentina vs Algeria
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: Argentina vs Algeria
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: Argentina vs Algeria
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-18@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260618T020000Z
+DTEND:20260618T023000Z
+SUMMARY:Yara post: WC Group Stage (4 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-18. First up: Uzbekistan vs Colombia +3 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-18
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: Uzbekistan vs Colombia
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: Uzbekistan vs Colombia
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: Uzbekistan vs Colombia
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-19@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260619T010000Z
+DTEND:20260619T013000Z
+SUMMARY:Yara post: WC Group Stage (3 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-19. First up: Mexico vs South Korea +2 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-19
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: Mexico vs South Korea
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: Mexico vs South Korea
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: Mexico vs South Korea
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-20@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260620T003000Z
+DTEND:20260620T010000Z
+SUMMARY:Yara post: WC Group Stage (4 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-20. First up: Brazil vs Haiti +3 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-20
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: Brazil vs Haiti
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: Brazil vs Haiti
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: Brazil vs Haiti
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-21@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260621T000000Z
+DTEND:20260621T003000Z
+SUMMARY:Yara post: WC Group Stage (5 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-21. First up: Ecuador vs Curaçao +4 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-21
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: Ecuador vs Curaçao
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: Ecuador vs Curaçao
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: Ecuador vs Curaçao
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-22@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260622T010000Z
+DTEND:20260622T013000Z
+SUMMARY:Yara post: WC Group Stage (3 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-22. First up: New Zealand vs Egypt +2 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-22
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: New Zealand vs Egypt
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: New Zealand vs Egypt
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: New Zealand vs Egypt
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-23@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260623T000000Z
+DTEND:20260623T003000Z
+SUMMARY:Yara post: WC Group Stage (5 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-23. First up: Norway vs Senegal +4 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-23
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: Norway vs Senegal
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: Norway vs Senegal
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: Norway vs Senegal
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-24@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260624T020000Z
+DTEND:20260624T023000Z
+SUMMARY:Yara post: WC Group Stage (5 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-24. First up: Colombia vs Congo DR +4 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-24
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: Colombia vs Congo DR
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: Colombia vs Congo DR
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: Colombia vs Congo DR
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-25@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260625T010000Z
+DTEND:20260625T013000Z
+SUMMARY:Yara post: WC Group Stage (6 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-25. First up: Czechia vs Mexico +5 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-25
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: Czechia vs Mexico
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: Czechia vs Mexico
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: Czechia vs Mexico
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-26@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260626T020000Z
+DTEND:20260626T023000Z
+SUMMARY:Yara post: WC Group Stage (4 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-26. First up: Turkey vs United States +3 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-26
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: Turkey vs United States
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: Turkey vs United States
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: Turkey vs United States
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-27@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260627T000000Z
+DTEND:20260627T003000Z
+SUMMARY:Yara post: WC Group Stage (8 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-27. First up: Cape Verde Islands vs Saudi Arabia +7 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-27
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: Cape Verde Islands vs Saudi Arabia
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: Cape Verde Islands vs Saudi Arabia
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: Cape Verde Islands vs Saudi Arabia
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-28@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260628T020000Z
+DTEND:20260628T023000Z
+SUMMARY:Yara post: WC Group Stage (3 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-28. First up: Jordan vs Argentina +2 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Group Stage" --date 2026-06-28
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: Jordan vs Argentina
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: Jordan vs Argentina
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: Jordan vs Argentina
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-29@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260629T170000Z
+DTEND:20260629T173000Z
+SUMMARY:Yara post: WC Last 32 (2 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-29. First up: nan vs nan +1 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Last 32" --date 2026-06-29
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-06-30@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260630T010000Z
+DTEND:20260630T013000Z
+SUMMARY:Yara post: WC Last 32 (3 games)
+DESCRIPTION:Post the matchday risk board for 2026-06-30. First up: nan vs nan +2 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Last 32" --date 2026-06-30
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-07-01@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260701T010000Z
+DTEND:20260701T013000Z
+SUMMARY:Yara post: WC Last 32 (3 games)
+DESCRIPTION:Post the matchday risk board for 2026-07-01. First up: nan vs nan +2 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Last 32" --date 2026-07-01
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-07-02@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260702T000000Z
+DTEND:20260702T003000Z
+SUMMARY:Yara post: WC Last 32 (3 games)
+DESCRIPTION:Post the matchday risk board for 2026-07-02. First up: nan vs nan +2 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Last 32" --date 2026-07-02
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-07-03@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260703T030000Z
+DTEND:20260703T033000Z
+SUMMARY:Yara post: WC Last 32 (3 games)
+DESCRIPTION:Post the matchday risk board for 2026-07-03. First up: nan vs nan +2 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Last 32" --date 2026-07-03
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-07-04@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260704T013000Z
+DTEND:20260704T020000Z
+SUMMARY:Yara post: WC Last 32 (3 games)
+DESCRIPTION:Post the matchday risk board for 2026-07-04. First up: nan vs nan +2 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Last 32" --date 2026-07-04
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-07-05@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260705T200000Z
+DTEND:20260705T203000Z
+SUMMARY:Yara post: WC Last 16 (1 game)
+DESCRIPTION:Post the matchday risk board for 2026-07-05. First up: nan vs nan. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Last 16" --date 2026-07-05
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-07-06@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260706T000000Z
+DTEND:20260706T003000Z
+SUMMARY:Yara post: WC Last 16 (2 games)
+DESCRIPTION:Post the matchday risk board for 2026-07-06. First up: nan vs nan +1 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Last 16" --date 2026-07-06
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-07-07@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260707T000000Z
+DTEND:20260707T003000Z
+SUMMARY:Yara post: WC Last 16 (3 games)
+DESCRIPTION:Post the matchday risk board for 2026-07-07. First up: nan vs nan +2 more. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Last 16" --date 2026-07-07
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-07-09@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260709T200000Z
+DTEND:20260709T203000Z
+SUMMARY:Yara post: WC Quarter Finals (1 game)
+DESCRIPTION:Post the matchday risk board for 2026-07-09. First up: nan vs nan. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Quarter Finals" --date 2026-07-09
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-07-10@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260710T190000Z
+DTEND:20260710T193000Z
+SUMMARY:Yara post: WC Quarter Finals (1 game)
+DESCRIPTION:Post the matchday risk board for 2026-07-10. First up: nan vs nan. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Quarter Finals" --date 2026-07-10
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-07-11@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260711T210000Z
+DTEND:20260711T213000Z
+SUMMARY:Yara post: WC Quarter Finals (1 game)
+DESCRIPTION:Post the matchday risk board for 2026-07-11. First up: nan vs nan. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Quarter Finals" --date 2026-07-11
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-07-12@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260712T010000Z
+DTEND:20260712T013000Z
+SUMMARY:Yara post: WC Quarter Finals (1 game)
+DESCRIPTION:Post the matchday risk board for 2026-07-12. First up: nan vs nan. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Quarter Finals" --date 2026-07-12
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-07-14@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260714T190000Z
+DTEND:20260714T193000Z
+SUMMARY:Yara post: WC Semi Finals (1 game)
+DESCRIPTION:Post the matchday risk board for 2026-07-14. First up: nan vs nan. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Semi Finals" --date 2026-07-14
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-07-15@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260715T190000Z
+DTEND:20260715T193000Z
+SUMMARY:Yara post: WC Semi Finals (1 game)
+DESCRIPTION:Post the matchday risk board for 2026-07-15. First up: nan vs nan. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Semi Finals" --date 2026-07-15
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-07-18@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260718T210000Z
+DTEND:20260718T213000Z
+SUMMARY:Yara post: WC Third Place (1 game)
+DESCRIPTION:Post the matchday risk board for 2026-07-18. First up: nan vs nan. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Third Place" --date 2026-07-18
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:yara-wc-2026-07-19@yaraspeaks.com
+DTSTAMP:20260611T152236Z
+DTSTART:20260719T190000Z
+DTEND:20260719T193000Z
+SUMMARY:Yara post: WC Final (1 game)
+DESCRIPTION:Post the matchday risk board for 2026-07-19. First up: nan vs nan. Run: python -m social.autopost.run --format matchday_board --competition world-cup-2026 --matchday "Final" --date 2026-07-19
+BEGIN:VALARM
+TRIGGER:-P1D
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post tomorrow: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT2H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 2 hours: nan vs nan
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:DISPLAY
+DESCRIPTION:Yara WC post in 1 hour: nan vs nan
+END:VALARM
+END:VEVENT
+END:VCALENDAR
