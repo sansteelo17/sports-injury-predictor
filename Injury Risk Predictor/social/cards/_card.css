@@ -1,0 +1,132 @@
+/* Yara social cards - editorial football-stats system
+   References: Opta, The Athletic, StatsBomb. Light, restrained, number-first. */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: #e5e5e5; font-family: 'Inter', system-ui, sans-serif; }
+
+:root {
+  --bg:        #ffffff;
+  --bg-alt:    #f7f7f7;
+  --ink:       #0a0a0a;
+  --ink-2:     #2b2b2b;
+  --muted:     #8a8a8a;
+  --muted-2:   #b8b8b8;
+  --rule:      #e8e8e8;
+  --green:     #10b981;
+  --green-d:   #059669;
+  --red:       #ef4444;
+  --red-d:     #dc2626;
+  --amber:     #f59e0b;
+  --amber-d:   #d97706;
+}
+
+.card {
+  position: relative;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+.card.landscape { width: 1600px; height: 900px; }
+.card.portrait  { width: 1080px; height: 1350px; }
+.card.square    { width: 1080px; height: 1080px; }
+
+/* Top accent stripe - Yara's only flourish */
+.card .stripe { position: absolute; top: 0; left: 0; right: 0; height: 6px; background: var(--green); z-index: 5; }
+
+/* Layout */
+.pad { padding: 48px 56px 32px; height: 100%; display: flex; flex-direction: column; }
+
+/* Masthead */
+.mast { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--rule); }
+.mast .label { font-size: 13px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--green); margin-bottom: 8px; }
+.mast h1 { font-size: 38px; font-weight: 800; line-height: 1.04; letter-spacing: -0.02em; color: var(--ink); }
+.mast .sub { font-size: 14px; color: var(--muted); margin-top: 6px; font-weight: 500; }
+.mast .right { text-align: right; }
+.mast .right .gw { font-size: 13px; font-weight: 700; letter-spacing: 0.08em; color: var(--ink); text-transform: uppercase; }
+.mast .right .league { font-size: 13px; color: var(--muted); margin-top: 4px; font-weight: 500; }
+
+/* Type */
+.eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
+.eyebrow.green { color: var(--green); }
+.tnum { font-variant-numeric: tabular-nums lining-nums; }
+
+/* Risk number */
+.risk-big { display: inline-flex; align-items: flex-start; line-height: 0.9; font-weight: 900; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; }
+.risk-big.high { color: var(--red); }
+.risk-big.med { color: var(--amber); }
+.risk-big.low { color: var(--green); }
+.risk-big.inactive { color: var(--muted-2); }
+.risk-big .pct { font-size: 0.42em; font-weight: 800; opacity: 0.85; margin-left: 4px; margin-top: 0.08em; }
+
+/* Risk meter */
+.risk-meter { height: 5px; background: #ececec; border-radius: 3px; position: relative; overflow: hidden; }
+.risk-meter > i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; display: block; }
+.risk-meter.high > i { background: var(--red); }
+.risk-meter.med  > i { background: var(--amber); }
+.risk-meter.low  > i { background: var(--green); }
+.risk-meter.inactive > i { background: var(--muted-2); }
+
+/* Archetype pill */
+.arch { display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border: 1.5px solid currentColor; border-radius: 4px; font-size: 11px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; background: transparent; }
+.arch-fragile { color: var(--red-d); }
+.arch-managed { color: var(--amber-d); }
+.arch-robust  { color: var(--green-d); }
+.arch-monitor { color: var(--muted); }
+
+/* Delta indicator */
+.delta { display: inline-flex; align-items: center; gap: 4px; font-size: 14px; font-weight: 700; letter-spacing: 0.02em; }
+.delta-up   { color: var(--red); }
+.delta-down { color: var(--green-d); }
+.delta-flat { color: var(--muted); }
+
+/* Player thumb */
+.thumb { width: 90px; height: 90px; border-radius: 6px; flex-shrink: 0; position: relative; overflow: hidden; background: var(--bg-alt); display: flex; align-items: flex-end; justify-content: center; }
+.thumb.lg { width: 140px; height: 140px; }
+.thumb .silhouette { position: absolute; inset: 0; background: linear-gradient(180deg, var(--jersey-1, #999) 0%, var(--jersey-2, #777) 100%); }
+.thumb .silhouette::before { content: ""; position: absolute; left: 50%; top: 18%; width: 38%; aspect-ratio: 1; border-radius: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.18); }
+.thumb .silhouette::after { content: ""; position: absolute; left: 50%; top: 60%; bottom: 0; width: 110%; transform: translateX(-50%); border-radius: 50% 50% 0 0 / 30% 30% 0 0; background: rgba(0,0,0,0.10); }
+.thumb .num { position: absolute; right: 8px; bottom: 6px; font-size: 14px; font-weight: 800; letter-spacing: -0.02em; color: rgba(255,255,255,0.85); font-variant-numeric: tabular-nums; }
+
+/* Club color tokens (Premier League) */
+.j-ars { --jersey-1:#EF0107; --jersey-2:#a40004; }
+.j-liv { --jersey-1:#C8102E; --jersey-2:#8a0a1f; }
+.j-mc  { --jersey-1:#6CABDD; --jersey-2:#3f7eb0; }
+.j-che { --jersey-1:#034694; --jersey-2:#022d63; }
+.j-tot { --jersey-1:#132257; --jersey-2:#0a1430; }
+.j-mun { --jersey-1:#DA291C; --jersey-2:#9b1c12; }
+.j-new { --jersey-1:#241F20; --jersey-2:#000000; }
+.j-avl { --jersey-1:#670E36; --jersey-2:#3d0820; }
+.j-bha { --jersey-1:#0057B8; --jersey-2:#003e80; }
+.j-bre { --jersey-1:#E30613; --jersey-2:#9b040d; }
+.j-bou { --jersey-1:#DA291C; --jersey-2:#9b1c12; }
+.j-cry { --jersey-1:#1B458F; --jersey-2:#0e2a5f; }
+.j-whu { --jersey-1:#7A263A; --jersey-2:#4d1825; }
+.j-ful { --jersey-1:#000000; --jersey-2:#1a1a1a; }
+.j-nfo { --jersey-1:#DD0000; --jersey-2:#990000; }
+.j-eve { --jersey-1:#003399; --jersey-2:#001f5c; }
+.j-wol { --jersey-1:#FDB913; --jersey-2:#b58508; }
+/* Neutral fallback for non-PL clubs / national teams */
+.j-na  { --jersey-1:#6b7280; --jersey-2:#374151; }
+
+/* Roster row - matchday board */
+.row { display: grid; grid-template-columns: 32px 110px 1fr 280px 130px 1fr 70px; align-items: center; gap: 16px; padding: 18px 0; border-bottom: 1px solid var(--rule); }
+.row.alt { background: var(--bg-alt); margin: 0 -56px; padding-left: 56px; padding-right: 56px; }
+
+/* Footer */
+.foot { margin-top: auto; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding-top: 16px; font-size: 12px; color: var(--muted); }
+.foot .url { color: var(--green); font-weight: 600; letter-spacing: 0.02em; }
+.foot .right { text-align: right; }
+.foot .meta { font-variant-numeric: tabular-nums; }
+
+/* Helpers */
+.flex { display: flex; }
+.flex-col { display: flex; flex-direction: column; }
+.flex-1 { flex: 1; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.text-right { text-align: right; }
+.w-full { width: 100%; }
