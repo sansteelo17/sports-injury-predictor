@@ -150,13 +150,22 @@ def _run_accountability(args) -> int:
         nm = call["player_name"]
         pred = call["predicted_risk"] or 0
         cur = status.get((nm or "").lower(), {})
-        flagged = bool(cur.get("injury_news")) or cur.get("risk_level") == "High"
+        # Outcome from the news agent: did a post-match report flag an injury?
+        # Same grounded, attributed feed that powers the pre-match narratives.
+        news = fetch.player_news(nm, cur.get("team", ""))
+        flagged = news.get("injury_signal", False)
+        matched = news.get("matched") or {}
         landed = flagged if pred >= 60 else (not flagged)  # high call lands if it broke down
-        outcome = "flagged or hurt" if flagged else "came through clean"
+        if flagged and matched:
+            outcome = "flagged after the game"
+            note = (f"{matched.get('source', '')}: {matched.get('headline', '')}"
+                    ).strip(": ")[:120]
+        else:
+            outcome = "came through clean"
+            note = "No injury news surfaced after the game."
         memory.score_call(call["id"], outcome, landed)
         rec = {"player_name": nm, "team": cur.get("team", ""),
-               "predicted_risk": pred, "outcome": outcome,
-               "note": (cur.get("injury_news") or "")[:90]}
+               "predicted_risk": pred, "outcome": outcome, "note": note}
         (hits if landed else misses).append(rec)
     total = len(hits) + len(misses)
     payload = {

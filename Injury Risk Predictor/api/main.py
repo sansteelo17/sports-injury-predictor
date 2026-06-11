@@ -6525,6 +6525,37 @@ def board_candidates(competition: str, limit: int = 30, date: Optional[str] = No
     return out[: max(1, min(limit, 100))]
 
 
+# Negative availability terms: a recent headline with one of these is the
+# post-match outcome signal the accountability post needs (did he get hurt).
+# Kept narrow and negative, so "passed fit" / "returns" do NOT count.
+_INJURY_NEG_TERMS = (
+    "injur", "hamstring", "calf", "groin", "thigh", "knock", "strain", "sprain",
+    "sidelined", "ruled out", "setback", "limp", "scan", "doubt", "withdrawn",
+    "muscle", "fracture", "torn", "ligament", "substituted off", "forced off",
+)
+
+
+@app.get("/api/player-news")
+def player_news(name: str, team: Optional[str] = None):
+    """Recent attributed news for a player, plus an injury-signal read. The
+    accountability post uses this as the post-match outcome (the same news agent
+    that grounds pre-match narratives), so a call is scored on real reporting,
+    not a guess."""
+    try:
+        items = fetch_player_news(name, team, limit=5)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("player_news failed for %s: %s", name, e)
+        items = []
+    matched = None
+    for it in items:
+        text = f"{it.get('title', '')} {it.get('summary', '')}".lower()
+        if any(term in text for term in _INJURY_NEG_TERMS):
+            matched = {"headline": it.get("title"), "source": it.get("source"),
+                       "url": it.get("url"), "published": it.get("published")}
+            break
+    return {"news": items, "injury_signal": matched is not None, "matched": matched}
+
+
 def _prediction_risk_label(score: float) -> str:
     if score >= 0.65:
         return "HIGH"
