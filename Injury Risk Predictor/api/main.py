@@ -5466,6 +5466,19 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
                     f"{_safe_int(row.get('days_since_last_injury'), 365)} days since last injury."
                 ),
             })
+        elif is_history:
+            # No workload model for this player, so ground the read in the same
+            # history figure the card shows and tell the LLM it is a history read.
+            chunks.append({
+                "kind": "risk",
+                "text": (
+                    f"Injury risk is {risk_pct} percent (state this exact figure, no quotation marks). "
+                    "This is a history and age read, not a live workload model, because his club is "
+                    "outside the leagues I track ball by ball. "
+                    f"{_safe_int(row.get('player_injury_count', row.get('previous_injuries', 0)))} career injuries, "
+                    f"{_safe_int(row.get('days_since_last_injury'), 365)} days since the last one."
+                ),
+            })
         for n in news_items[:3]:
             chunks.append({
                 "kind": "news",
