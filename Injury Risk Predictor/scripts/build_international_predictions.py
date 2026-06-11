@@ -49,6 +49,57 @@ from src.utils.logger import get_logger  # noqa: E402
 logger = get_logger(__name__)
 
 
+def enrich_baseline_history(baseline_df: pd.DataFrame) -> pd.DataFrame:
+    """Give baseline (no-club-data) WC players a Transfermarkt injury-history
+    read so they get a real risk instead of Unknown.
+
+    Mirrors the Special Players builder: scrape each player's TM injury history
+    (count, days lost, recency, severity) plus age. Players we can resolve get
+    ``has_history_features=True`` and the history fields; the API turns those
+    into a history+age risk read. Players with no TM page stay baseline/Unknown.
+    """
+    if baseline_df.empty:
+        return baseline_df
+    from src.data_loaders.transfermarkt_scraper import TransfermarktScraper
+
+    scraper = TransfermarktScraper()
+    records = baseline_df.to_dict("records")
+    enriched = 0
+    for i, row in enumerate(records):
+        name = row.get("name")
+        try:
+            r = scraper.fetch_player_injuries(name, include_stats=False)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("WC history: TM fetch failed for %s: %s", name, e)
+            r = None
+        if not r:
+            continue
+        injuries = r.get("injuries") or []
+        count = int(r.get("total_injuries") or len(injuries) or 0)
+        days_lost = int(r.get("total_days_out") or sum(int(inj.get("days_out") or 0) for inj in injuries))
+        days_since = r.get("days_since")
+        if days_since is None:
+            days_since = r.get("days_since_last")
+        worst = max((int(inj.get("days_out") or 0) for inj in injuries), default=0)
+        avg_sev = round(days_lost / count, 1) if count else 0.0
+        records[i].update({
+            "player_injury_count": count,
+            "previous_injuries": count,
+            "total_days_lost": days_lost,
+            "days_since_last_injury": int(days_since) if days_since is not None else 365,
+            "player_avg_severity": avg_sev,
+            "player_worst_injury": worst,
+            "last_injury_date": r.get("last_injury_date"),
+            "age": row.get("age") or r.get("age"),
+            "has_history_features": True,
+        })
+        enriched += 1
+        if enriched % 25 == 0:
+            logger.info("WC history: %d/%d baseline players enriched", enriched, len(records))
+    logger.info("WC history: %d/%d baseline players got an injury-history read", enriched, len(records))
+    return pd.DataFrame(records)
+
+
 def _norm_name(name: str) -> str:
     """Lowercase + accent-strip — matches the join key used by api/main.py."""
     if not isinstance(name, str):
@@ -211,6 +262,13 @@ def main() -> int:
         help="Scrape Wikipedia 'Current squad' tables for caps + international "
              "goals (~30s for 48 countries, cached 24h). Adds caps / intl_goals.",
     )
+    parser.add_argument(
+        "--enrich-history",
+        action="store_true",
+        help="Scrape Transfermarkt injury history for baseline players (no club "
+             "data) so they get a history+age risk read instead of Unknown. "
+             "Rate-limited, ~30-60 min for a full tournament.",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -260,6 +318,11 @@ def main() -> int:
     intl_df = build_international_inference(merged, groups, fixtures_df)
     joined_names = set(intl_df["name"].apply(_norm_name)) if not intl_df.empty else set()
     baseline_df = build_baseline_rows(squads_df, joined_names, groups, fixtures_df)
+
+    if args.enrich_history and not baseline_df.empty:
+        logger.info("Enriching %d baseline players with Transfermarkt injury history "
+                    "(rate-limited, this takes a while)...", len(baseline_df))
+        baseline_df = enrich_baseline_history(baseline_df)
 
     if intl_df.empty and baseline_df.empty:
         logger.warning("No rows produced; nothing to write.")
