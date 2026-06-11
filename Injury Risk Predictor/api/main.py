@@ -6409,10 +6409,11 @@ def board_candidates(competition: str, limit: int = 30, date: Optional[str] = No
                 _derive_age(r),
             ) * 100)
         else:
-            # Raw model probability (the card says "ranked by injury
-            # probability"); differentiates the top instead of saturating at the
-            # percentile ceiling, and surfaces the genuinely highest-risk names.
-            pct = round(_safe_float(r.get("ensemble_prob"), 0.0) * 100)
+            # Same value the live app shows for the player (normalize_risk_score,
+            # the within-competition percentile), so a board number matches the
+            # player's card on the site. Sorting is unchanged: normalize is
+            # monotonic in the raw prob, so the pool order is identical.
+            pct = round(normalize_risk_score(r.get("ensemble_prob", 0.5), r.get("league")))
         name = _safe_str(r.get("name"))
         club = r.get("club_team") if isinstance(r.get("club_team"), str) else None
         out.append({
