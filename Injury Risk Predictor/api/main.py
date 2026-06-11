@@ -3139,6 +3139,20 @@ def _safe_int(val, default=0) -> int:
         return default
 
 
+def _opt_num(val):
+    """Optional int: None for missing/NaN, else int. For fields where 0 and
+    'unknown' must stay distinct (e.g. caps, club minutes)."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return int(f)
+    except (TypeError, ValueError):
+        return None
+
+
 def _safe_str(val, default: str = "Unknown") -> str:
     """Coerce to a non-empty string. Float NaN (from merged frames where a
     column is missing on some rows) and blanks fall back to ``default`` so
@@ -6444,7 +6458,8 @@ def list_players(
 
 
 @app.get("/api/board-candidates")
-def board_candidates(competition: str, limit: int = 30, date: Optional[str] = None):
+def board_candidates(competition: str, limit: int = 30, date: Optional[str] = None,
+                     scale: str = "normalize"):
     """Lean candidate pool for social cards: top risk-featured players in a
     competition, with just the fields a card needs. Skips the per-player
     shirt/FPL work that makes /api/players too slow for the ~1200-row World Cup.
@@ -6473,6 +6488,10 @@ def board_candidates(competition: str, limit: int = 30, date: Optional[str] = No
         if _is_history_row(r):
             # Special Players + WC baseline players read from injury history + age.
             pct = round(_history_read_prob(r) * 100)
+        elif scale == "raw":
+            # Raw model probability, differentiated at the top (the percentile
+            # saturates near 99 tournament-wide). For cards like the riskiest XI.
+            pct = round(_safe_float(r.get("ensemble_prob"), 0.0) * 100)
         else:
             # Same value the live app shows for the player (normalize_risk_score,
             # the within-competition percentile), so a board number matches the
@@ -6494,6 +6513,13 @@ def board_candidates(competition: str, limit: int = 30, date: Optional[str] = No
             "injury_news": (r.get("injury_news") if isinstance(r.get("injury_news"), str) else None),
             "image_url": get_player_image_url(name, club or _safe_str(r.get("team"))),
             "next_match_utc": (r.get("next_intl_utc_date") if isinstance(r.get("next_intl_utc_date"), str) else None),
+            # Squad standing + season form, so selection can favour likely
+            # starters (caps, club minutes) and surface real form, not just risk.
+            "caps": _opt_num(r.get("caps")),
+            "intl_goals": _opt_num(r.get("intl_goals")),
+            "club_minutes": _opt_num(r.get("minutes_played")),
+            "club_goals": _opt_num(r.get("goals")),
+            "club_assists": _opt_num(r.get("assists")),
         })
     out.sort(key=lambda x: x["risk_score_pct"], reverse=True)
     return out[: max(1, min(limit, 100))]
