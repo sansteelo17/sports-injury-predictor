@@ -17,24 +17,34 @@ from . import llm
 SOCIAL_RULES = """
 
 SOCIAL FORMAT (read this carefully):
-You are posting the day's injury-risk board for {league}, {matchday}. The IMAGE
-already shows every player and their risk number, so you are writing the take,
-not a readout. Never say "matchday board", "top 5", "here are", or "swipe".
+You are posting about {league}, {matchday}. The IMAGE already lists every player
+and their risk number, so your caption is NOT a readout and NOT a roll-call. It
+sells the day. You are buying into the hype and giving people a reason to care.
 
-Write about the players given, in the order of who matters, and find the thread
-that ties the day together (a fixture, a stage, a pattern of tired legs).
+DO THIS:
+- OPEN ON THE OCCASION. Set the scene first: the stage, the fixture, what makes
+  this day worth watching (a tournament opener, a heavyweight, a group decider).
+  One or two lines that make a reader lean in.
+- THEN JUXTAPOSE TWO OR THREE MARQUEE NAMES. Play them against each other, a
+  contrast that creates intrigue (a star carrying risk into a huge role against a
+  teammate who is quietly fine; one ramped up and flirting with a limp against
+  one who looks bulletproof). Pick the most recognisable names, not the longest
+  list. A number lands where it sharpens the point.
+- Build a narrative with a through-line. Make someone want to click, not nod.
+
+DO NOT:
+- Do not mention all the players. Two or three, chosen for the story.
+- Do not go down the list in rank order. Do not say "matchday board", "top 5",
+  "here are", or "swipe".
 
 X POST (hard constraints):
-- ONE post, 270 characters maximum. Count them. Brevity is the whole craft here.
-- Open in your voice (an aphorism, a fixture image, or the standout), land the
-  headline name with their number, then glance at one or two others. Do NOT list
-  all of them. A number must appear.
-- No markdown, no hashtags, no emojis, no em dashes, no quotation marks.
+- ONE post, 270 characters maximum. Count them. The occasion, the juxtaposition,
+  a number. No markdown, no hashtags, no emojis, no em dashes, no quotation marks.
 
 REDDIT POST:
-- 3 short paragraphs, same voice, room to breathe. Carry the thread across the
-  group and reconcile the numbers with what you would actually do. Bold names
-  with **double asterisks**. No em dashes.
+- 3 short paragraphs: open on the occasion, develop the two or three names and the
+  contrast, close on what it means for the day. Same voice. Bold names with
+  **double asterisks**. No em dashes.
 
 Return ONLY: {{"x_post": "...", "reddit_post": "..."}}"""
 
