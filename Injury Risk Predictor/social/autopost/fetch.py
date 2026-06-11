@@ -23,7 +23,7 @@ def _abs_img(url: Optional[str]) -> Optional[str]:
     return url
 
 
-def fetch_candidates(competition: str, pool: int = 30, date: Optional[str] = None) -> List[Dict]:
+def fetch_candidates(competition: str, pool: int = 50, date: Optional[str] = None) -> List[Dict]:
     url = f"{config.API_BASE}/api/board-candidates"
     params = {"competition": competition, "limit": pool}
     if date:
