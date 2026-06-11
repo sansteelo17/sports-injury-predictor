@@ -23,9 +23,10 @@ def _abs_img(url: Optional[str]) -> Optional[str]:
     return url
 
 
-def fetch_candidates(competition: str, pool: int = 50, date: Optional[str] = None) -> List[Dict]:
+def fetch_candidates(competition: str, pool: int = 50, date: Optional[str] = None,
+                     scale: str = "normalize") -> List[Dict]:
     url = f"{config.API_BASE}/api/board-candidates"
-    params = {"competition": competition, "limit": pool}
+    params = {"competition": competition, "limit": pool, "scale": scale}
     if date:
         params["date"] = date
     resp = requests.get(url, params=params, timeout=60)
@@ -42,4 +43,10 @@ def fetch_candidates(competition: str, pool: int = 50, date: Optional[str] = Non
         "days_since_last_injury": p.get("days_since_last_injury"),
         "injury_news": p.get("injury_news"),
         "image_url": _abs_img(p.get("image_url")),
+        # Squad standing + season form for selection (likely starter / real form).
+        "caps": p.get("caps"),
+        "intl_goals": p.get("intl_goals"),
+        "club_minutes": p.get("club_minutes"),
+        "club_goals": p.get("club_goals"),
+        "club_assists": p.get("club_assists"),
     } for p in rows]
