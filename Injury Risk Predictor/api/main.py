@@ -1970,6 +1970,45 @@ def _league_prob_series(league: Optional[Any] = None):
     return _league_prob_series_cache[ck]
 
 
+def _is_history_row(row) -> bool:
+    """True when a row is scored from injury history + age, not the workload
+    model: Special Players, or a World Cup baseline player we enriched from
+    Transfermarkt (has_history_features)."""
+    if row is None or not hasattr(row, "get"):
+        return False
+    return (row.get("competition_id") == "special-players"
+            or bool(row.get("has_history_features")))
+
+
+def _history_read_prob(row) -> float:
+    """History+age injury probability for a history-based row."""
+    return _special_player_history_prob(
+        _safe_int(row.get("player_injury_count", 0)),
+        _safe_float(row.get("player_avg_severity"), 0.0),
+        _safe_int(row.get("days_since_last_injury", 365), 365),
+        _derive_age(row),
+    )
+
+
+def _history_archetype(row) -> str:
+    """Coarse archetype for a history-based row, from injury record alone
+    (the workload-driven hybrid archetypes need club data we do not have here)."""
+    count = _safe_int(row.get("player_injury_count", 0))
+    avg = _safe_float(row.get("player_avg_severity"), 0.0)
+    ds = _safe_int(row.get("days_since_last_injury", 365), 365)
+    if count == 0:
+        return "Clean Record"
+    if ds < 60:
+        return "Currently Vulnerable"
+    if count >= 6 and avg >= 30:
+        return "Injury Prone"
+    if count >= 4:
+        return "Recurring Issues"
+    if avg >= 40:
+        return "Fragile"
+    return "Durable" if count <= 2 else "Moderate Risk"
+
+
 def get_risk_level(prob: float, row=None) -> str:
     """Classify 2-week injury risk using within-league percentile ranking.
 
@@ -1980,17 +2019,13 @@ def get_risk_level(prob: float, row=None) -> str:
 
     For international rows, uses competition_id directly to avoid comparing WC players to club leagues.
     """
-    # Special Players carry no ensemble prob — classify from the history+age read.
-    if row is not None and hasattr(row, "get"):
+    # History-based rows (Special Players, or WC baseline players enriched from
+    # Transfermarkt) carry no ensemble prob — classify from the history+age read.
+    if _is_history_row(row):
         try:
-            if row.get("competition_id") == "special-players":
-                ds = _safe_int(row.get("days_since_last_injury", 365), 365)
-                p = _special_player_history_prob(
-                    _safe_int(row.get("player_injury_count", 0)),
-                    _safe_float(row.get("player_avg_severity"), 0.0),
-                    ds, _derive_age(row),
-                )
-                return "High" if (p >= 0.6 or ds < 21) else "Medium" if p >= 0.38 else "Low"
+            ds = _safe_int(row.get("days_since_last_injury", 365), 365)
+            p = _history_read_prob(row)
+            return "High" if (p >= 0.6 or ds < 21) else "Medium" if p >= 0.38 else "Low"
         except Exception:
             pass
     # For international rows, use competition_id if available to ensure WC players
@@ -5323,6 +5358,10 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
     comp = _competition_from_row(row)
     prob = _safe_float(row.get("ensemble_prob"), float("nan"))
     has_risk = row.get("has_risk_features") and not (isinstance(prob, float) and math.isnan(prob))
+    # WC baseline players we enriched from Transfermarkt (and Special Players)
+    # get a history+age read instead of Unknown.
+    is_history = (not has_risk) and _is_history_row(row)
+    hist_prob = _history_read_prob(row) if is_history else None
     player_name = row.get("name") or "Unknown"
     country = row.get("team") or "Unknown"
 
@@ -5330,11 +5369,14 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
     enriched_row["previous_injuries"] = _safe_int(
         row.get("player_injury_count", row.get("previous_injuries", 0))
     )
-    risk_pct = round(normalize_risk_score(prob, row.get("league"))) if has_risk else 0
+    risk_pct = (round(normalize_risk_score(prob, row.get("league"))) if has_risk
+                else round(hist_prob * 100) if is_history else 0)
     enriched_row["risk_score_pct"] = risk_pct
 
-    risk_level = get_risk_level(prob, enriched_row)  # returns "Unknown" for NaN
-    risk_probability = round(normalize_risk_score(prob, row.get("league")) / 100, 3) if has_risk else 0.0
+    # get_risk_level returns the history level for history rows, "Unknown" for NaN.
+    risk_level = get_risk_level(prob, enriched_row)
+    risk_probability = (round(normalize_risk_score(prob, row.get("league")) / 100, 3) if has_risk
+                        else round(hist_prob, 3) if is_history else 0.0)
 
     # Story: reuse generate_player_story for risk-featured rows (workload +
     # injury history still apply), prepend tournament context. Baseline rows
@@ -5554,7 +5596,8 @@ def _international_row_to_risk(row: Dict[str, Any]) -> PlayerRisk:
         age=_derive_age(row),
         risk_level=risk_level,
         risk_probability=risk_probability,
-        archetype=row.get("archetype", "Unknown") if has_risk else "Unknown",
+        archetype=(row.get("archetype", "Unknown") if has_risk
+                   else _history_archetype(row) if is_history else "Unknown"),
         archetype_description=(
             ARCHETYPE_DESCRIPTIONS.get(row.get("archetype", ""), "Unknown injury profile")
             if has_risk else "No club-side data tracked for this player."
@@ -6395,19 +6438,14 @@ def board_candidates(competition: str, limit: int = 30, date: Optional[str] = No
     # requested date (so the board shows who is actually playing that day).
     if date and comp.is_international and "next_intl_utc_date" in df.columns:
         df = df[df["next_intl_utc_date"].astype(str).str.slice(0, 10) == date]
-    is_special = comp.id == "special-players"
     out = []
     for _, r in df.iterrows():
-        level = get_risk_level(r.get("ensemble_prob", 0.5), r)  # special-aware
+        level = get_risk_level(r.get("ensemble_prob", 0.5), r)  # history/percentile-aware
         if str(level).lower() in ("", "unknown"):
             continue
-        if is_special:
-            pct = round(_special_player_history_prob(
-                _safe_int(r.get("player_injury_count", 0)),
-                _safe_float(r.get("player_avg_severity"), 0.0),
-                _safe_int(r.get("days_since_last_injury", 365), 365),
-                _derive_age(r),
-            ) * 100)
+        if _is_history_row(r):
+            # Special Players + WC baseline players read from injury history + age.
+            pct = round(_history_read_prob(r) * 100)
         else:
             # Same value the live app shows for the player (normalize_risk_score,
             # the within-competition percentile), so a board number matches the
@@ -6423,7 +6461,8 @@ def board_candidates(competition: str, limit: int = 30, date: Optional[str] = No
             "position": _safe_str(r.get("position")),
             "risk_score_pct": pct,
             "risk_level": level,
-            "archetype": _safe_str(r.get("archetype"), "Unknown"),
+            "archetype": (_history_archetype(r) if _is_history_row(r)
+                          else _safe_str(r.get("archetype"), "Unknown")),
             "days_since_last_injury": _safe_int(r.get("days_since_last_injury", 365), 365),
             "injury_news": (r.get("injury_news") if isinstance(r.get("injury_news"), str) else None),
             "image_url": get_player_image_url(name, club or _safe_str(r.get("team"))),
