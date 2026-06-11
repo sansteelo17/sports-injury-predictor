@@ -12,7 +12,7 @@ import argparse
 import datetime as dt
 from pathlib import Path
 
-from . import config, copywriter, editorial, emailer, fetch, render
+from . import config, copywriter, editorial, emailer, fetch, photos, render
 
 LEAGUE_NAMES = {
     "world-cup-2026": "FIFA World Cup 2026",
@@ -58,6 +58,11 @@ def main() -> int:
         if c:
             p["image_url"] = c.get("image_url")
             p.setdefault("team", c.get("team"))
+        # Broad fallback for players the FPL/TM source misses (Liga MX, MLS,
+        # Serie A, etc.) so the card isn't half silhouettes. Only the 5 on the
+        # card, cached.
+        if not p.get("image_url"):
+            p["image_url"] = photos.wikipedia_photo(p.get("player_name", ""))
     # The board is "ranked by injury probability" - enforce strict order.
     payload["top_5"].sort(key=lambda p: p.get("risk_score_pct", 0), reverse=True)
     print("[editorial] picked: " + ", ".join(
