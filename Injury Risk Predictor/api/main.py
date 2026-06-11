@@ -6359,11 +6359,15 @@ def list_players(
 
 
 @app.get("/api/board-candidates")
-def board_candidates(competition: str, limit: int = 30):
+def board_candidates(competition: str, limit: int = 30, date: Optional[str] = None):
     """Lean candidate pool for social cards: top risk-featured players in a
-    competition, with just the fields a card needs. Skips the per-player image
-    URL / shirt-number / FPL work that makes /api/players too slow for a
-    1200-row competition like the World Cup."""
+    competition, with just the fields a card needs. Skips the per-player
+    shirt/FPL work that makes /api/players too slow for the ~1200-row World Cup.
+
+    ``date`` (YYYY-MM-DD): for international competitions, restrict to players
+    whose national team actually plays that day (matchday board = who is
+    playing). Ignored for club competitions.
+    """
     if inference_df is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
     comp = competition_for_id(competition)
@@ -6372,6 +6376,10 @@ def board_candidates(competition: str, limit: int = 30):
     df = inference_df
     if "competition_id" in df.columns:
         df = df[df["competition_id"] == comp.id]
+    # Matchday scoping: only players whose next international fixture is on the
+    # requested date (so the board shows who is actually playing that day).
+    if date and comp.is_international and "next_intl_utc_date" in df.columns:
+        df = df[df["next_intl_utc_date"].astype(str).str.slice(0, 10) == date]
     is_special = comp.id == "special-players"
     out = []
     for _, r in df.iterrows():
@@ -6390,15 +6398,20 @@ def board_candidates(competition: str, limit: int = 30):
             # probability"); differentiates the top instead of saturating at the
             # percentile ceiling, and surfaces the genuinely highest-risk names.
             pct = round(_safe_float(r.get("ensemble_prob"), 0.0) * 100)
+        name = _safe_str(r.get("name"))
+        club = r.get("club_team") if isinstance(r.get("club_team"), str) else None
         out.append({
-            "name": _safe_str(r.get("name")),
+            "name": name,
             "team": _safe_str(r.get("team")),
+            "club_team": club,
             "position": _safe_str(r.get("position")),
             "risk_score_pct": pct,
             "risk_level": level,
             "archetype": _safe_str(r.get("archetype"), "Unknown"),
             "days_since_last_injury": _safe_int(r.get("days_since_last_injury", 365), 365),
             "injury_news": (r.get("injury_news") if isinstance(r.get("injury_news"), str) else None),
+            "image_url": get_player_image_url(name, club or _safe_str(r.get("team"))),
+            "next_match_utc": (r.get("next_intl_utc_date") if isinstance(r.get("next_intl_utc_date"), str) else None),
         })
     out.sort(key=lambda x: x["risk_score_pct"], reverse=True)
     return out[: max(1, min(limit, 100))]
