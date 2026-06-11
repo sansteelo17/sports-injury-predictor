@@ -12,7 +12,8 @@ import argparse
 import datetime as dt
 from pathlib import Path
 
-from . import battle, config, copywriter, editorial, emailer, fetch, photos, render
+from . import (battle, config, copywriter, editorial, emailer, fetch, memory,
+               photos, render)
 
 LEAGUE_NAMES = {
     "world-cup-2026": "FIFA World Cup 2026",
@@ -135,6 +136,14 @@ def main() -> int:
     # Ranked by injury probability - enforce strict order.
     payload["top_5"].sort(key=lambda p: p.get("risk_score_pct", 0), reverse=True)
 
+    # Real week-over-week delta from memory (powers the board's wk column and
+    # the spike trigger). None until we have a prior reading for the player.
+    log_date = date or dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+    for p in payload["top_5"]:
+        prev = memory.last_risk(p.get("player_name", ""), args.competition, log_date)
+        cur = p.get("risk_score_pct")
+        p["delta_pct"] = (cur - prev[0]) if (prev and cur is not None) else None
+
     if args.format == "riskiest_xi":
         payload["title"] = "Riskiest XI"
         payload["subtitle"] = f"Eleven players carrying the most risk into {args.matchday}"
@@ -157,6 +166,13 @@ def main() -> int:
         return 0
 
     emailer.send_draft(payload, x_post, reddit_post, out_png)
+    # Remember this post: risk history for deltas, calls for accountability,
+    # and the per-player cooldown.
+    memory.log_board(payload["top_5"], args.competition, log_date, args.format)
+    memory.record_calls(payload["top_5"], args.competition, log_date)
+    for p in payload["top_5"]:
+        memory.record_post(p.get("player_name", ""), args.format)
+    print(f"[memory] logged {len(payload['top_5'])} picks")
     return 0
 
 
