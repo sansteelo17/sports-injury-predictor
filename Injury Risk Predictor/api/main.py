@@ -1973,11 +1973,20 @@ def _league_prob_series(league: Optional[Any] = None):
 def _is_history_row(row) -> bool:
     """True when a row is scored from injury history + age, not the workload
     model: Special Players, or a World Cup baseline player we enriched from
-    Transfermarkt (has_history_features)."""
+    Transfermarkt (has_history_features).
+
+    Note: ``has_history_features`` is NaN for every non-enriched row (ensemble
+    rows never set it), and ``bool(nan) is True``, so test it explicitly rather
+    than truthily or every ensemble row would be misread as a history row."""
     if row is None or not hasattr(row, "get"):
         return False
-    return (row.get("competition_id") == "special-players"
-            or bool(row.get("has_history_features")))
+    if row.get("competition_id") == "special-players":
+        return True
+    hf = row.get("has_history_features")
+    if hf is True:
+        return True
+    # Real (non-NaN) truthy numeric flag, e.g. 1.0 after a pickle round-trip.
+    return isinstance(hf, (int, float)) and not isinstance(hf, bool) and hf == hf and hf != 0
 
 
 def _history_read_prob(row) -> float:
@@ -3146,7 +3155,12 @@ def _safe_float(val, default=0.0) -> float:
     try:
         if val is None:
             return default
-        return float(val)
+        f = float(val)
+        # NaN/Inf leak through float() without raising; they are never a valid
+        # result and break JSON serialization downstream, so fall back.
+        if math.isnan(f) or math.isinf(f):
+            return default
+        return f
     except (TypeError, ValueError):
         return default
 
