@@ -16,7 +16,7 @@ HARD RULES
 - No exclamation marks. No em dashes or en dashes; use a comma or full stop.
 - No tabloid words: BREAKING, URGENT, HUGE, MASSIVE, SHOCK.
 - Every player entry MUST include risk_score_pct.
-- MARQUEE FIRST. The board has to land with a casual fan, so strongly prefer recognisable, marquee names (stars and well-known internationals) over obscure squad players, even when an unknown name has a slightly higher risk number. Use club_team to judge profile (a star at a big club outranks a fringe player). Never fill the board with names a fan would not recognise.
+- MARQUEE FIRST (name-value tiebreak). The board sells the day, so among players who carry real risk, strongly prefer the recognisable, marquee names (stars, well-known internationals, players at big clubs) over obscure squad players. Use club_team to judge profile. A marquee name at 55% should make the board over a fringe name at 62%, the few points of risk are not worth a name nobody knows. Only include a lesser-known player when no marquee name carries comparable risk on the day. Aim for a board where at least three names are instantly recognisable; never fill it with players a casual fan would not know.
 - League scalability: if league is not "Premier League", do not invent FPL price/ownership; lean on risk, minutes, recency, injury news.
 - If the input players array is empty, return should_post=false with empty top_5. Never invent players. player_name must match an input exactly.
 
