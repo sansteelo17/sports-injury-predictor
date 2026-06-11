@@ -15,6 +15,13 @@ from . import config
 
 CARD_FILES = {
     "matchday_board": "01_matchday_board.html",
+    "riskiest_xi": "05_riskiest_xi.html",
+}
+
+# Each card owns its canvas size; screenshot at the matching viewport.
+CARD_VIEWPORT = {
+    "matchday_board": (1600, 900),   # landscape
+    "riskiest_xi": (1080, 1350),     # portrait
 }
 
 
@@ -37,9 +44,10 @@ def render_card(post_type: str, payload: Dict, out_path: Path) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     url = _payload_url(card_path, payload)
 
+    vw, vh = CARD_VIEWPORT.get(post_type, (1600, 900))
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 1600, "height": 900}, device_scale_factor=2)
+        page = browser.new_page(viewport={"width": vw, "height": vh}, device_scale_factor=2)
         page.goto(url, wait_until="networkidle")
         # The card flips this once it has painted (or errored).
         page.wait_for_selector('html[data-rendered="1"]', timeout=15000)

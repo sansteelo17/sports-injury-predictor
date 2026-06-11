@@ -1,0 +1,97 @@
+<!doctype html>
+<!-- Card 05 - Highest-risk XI. Reads ?data=<base64 JSON> and renders 11 rows. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Highest-risk XI</title>
+<link rel="stylesheet" href="_card.css">
+<style>
+  .xi-pad { padding: 48px 56px 32px; height:100%; display: flex; flex-direction: column; }
+  .xi-row { display: grid; grid-template-columns: 28px 56px 1fr 100px 90px; align-items: center; gap: 14px; padding: 13px 0; border-bottom: 1px solid var(--rule); }
+  .xi-row .rank { font-size: 14px; font-weight: 600; color: var(--muted-2); font-variant-numeric: tabular-nums; }
+  .xi-row .name .last { font-size: 18px; font-weight: 800; letter-spacing: -0.01em; text-transform: uppercase; line-height: 1; }
+  .xi-row .name .meta { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-top: 4px; }
+  .xi-row .name .meta .pos { color: var(--green); font-weight: 700; }
+  .xi-row .num { font-size: 30px; font-weight: 900; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; line-height: 0.9; }
+  .xi-row .num .pct { font-size: 0.55em; font-weight: 800; }
+  .xi-row .num.high { color: var(--red); }
+  .xi-row .num.med { color: var(--amber); }
+  .xi-row .num.low { color: var(--green); }
+  .xi-row .meter-wrap { width: 90px; height: 4px; background:#ececec; border-radius:3px; position: relative; overflow:hidden; margin-top: 8px;}
+  .xi-row .meter-wrap > i { position:absolute; left:0; top:0; bottom:0; border-radius:3px; }
+  .xi-row .meter-wrap.high > i { background: var(--red); }
+  .xi-row .meter-wrap.med  > i { background: var(--amber); }
+  .xi-row .meter-wrap.low  > i { background: var(--green); }
+  .xi-row .thumb .ph { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; object-position:top center; z-index:1; }
+  .err { padding: 60px; font-family: ui-monospace, monospace; color: var(--red-d); font-size: 15px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div class="card portrait" id="card">
+  <div class="stripe"></div>
+  <div class="xi-pad">
+    <div style="display:flex; justify-content:space-between; padding-bottom:18px; border-bottom:1px solid var(--rule);">
+      <div>
+        <div class="eyebrow green" style="margin-bottom:6px;">Highest-risk XI</div>
+        <h1 id="title" style="font-size:42px; font-weight:900; letter-spacing:-0.025em; text-transform:uppercase;">Riskiest XI</h1>
+        <div id="sub" style="font-size:14px; color:var(--muted); margin-top:6px;">Eleven players carrying the most risk</div>
+      </div>
+      <div class="text-right"><div class="gw" id="league">Premier League</div></div>
+    </div>
+    <div class="xi-row" style="padding:10px 0;"><span></span><span></span><span class="eyebrow">Player</span><span class="eyebrow">Risk</span><span></span></div>
+    <div id="rows"></div>
+    <div id="takeaway" style="margin-top:18px; font-size: 14px; color: var(--ink-2); line-height: 1.5; max-width: 70ch;"></div>
+    <div class="foot" style="margin-top: auto;">
+      <span class="url">yaraspeaks.com</span>
+      <span class="right">Injury risk probabilities are model outputs, not medical advice</span>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  function readPayload() {
+    var p = new URLSearchParams(location.search), raw = p.get("data");
+    if (!raw) return null;
+    try { var d; try { d = decodeURIComponent(escape(atob(raw))); } catch (_) { d = decodeURIComponent(raw); } return JSON.parse(d); }
+    catch (e) { return { __error: "payload_parse_failed: " + e.message }; }
+  }
+  var POSITION_SHORT = { "Goalkeeper":"GK","Centre-Back":"DEF","Left-Back":"DEF","Right-Back":"DEF","Defender":"DEF",
+    "Defensive Midfield":"MID","Central Midfield":"MID","Attacking Midfield":"MID","Left Midfield":"MID","Right Midfield":"MID","Midfield":"MID","Midfielder":"MID",
+    "Left Winger":"FWD","Right Winger":"FWD","Centre-Forward":"FWD","Forward":"FWD","Offence":"FWD","Defence":"DEF" };
+  function riskBand(p){var n=Number(p)||0;return n>=75?"high":n>=50?"med":"low";}
+  function splitName(f){if(!f)return{first:"",last:""};var a=String(f).trim().split(/\s+/);return a.length===1?{first:"",last:a[0]}:{first:a[0],last:a.slice(1).join(" ")};}
+  function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
+  function err(m){document.getElementById("rows").innerHTML='<div class="err">RENDER ERROR\n'+esc(m)+'</div>';document.documentElement.setAttribute("data-rendered","1");}
+  function render(d){
+    if(!d)return err("no ?data=");
+    if(d.__error)return err(d.__error);
+    var top=d.players||d.top_11||d.top_5||[];
+    if(!Array.isArray(top)||!top.length)return err("players empty");
+    if(d.title)document.getElementById("title").textContent=d.title;
+    if(d.subtitle)document.getElementById("sub").textContent=d.subtitle;
+    document.getElementById("league").textContent=d.league||"Premier League";
+    if(d.takeaway)document.getElementById("takeaway").textContent=d.takeaway;
+    var html="";
+    top.slice(0,11).forEach(function(p,i){
+      var nm=splitName(p.player_name||p.name||"");
+      var pct=Math.round(Number(p.risk_score_pct!=null?p.risk_score_pct:(p.risk_probability?p.risk_probability*100:0)));
+      var band=riskBand(pct);
+      var pos=POSITION_SHORT[p.position]||(p.position?String(p.position).slice(0,3).toUpperCase():"");
+      var img=p.image_url?'<img class="ph" src="'+esc(p.image_url)+'" onerror="this.style.display=\'none\'"/>':"";
+      html+='<div class="xi-row">'+
+        '<span class="rank">'+String(i+1).padStart(2,"0")+'</span>'+
+        '<span class="thumb j-na" style="width:46px;height:46px;"><span class="silhouette"></span>'+img+'</span>'+
+        '<div class="name"><div class="last">'+esc(nm.last)+'</div><div class="meta">'+esc(p.team||"")+(pos?' <span class="pos">'+pos+'</span>':"")+'</div></div>'+
+        '<div><div class="num '+band+'"><span>'+pct+'</span><span class="pct">%</span></div></div>'+
+        '<div class="meter-wrap '+band+'"><i style="width:'+Math.min(100,pct)+'%;"></i></div>'+
+      '</div>';
+    });
+    document.getElementById("rows").innerHTML=html;
+    document.documentElement.setAttribute("data-rendered","1");
+  }
+  render(readPayload());
+})();
+</script>
+</body>
+</html>
