@@ -23,6 +23,18 @@ def _abs_img(url: Optional[str]) -> Optional[str]:
     return url
 
 
+def player_news(name: str, team: Optional[str] = None) -> Dict:
+    """Recent attributed news + an injury-signal read for a player (the
+    post-match outcome source for accountability)."""
+    try:
+        resp = requests.get(f"{config.API_BASE}/api/player-news",
+                            params={"name": name, "team": team or ""}, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:  # noqa: BLE001
+        return {"news": [], "injury_signal": False, "matched": None}
+
+
 def fetch_candidates(competition: str, pool: int = 50, date: Optional[str] = None,
                      scale: str = "normalize") -> List[Dict]:
     url = f"{config.API_BASE}/api/board-candidates"
