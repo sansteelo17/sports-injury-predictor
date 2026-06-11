@@ -38,8 +38,8 @@
   <div class="pad">
     <div class="mast">
       <div>
-        <h1 style="font-size:46px; text-transform: uppercase; letter-spacing: -0.02em;">Matchday Risk Board</h1>
-        <div class="sub">Top 5 Players Ranked by Injury Probability</div>
+        <h1 id="title" style="font-size:46px; text-transform: uppercase; letter-spacing: -0.02em;">Matchday Risk Board</h1>
+        <div class="sub" id="subtitle">Top 5 Players Ranked by Injury Probability</div>
       </div>
       <div class="right">
         <div class="gw" id="gw">GW -</div>
@@ -152,6 +152,8 @@
     if (!Array.isArray(top) || top.length === 0) return renderError("payload.top_5 is empty or missing");
     document.getElementById("gw").textContent = fmtMatchday(payload.matchday);
     document.getElementById("league").textContent = payload.league || "Premier League";
+    if (payload.title) document.getElementById("title").textContent = payload.title;
+    if (payload.subtitle) document.getElementById("subtitle").textContent = payload.subtitle;
     var html = "";
     top.slice(0, 5).forEach(function (p, i) {
       var name = splitName(p.player_name || p.name || "");
