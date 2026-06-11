@@ -1,0 +1,131 @@
+<!doctype html>
+<!-- Card 10 - Battle card (marquee head-to-head). Reads ?data=<base64 JSON>. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Battle card</title>
+<link rel="stylesheet" href="_card.css">
+<style>
+  .bc-pad { padding: 32px 0 0; height: 100%; display: flex; flex-direction: column; }
+  .bc-mast { display: flex; align-items: flex-start; justify-content: space-between; padding: 0 56px 16px; }
+  .bc-mast .left .label { font-size: 12px; font-weight: 800; letter-spacing: 0.18em; text-transform: uppercase; color: var(--green); margin-bottom: 6px; }
+  .bc-mast .left h1 { font-size: 36px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.05; }
+  .bc-mast .right { text-align: right; }
+  .bc-mast .right .gw { font-size: 14px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
+  .bc-mast .right .league { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+  .bc-grid { display: grid; grid-template-columns: 360px 1fr 360px; flex: 1; gap: 0; }
+  .bc-photo { position: relative; overflow: hidden; background: var(--bg-alt); }
+  .bc-photo .silhouette { position: absolute; inset: 0; }
+  .bc-photo .ph { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; object-position:top center; }
+
+  .bc-center { padding: 0 24px; display: flex; flex-direction: column; }
+  .bc-headline { display: grid; grid-template-columns: 1fr 1fr; padding: 6px 0 18px; border-bottom: 1px solid var(--rule); }
+  .bc-headline .col { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .bc-headline .last { font-size: 32px; font-weight: 900; letter-spacing: -0.02em; text-transform: uppercase; }
+  .bc-headline .last.left, .bc-headline .last.right { color: var(--red); }
+  .bc-headline .meta { font-size: 12px; color: var(--muted); margin-top: 2px; letter-spacing: 0.04em; text-transform: uppercase; }
+  .bc-headline .meta .pos { color: var(--green); font-weight: 700; }
+
+  .bc-pcts { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 14px 0 8px; }
+  .bc-pcts .p { font-size: 56px; font-weight: 900; letter-spacing: -0.04em; color: var(--red); font-variant-numeric: tabular-nums; line-height: 1; }
+  .bc-pcts .vs { font-size: 12px; font-weight: 800; letter-spacing: 0.16em; color: var(--muted); }
+  .bc-arches { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding-bottom: 16px; border-bottom: 1px solid var(--rule); }
+  .bc-arches > div { display: flex; justify-content: center; }
+
+  .bc-stat-row { display: grid; grid-template-columns: 1fr 200px 1fr; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--rule); }
+  .bc-stat-row .lab { text-align: center; font-size: 11px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+  .bc-stat-row .v { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .bc-stat-row .v.left { text-align: right; padding-right: 28px; }
+  .bc-stat-row .v.right { text-align: left; padding-left: 28px; }
+  .bc-stat-row .v.win { color: var(--green-d); }
+  .bc-stat-row .v.dim { color: var(--muted-2); }
+
+  .bc-x { display: grid; grid-template-columns: 1fr 1fr; gap: 0; padding: 16px 0 0; }
+  .bc-x > div { padding: 0 18px; font-size: 13px; font-weight: 600; color: var(--ink-2); line-height: 1.45; text-align: center; }
+  .bc-x > div + div { border-left: 1px solid var(--rule); }
+
+  .bc-foot { display: flex; justify-content: space-between; align-items: center; padding: 12px 56px 24px; font-size: 12px; color: var(--muted); }
+  .bc-foot .url { color: var(--green); font-weight: 600; }
+  .err { padding: 60px; font-family: ui-monospace, monospace; color: var(--red-d); font-size: 15px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div class="card landscape" id="card">
+  <div class="stripe"></div>
+  <div class="bc-pad">
+    <div class="bc-mast">
+      <div class="left"><div class="label" id="label">Battle Card</div><h1 id="title">Head to Head</h1></div>
+      <div class="right"><div class="gw" id="when">Matchday</div><div class="league" id="league">World Cup</div></div>
+    </div>
+    <div id="body"></div>
+    <div class="bc-foot"><span class="url">yaraspeaks.com</span><span id="footnote">Injury risk probabilities are model outputs, not medical advice</span></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  function readPayload() {
+    var p = new URLSearchParams(location.search), raw = p.get("data");
+    if (!raw) return null;
+    try { var d; try { d = decodeURIComponent(escape(atob(raw))); } catch (_) { d = decodeURIComponent(raw); } return JSON.parse(d); }
+    catch (e) { return { __error: e.message }; }
+  }
+  var POS = {"Goalkeeper":"GK","Centre-Back":"DEF","Left-Back":"DEF","Right-Back":"DEF","Defender":"DEF","Defence":"DEF","Defensive Midfield":"MID","Central Midfield":"MID","Attacking Midfield":"MID","Midfield":"MID","Midfielder":"MID","Left Winger":"FWD","Right Winger":"FWD","Centre-Forward":"FWD","Forward":"FWD","Offence":"FWD"};
+  function last(n){if(!n)return"";var a=String(n).trim().split(/\s+/);return a[a.length-1];}
+  function posOf(p){return POS[p]||(p?String(p).slice(0,3).toUpperCase():"");}
+  function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+  function num(v){return (v==null||v==="")?"—":v;}
+  function err(m){document.getElementById("body").innerHTML='<div class="err">RENDER ERROR\n'+esc(m)+'</div>';document.documentElement.setAttribute("data-rendered","1");}
+  // higher value wins (green), except stats where lower is better (days since handled by caller via win flags)
+  function cell(side, val, win){return '<span class="v '+side+(win?' win':' dim')+'">'+num(val)+'</span>';}
+  function statRow(lab, a, b, aWins){
+    return '<div class="bc-stat-row">'+cell("left",a,aWins===true)+'<span class="lab">'+esc(lab)+'</span>'+cell("right",b,aWins===false)+'</div>';
+  }
+  function photo(p){return p.image_url?'<img class="ph" src="'+esc(p.image_url)+'"/>':'<div class="silhouette" style="background:linear-gradient(180deg,#999,#777)"></div>';}
+  function render(d){
+    if(!d) return err("no ?data=");
+    if(d.__error) return err(d.__error);
+    var a=d.left, b=d.right;
+    if(!a||!b) return err("need left + right players");
+    document.getElementById("label").textContent=d.label||"Battle Card";
+    document.getElementById("title").textContent=d.title||((a.team||"")+" vs "+(b.team||""));
+    document.getElementById("when").textContent=d.when||"Matchday";
+    document.getElementById("league").textContent=d.league||"World Cup";
+    if(d.footnote)document.getElementById("footnote").textContent=d.footnote;
+    function band(p){var n=Number(p)||0;return n>=75?"high":n>=50?"med":"low";}
+    var rows="";
+    // Risk: higher = more at risk; we mark neither as "win", both red emphasis via pcts above.
+    function st(lab,key,higherWorse){
+      var av=a[key], bv=b[key];
+      var aw=null;
+      if(av!=null && bv!=null){ aw = higherWorse ? (av<bv) : (av>bv); }
+      return statRow(lab, av, bv, aw);
+    }
+    rows+=st("Caps","caps",false);
+    rows+=st("Club mins","club_minutes",false);
+    rows+=st("Goals (club)","club_goals",false);
+    rows+=st("Days since injury","days_since_last_injury",false);
+    var html=''+
+      '<div class="bc-grid">'+
+        '<div class="bc-photo left">'+photo(a)+'</div>'+
+        '<div class="bc-center">'+
+          '<div class="bc-headline">'+
+            '<div class="col"><div class="last left">'+esc(last(a.player_name))+'</div><div class="meta">'+esc(a.team)+' <span class="pos">'+esc(posOf(a.position))+'</span></div></div>'+
+            '<div class="col"><div class="last right">'+esc(last(b.player_name))+'</div><div class="meta">'+esc(b.team)+' <span class="pos">'+esc(posOf(b.position))+'</span></div></div>'+
+          '</div>'+
+          '<div class="bc-pcts"><span class="p">'+Math.round(a.risk_score_pct||0)+'%</span><span class="vs">RISK</span><span class="p">'+Math.round(b.risk_score_pct||0)+'%</span></div>'+
+          '<div class="bc-arches"><div><span class="arch arch-fragile">'+esc(a.archetype||"")+'</span></div><div><span class="arch arch-fragile">'+esc(b.archetype||"")+'</span></div></div>'+
+          rows+
+          '<div class="bc-x"><div>'+esc(a.x_factor||"")+'</div><div>'+esc(b.x_factor||"")+'</div></div>'+
+        '</div>'+
+        '<div class="bc-photo right">'+photo(b)+'</div>'+
+      '</div>';
+    document.getElementById("body").innerHTML=html;
+    document.documentElement.setAttribute("data-rendered","1");
+  }
+  render(readPayload());
+})();
+</script>
+</body>
+</html>

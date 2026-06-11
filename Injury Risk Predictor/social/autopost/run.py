@@ -12,7 +12,7 @@ import argparse
 import datetime as dt
 from pathlib import Path
 
-from . import config, copywriter, editorial, emailer, fetch, photos, render
+from . import battle, config, copywriter, editorial, emailer, fetch, photos, render
 
 LEAGUE_NAMES = {
     "world-cup-2026": "FIFA World Cup 2026",
@@ -32,10 +32,53 @@ FORMAT_SPEC = {
 }
 
 
+def _run_battle(args) -> int:
+    """Marquee head-to-head: next big fixture, top-risk star from each side."""
+    league = args.league or LEAGUE_NAMES.get(args.competition, args.competition)
+    print(f"[run] battle_card | {league} | API={config.API_BASE}")
+    data = battle.build()
+    if not data:
+        print("[run] no marquee fixture / players found. Nothing built.")
+        return 0
+    fx, a, b = data["fixture"], data["left"], data["right"]
+    for p in (a, b):
+        if not p.get("image_url"):
+            p["image_url"] = photos.wikipedia_photo(p.get("player_name", ""))
+        p["signal_one_liner"] = p.get("x_factor", "")
+    payload = {
+        "post_type": "battle_card",
+        "label": f"Battle Card · {fx['stage']}",
+        "title": f"{fx['home']} vs {fx['away']}",
+        "when": fx["utc"].strftime("%a %d %b"),
+        "league": f"{league} · {fx['stage']}",
+        "left": a, "right": b,
+        "footnote": "Injury risk probabilities are model outputs, not medical advice",
+        # For the copywriter.
+        "top_5": [a, b],
+        "matchday": fx["stage"],
+        "narrative_spine": (f"{a['player_name']} and {b['player_name']} both carry real "
+                            f"injury risk into {fx['home']} against {fx['away']}."),
+    }
+    print(f"[battle] {fx['home']} ({a['player_name']} {a['risk_score_pct']}%) vs "
+          f"{fx['away']} ({b['player_name']} {b['risk_score_pct']}%)")
+    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_png = config.OUT_DIR / f"battle_card_{args.competition}_{stamp}.png"
+    render.render_card("battle_card", payload, out_png)
+    print(f"[render] {out_png}")
+    x_post, reddit_post = copywriter.write(payload)
+    print("\n--- X POST (" + str(len(x_post)) + " chars) ---\n" + x_post)
+    print("\n--- REDDIT ---\n" + reddit_post + "\n")
+    if args.dry_run:
+        print(f"[dry-run] no email sent. card at {out_png}")
+        return 0
+    emailer.send_draft(payload, x_post, reddit_post, out_png)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--format", default="matchday_board",
-                    choices=["matchday_board", "riskiest_xi"])
+                    choices=["matchday_board", "riskiest_xi", "battle_card"])
     ap.add_argument("--competition", default="world-cup-2026")
     ap.add_argument("--matchday", default="MD1", help="round label e.g. MD1, R16, GW1")
     ap.add_argument("--league", default=None, help="display name; defaults from competition")
@@ -44,6 +87,9 @@ def main() -> int:
     ap.add_argument("--all-day", action="store_true", help="ignore the day filter (whole competition pool)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+
+    if args.format == "battle_card":
+        return _run_battle(args)
 
     spec = FORMAT_SPEC[args.format]
     league = args.league or LEAGUE_NAMES.get(args.competition, args.competition)
