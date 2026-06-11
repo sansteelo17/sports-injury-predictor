@@ -43,11 +43,12 @@ OUTPUT - return ONLY this JSON, no prose, no markdown fence:
   "should_post": true
 }
 
-SELF-CHECK: top_5 length is 5 (or should_post=false); no fabricated names; no '!', no dash anywhere."""
+SELF-CHECK: top_5 length matches the requested count (or should_post=false); no fabricated names; no '!', no dash anywhere."""
 
 
-def _fallback(candidates: List[Dict], matchday: str, league: str) -> Dict:
-    top = candidates[:5]
+def _fallback(candidates: List[Dict], matchday: str, league: str,
+              count: int = 5, post_type: str = "matchday_board") -> Dict:
+    top = candidates[:count]
     for c in top:
         if not c.get("signal_one_liner"):
             news = (c.get("injury_news") or "").strip()
@@ -55,42 +56,44 @@ def _fallback(candidates: List[Dict], matchday: str, league: str) -> Dict:
                                      f"{c.get('risk_level','')} risk into this round").strip()
         c.setdefault("delta_pct", None)
     return {
-        "post_type": "matchday_board",
+        "post_type": post_type,
         "matchday": matchday,
         "league": league,
         "top_5": top,
-        "narrative_spine": "The five players carrying the most injury risk into this round.",
+        "narrative_spine": f"The {len(top)} players carrying the most injury risk.",
         "should_post": len(top) > 0,
     }
 
 
-def select(candidates: List[Dict], matchday: str, league: str) -> Dict:
+def select(candidates: List[Dict], matchday: str, league: str,
+           count: int = 5, post_type: str = "matchday_board") -> Dict:
     if not candidates:
-        return {"post_type": "matchday_board", "matchday": matchday, "league": league,
+        return {"post_type": post_type, "matchday": matchday, "league": league,
                 "top_5": [], "should_post": False}
     user = json.dumps({
         "trigger_type": "cron",
-        "post_type": "matchday_board",
+        "post_type": post_type,
         "matchday": matchday,
         "league": league,
+        "instruction": f"Pick EXACTLY {count} players for this format, highest risk first.",
         "players_json": candidates,
     }, ensure_ascii=False)
     try:
         out = llm.chat_json(
             [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}],
-            max_tokens=1600,
+            max_tokens=2200,
         )
         if isinstance(out, dict) and out.get("top_5"):
             # Guard: keep only players that exist in the input (no fabrication).
             names = {str(c["player_name"]).lower() for c in candidates}
             out["top_5"] = [p for p in out["top_5"]
-                            if str(p.get("player_name", "")).lower() in names][:5]
+                            if str(p.get("player_name", "")).lower() in names][:count]
             out.setdefault("matchday", matchday)
             out.setdefault("league", league)
-            out.setdefault("post_type", "matchday_board")
+            out["post_type"] = post_type
             out["should_post"] = bool(out["top_5"])
             if out["top_5"]:
                 return out
     except Exception as e:
         print(f"[editorial] LLM failed, using fallback: {e}")
-    return _fallback(candidates, matchday, league)
+    return _fallback(candidates, matchday, league, count, post_type)
