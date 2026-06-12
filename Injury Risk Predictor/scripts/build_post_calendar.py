@@ -20,6 +20,13 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "data" / "processed" / "world_cup_2026_fixtures.pkl"
 OUT = ROOT / "social" / "yara_wc_post_schedule.ics"
 
+# Big nations: a fixture between two of these gets a battle-card reminder.
+_MARQUEE = {
+    "Brazil", "Argentina", "France", "England", "Spain", "Germany", "Portugal",
+    "Netherlands", "Belgium", "Croatia", "Uruguay", "Mexico", "United States",
+    "Italy", "Colombia", "Morocco", "Japan", "Senegal",
+}
+
 
 def _ics_dt(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -45,6 +52,21 @@ def main() -> int:
         "X-WR-CALNAME:Yara WC 2026 Posts",
     ]
 
+    def _event(uid, start, summary, desc, alarms):
+        lines.extend([
+            "BEGIN:VEVENT", f"UID:{uid}@yaraspeaks.com", f"DTSTAMP:{now}",
+            f"DTSTART:{_ics_dt(start)}", f"DTEND:{_ics_dt(start + timedelta(minutes=30))}",
+            f"SUMMARY:{_esc(summary)}", f"DESCRIPTION:{_esc(desc)}",
+        ])
+        for trig, label in alarms:
+            lines.extend(["BEGIN:VALARM", f"TRIGGER:{trig}", "ACTION:DISPLAY",
+                          f"DESCRIPTION:{_esc(label)}", "END:VALARM"])
+        lines.append("END:VEVENT")
+
+    _RUN = "python -m social.autopost.run --format {fmt} --competition world-cup-2026"
+    _BOARD_ALARMS = [("-P1D", "Yara board tomorrow"), ("-PT2H", "Yara board in 2h"),
+                     ("-PT1H", "Yara board in 1h")]
+
     for day, grp in fx.groupby("day"):
         grp = grp.sort_values("utc_date")
         first = grp.iloc[0]
@@ -52,33 +74,43 @@ def main() -> int:
         n = len(grp)
         stage = str(first.get("stage") or "").replace("_", " ").title() or "World Cup"
         headline = f"{first['home_team']} vs {first['away_team']}"
-        more = f" +{n - 1} more" if n > 1 else ""
-        summary = f"Yara post: WC {stage} ({n} game{'s' if n != 1 else ''})"
-        desc = (
-            f"Post the matchday risk board for {day}. First up: {headline}{more}. "
-            f"Run: python -m social.autopost.run --format matchday_board "
-            f"--competition world-cup-2026 --matchday \"{stage}\" --date {day}"
-        )
-        end = kickoff + timedelta(minutes=30)
-        lines += [
-            "BEGIN:VEVENT",
-            f"UID:yara-wc-{day}@yaraspeaks.com",
-            f"DTSTAMP:{now}",
-            f"DTSTART:{_ics_dt(kickoff)}",
-            f"DTEND:{_ics_dt(end)}",
-            f"SUMMARY:{_esc(summary)}",
-            f"DESCRIPTION:{_esc(desc)}",
-        ]
-        # Day-before, then 2h and 1h before first kickoff.
-        for trig, label in (("-P1D", "tomorrow"), ("-PT2H", "in 2 hours"), ("-PT1H", "in 1 hour")):
-            lines += [
-                "BEGIN:VALARM",
-                f"TRIGGER:{trig}",
-                "ACTION:DISPLAY",
-                f"DESCRIPTION:{_esc(f'Yara WC post {label}: {headline}')}",
-                "END:VALARM",
-            ]
-        lines.append("END:VEVENT")
+
+        # 1) Matchday board, ~2h before first kickoff, with the day-before + 2h/1h pings.
+        _event(f"yara-board-{day}", kickoff,
+               f"Yara: WC board, {stage} ({n} game{'s' if n != 1 else ''})",
+               f"Post the matchday board for {day}. First up: {headline}. "
+               f"Run: {_RUN.format(fmt='matchday_board')} --matchday \"{stage}\" --date {day}",
+               _BOARD_ALARMS)
+
+        # 2) Accountability the next morning (score the day's calls).
+        acct = (kickoff.replace(hour=9, minute=0, second=0) + timedelta(days=1))
+        _event(f"yara-acct-{day}", acct, f"Yara: score {day} (How We Did)",
+               f"Score yesterday's calls and post hits/misses. "
+               f"Run: {_RUN.format(fmt='accountability')} --date {day}",
+               [("-PT15M", "Yara accountability in 15m")])
+
+        # 3) Battle card on marquee days (a fixture between two big nations).
+        marquee = grp[grp.apply(lambda r: r["home_team"] in _MARQUEE and r["away_team"] in _MARQUEE, axis=1)]
+        if not marquee.empty:
+            m = marquee.iloc[0]
+            bk = m["utc_date"].to_pydatetime() - timedelta(hours=3)
+            _event(f"yara-battle-{day}", bk,
+                   f"Yara: battle card, {m['home_team']} vs {m['away_team']}",
+                   f"Post the marquee head-to-head. Run: {_RUN.format(fmt='battle_card')}",
+                   [("-PT1H", "Yara battle card in 1h")])
+
+    # 4) Weekly Riskiest XI (Mondays) + risk-spike check, across the tournament span.
+    days = sorted(fx["day"].unique())
+    d0 = datetime.strptime(days[0], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    d1 = datetime.strptime(days[-1], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    cur = d0
+    while cur <= d1:
+        if cur.weekday() == 0:  # Monday
+            noon = cur.replace(hour=12)
+            _event(f"yara-xi-{cur:%Y%m%d}", noon, "Yara: Riskiest XI of the tournament",
+                   f"Post the tournament riskiest XI. Run: {_RUN.format(fmt='riskiest_xi')}",
+                   [("-PT30M", "Yara riskiest XI in 30m")])
+        cur += timedelta(days=1)
 
     lines.append("END:VCALENDAR")
     OUT.write_text("\r\n".join(lines) + "\r\n")
