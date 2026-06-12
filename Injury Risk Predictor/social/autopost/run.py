@@ -12,8 +12,8 @@ import argparse
 import datetime as dt
 from pathlib import Path
 
-from . import (battle, config, copywriter, editorial, emailer, fetch, memory,
-               photos, render, wc_schedule)
+from . import (archetype, battle, config, copywriter, editorial, emailer, fetch,
+               memory, photos, render, wc_schedule)
 
 LEAGUE_NAMES = {
     "world-cup-2026": "FIFA World Cup 2026",
@@ -74,6 +74,26 @@ def _run_battle(args) -> int:
         return 0
     emailer.send_draft(payload, x_post, reddit_post, out_png)
     return 0
+
+
+def _run_archetype(args) -> int:
+    """Explain one archetype and show this week's marquee examples."""
+    league = args.league or LEAGUE_NAMES.get(args.competition, args.competition)
+    print(f"[run] archetype | {league} | API={config.API_BASE}")
+    data = archetype.build(args.competition)
+    if not data:
+        print("[run] no archetype with enough examples. Nothing to post.")
+        return 0
+    payload = {
+        "post_type": "archetype", "league": league, "subtitle": "This week's vocabulary",
+        "archetype": data["archetype"], "description": data["description"],
+        "triggers": data["triggers"], "examples": data["examples"],
+        "top_5": data["examples"],
+        "narrative_spine": f"This week's archetype is {data['archetype']}. {data['description']}",
+    }
+    print(f"[archetype] {data['archetype']}: "
+          + ", ".join(e["player_name"] for e in data["examples"]))
+    return _emit(args, "archetype", payload)
 
 
 def _emit(args, fmt: str, payload: Dict) -> int:
@@ -182,7 +202,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--format", default="matchday_board",
                     choices=["matchday_board", "riskiest_xi", "battle_card",
-                             "risk_spike", "accountability"])
+                             "risk_spike", "accountability", "archetype"])
     ap.add_argument("--competition", default="world-cup-2026")
     ap.add_argument("--matchday", default="auto",
                     help="round label; 'auto' derives the WC stage from the fixtures "
@@ -208,6 +228,8 @@ def main() -> int:
         return _run_spike(args)
     if args.format == "accountability":
         return _run_accountability(args)
+    if args.format == "archetype":
+        return _run_archetype(args)
 
     spec = FORMAT_SPEC[args.format]
     league = args.league or LEAGUE_NAMES.get(args.competition, args.competition)

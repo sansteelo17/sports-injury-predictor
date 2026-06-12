@@ -19,6 +19,7 @@ CARD_FILES = {
     "battle_card": "10_battle_card.html",
     "risk_spike": "01_matchday_board.html",       # reuses the board card
     "accountability": "04_accountability.html",
+    "archetype": "08_archetype.html",
 }
 
 # Each card owns its canvas size; screenshot at the matching viewport.
@@ -28,6 +29,7 @@ CARD_VIEWPORT = {
     "battle_card": (1600, 900),      # landscape
     "risk_spike": (1600, 900),       # landscape (board card)
     "accountability": (1600, 900),   # landscape
+    "archetype": (1080, 1080),       # square
 }
 
 
