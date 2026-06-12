@@ -13,7 +13,7 @@ import datetime as dt
 from pathlib import Path
 
 from . import (archetype, battle, config, copywriter, editorial, emailer, fetch,
-               memory, photos, render, wc_schedule)
+               lineup, memory, photos, render, wc_schedule)
 
 LEAGUE_NAMES = {
     "world-cup-2026": "FIFA World Cup 2026",
@@ -74,6 +74,50 @@ def _run_battle(args) -> int:
         return 0
     emailer.send_draft(payload, x_post, reddit_post, out_png)
     return 0
+
+
+def _run_lineup(args) -> int:
+    """React when a confirmed XI starts a player Yara flags as high risk."""
+    league = args.league or LEAGUE_NAMES.get(args.competition, args.competition)
+    date = args.date or dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+    print(f"[run] lineup_reaction | {league} | {date} | API={config.API_BASE}")
+    xis = lineup.published_lineups(date)
+    if not xis:
+        print(f"[run] no confirmed lineups published for {date}. Nothing to react to.")
+        return 0
+    cands = fetch.fetch_candidates(args.competition, pool=100, date=date)
+    hits = lineup.started_flags(cands, xis)
+    if not hits:
+        print("[run] no flagged player named in a confirmed XI. Nothing to post.")
+        return 0
+    p = hits[0]
+    if lineup_on_cooldown := memory.on_cooldown(p.get("player_name", ""), "lineup_reaction"):
+        print("[run] headline player on cooldown. Skipping.")
+        return 0
+    if not p.get("image_url"):
+        p["image_url"] = photos.wikipedia_photo(p.get("player_name", ""))
+    nm, team, risk = p.get("player_name", ""), p.get("team", ""), p.get("risk_score_pct", 0)
+    last = nm.split()[-1] if nm.split() else nm
+    ds = p.get("days_since_last_injury")
+    payload = {
+        "post_type": "lineup_reaction", "league": f"{league} · {args.matchday}",
+        "when": "Confirmed XI", "title": f"{team} start {last}",
+        "headline": f"{team} just named <em>{last}</em> in the XI, the player I have at "
+                    f"<em>{risk}% risk</em> this week.",
+        "sub": f"A {p.get('archetype', 'flagged')} profile, and he starts anyway. "
+               f"The manager and the model rarely disagree this loudly.",
+        "stats": [
+            {"lab": "Yara's read, this week", "val": f"{risk}%", "meta": f"{p.get('risk_level','')} risk", "red": True},
+            {"lab": "Profile", "val": (p.get("archetype") or "")[:14], "meta": "how the body reads"},
+            {"lab": "Last injury", "val": (f"{ds}d" if isinstance(ds, int) else "—"), "meta": "days since"},
+        ],
+        "question": "What does the staff see that I do not? Better recovery, a fitness "
+                    "test, or just trust. <span>We will know by full time.</span>",
+        "top_5": [p], "matchday": args.matchday,
+        "narrative_spine": f"{team} started {nm}, who Yara flags at {risk}% risk this week.",
+    }
+    print(f"[lineup] {team} started {nm} ({risk}%)")
+    return _emit(args, "lineup_reaction", payload)
 
 
 def _run_archetype(args) -> int:
@@ -202,7 +246,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--format", default="matchday_board",
                     choices=["matchday_board", "riskiest_xi", "battle_card",
-                             "risk_spike", "accountability", "archetype"])
+                             "risk_spike", "accountability", "archetype",
+                             "lineup_reaction"])
     ap.add_argument("--competition", default="world-cup-2026")
     ap.add_argument("--matchday", default="auto",
                     help="round label; 'auto' derives the WC stage from the fixtures "
@@ -230,6 +275,8 @@ def main() -> int:
         return _run_accountability(args)
     if args.format == "archetype":
         return _run_archetype(args)
+    if args.format == "lineup_reaction":
+        return _run_lineup(args)
 
     spec = FORMAT_SPEC[args.format]
     league = args.league or LEAGUE_NAMES.get(args.competition, args.competition)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import urllib.parse
 from pathlib import Path
 from typing import Dict
 
@@ -20,6 +21,7 @@ CARD_FILES = {
     "risk_spike": "01_matchday_board.html",       # reuses the board card
     "accountability": "04_accountability.html",
     "archetype": "08_archetype.html",
+    "lineup_reaction": "03_lineup_reaction.html",
 }
 
 # Each card owns its canvas size; screenshot at the matching viewport.
@@ -30,13 +32,16 @@ CARD_VIEWPORT = {
     "risk_spike": (1600, 900),       # landscape (board card)
     "accountability": (1600, 900),   # landscape
     "archetype": (1080, 1080),       # square
+    "lineup_reaction": (1600, 900),  # landscape
 }
 
 
 def _payload_url(card_path: Path, payload: Dict) -> str:
     raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     b64 = base64.b64encode(raw).decode("ascii")
-    return f"file://{card_path}?data={b64}"
+    # Percent-encode so a '+' or '/' in the base64 survives URLSearchParams
+    # (which would otherwise read '+' as a space and corrupt the payload).
+    return f"file://{card_path}?data={urllib.parse.quote(b64, safe='')}"
 
 
 def render_card(post_type: str, payload: Dict, out_path: Path) -> Path:
