@@ -13,7 +13,7 @@ import datetime as dt
 from pathlib import Path
 
 from . import (battle, config, copywriter, editorial, emailer, fetch, memory,
-               photos, render)
+               photos, render, wc_schedule)
 
 LEAGUE_NAMES = {
     "world-cup-2026": "FIFA World Cup 2026",
@@ -184,13 +184,23 @@ def main() -> int:
                     choices=["matchday_board", "riskiest_xi", "battle_card",
                              "risk_spike", "accountability"])
     ap.add_argument("--competition", default="world-cup-2026")
-    ap.add_argument("--matchday", default="MD1", help="round label e.g. MD1, R16, GW1")
+    ap.add_argument("--matchday", default="auto",
+                    help="round label; 'auto' derives the WC stage from the fixtures "
+                         "(Group Stage -> Round of 32 -> ... -> Final)")
     ap.add_argument("--league", default=None, help="display name; defaults from competition")
     ap.add_argument("--date", default=None,
                     help="YYYY-MM-DD. International boards restrict to teams playing that day. Default: today (UTC).")
     ap.add_argument("--all-day", action="store_true", help="ignore the day filter (whole competition pool)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+
+    # Auto stage label so the tournament switches itself, no manual --matchday.
+    if args.matchday == "auto":
+        if args.competition == "world-cup-2026":
+            ref = args.date or dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+            args.matchday = wc_schedule.stage_label_for(ref)
+        else:
+            args.matchday = "Matchday"
 
     if args.format == "battle_card":
         return _run_battle(args)
