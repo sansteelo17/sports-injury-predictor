@@ -1,0 +1,64 @@
+<!doctype html>
+<!-- Card 08 - Archetype explainer. Reads ?data=<base64 JSON>. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Archetype explainer</title>
+<link rel="stylesheet" href="_card.css">
+<style>
+  .ar-pad { padding: 56px; height: 100%; display: flex; flex-direction: column; }
+  .ar-headline { font-size: 80px; font-weight: 900; line-height: 0.92; letter-spacing: -0.04em; text-transform: uppercase; padding: 28px 0 12px; color: var(--red); }
+  .ar-sub { font-size: 18px; color: var(--ink-2); line-height: 1.55; padding-bottom: 26px; border-bottom: 1px solid var(--rule); max-width: 62ch; }
+  .ar-block { padding: 20px 0; border-bottom: 1px solid var(--rule); }
+  .ar-block h3 { font-size: 11px; font-weight: 800; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; }
+  .ar-trigger { display: flex; align-items: flex-start; gap: 14px; font-size: 17px; line-height: 1.4; padding: 7px 0; }
+  .ar-trigger::before { content: ""; width: 6px; height: 6px; background: var(--red); border-radius: 1px; margin-top: 9px; flex-shrink: 0; }
+  .ar-wild { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .ar-wild .pl { padding: 16px; background: var(--bg-alt); border-left: 4px solid var(--red); }
+  .ar-wild .pl .name { font-size: 20px; font-weight: 900; letter-spacing: -0.01em; text-transform: uppercase; line-height: 1; }
+  .ar-wild .pl .club { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-top: 6px; }
+  .ar-wild .pl .pct { font-size: 30px; font-weight: 900; color: var(--red); margin-top: 8px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .err { padding: 40px; font-family: ui-monospace, monospace; color: var(--red-d); font-size: 15px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div class="card square" id="card">
+  <div class="stripe"></div>
+  <div class="ar-pad">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; padding-bottom:16px; border-bottom:1px solid var(--rule);">
+      <div><div class="eyebrow green">Archetype · explainer</div><div class="eyebrow" id="sub2" style="margin-top:8px;">This week's vocabulary</div></div>
+      <div class="eyebrow" id="league" style="color: var(--ink); letter-spacing: 0.06em;">World Cup</div>
+    </div>
+    <div class="ar-headline" id="title">Fragile.</div>
+    <div class="ar-sub" id="desc"></div>
+    <div class="ar-block"><h3>Triggers</h3><div id="triggers"></div></div>
+    <div class="ar-block" style="border-bottom:none;"><h3>In the wild this week</h3><div class="ar-wild" id="examples"></div></div>
+    <div class="foot" style="margin-top:auto;"><span class="url">yaraspeaks.com</span><span class="right" id="foot">One archetype, explained</span></div>
+  </div>
+</div>
+<script>
+(function(){
+  function readPayload(){var p=new URLSearchParams(location.search),raw=p.get("data");if(!raw)return null;try{var d;try{d=decodeURIComponent(escape(atob(raw)))}catch(_){d=decodeURIComponent(raw)}return JSON.parse(d)}catch(e){return{__error:e.message}}}
+  function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+  function err(m){document.getElementById("desc").innerHTML='<div class="err">RENDER ERROR\n'+esc(m)+'</div>';document.documentElement.setAttribute("data-rendered","1")}
+  var POS={"Goalkeeper":"GK","Centre-Back":"DEF","Left-Back":"DEF","Right-Back":"DEF","Defender":"DEF","Midfield":"MID","Midfielder":"MID","Centre-Forward":"FWD","Forward":"FWD","Offence":"FWD","Defence":"DEF"};
+  function last(n){if(!n)return"";var a=String(n).trim().split(/\s+/);return a[a.length-1];}
+  function render(d){
+    if(!d) return err("no ?data=");
+    if(d.__error) return err(d.__error);
+    document.getElementById("league").textContent=d.league||"World Cup";
+    document.getElementById("title").textContent=(d.archetype||"Archetype")+".";
+    document.getElementById("desc").textContent=d.description||"";
+    if(d.subtitle)document.getElementById("sub2").textContent=d.subtitle;
+    document.getElementById("triggers").innerHTML=(d.triggers||[]).map(function(t){return '<div class="ar-trigger">'+esc(t)+'</div>';}).join("");
+    document.getElementById("examples").innerHTML=(d.examples||[]).slice(0,3).map(function(p){
+      return '<div class="pl"><div class="name">'+esc(last(p.player_name||p.name))+'</div>'+
+        '<div class="club">'+esc(p.team||"")+' · '+esc(POS[p.position]||(p.position?String(p.position).slice(0,3).toUpperCase():""))+'</div>'+
+        '<div class="pct">'+Math.round(p.risk_score_pct||0)+'%</div></div>';
+    }).join("");
+    document.documentElement.setAttribute("data-rendered","1");
+  }
+  render(readPayload());
+})();
+</script>
+</body></html>

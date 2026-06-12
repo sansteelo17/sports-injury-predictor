@@ -1,0 +1,62 @@
+<!doctype html>
+<!-- Card 03 - Lineup reaction. Reads ?data=<base64 JSON>. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Lineup reaction</title>
+<link rel="stylesheet" href="_card.css">
+<style>
+  .lr-pad { padding: 56px; height:100%; display:flex; flex-direction:column; }
+  .lr-mast { display:flex; align-items:flex-start; justify-content:space-between; gap:24px; padding-bottom:18px; border-bottom:1px solid var(--rule); }
+  .lr-mast h1 { font-size:30px; font-weight:800; letter-spacing:-0.015em; }
+  .lr-headline { font-size: 54px; font-weight:900; line-height:1.04; letter-spacing:-0.025em; padding: 26px 0 10px; }
+  .lr-headline em { font-style: normal; color: var(--red); }
+  .lr-sub { font-size: 17px; color: var(--ink-2); line-height: 1.5; padding-bottom: 22px; border-bottom: 1px solid var(--rule); max-width: 920px; }
+  .lr-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 28px; padding: 26px 0; border-bottom: 1px solid var(--rule); }
+  .lr-stat .lab { font-size: 11px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+  .lr-stat .v { font-size: 60px; font-weight: 900; letter-spacing: -0.04em; line-height: 0.9; font-variant-numeric: tabular-nums; }
+  .lr-stat .v.red { color: var(--red); }
+  .lr-stat .meta { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .lr-q { padding: 24px 0; font-size: 22px; font-weight: 600; color: var(--ink); line-height: 1.4; max-width: 900px; }
+  .lr-q span { color: var(--green); font-weight: 800; }
+  .err { padding: 40px; font-family: ui-monospace, monospace; color: var(--red-d); font-size: 15px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div class="card landscape" id="card">
+  <div class="stripe"></div>
+  <div class="lr-pad">
+    <div class="lr-mast">
+      <div><div class="eyebrow green" style="margin-bottom:6px;">Lineup signal · manager vs model</div><h1 id="title">Confirmed XI</h1></div>
+      <div class="text-right"><div class="eyebrow" id="when" style="font-size:13px;color:var(--ink);letter-spacing:0.06em;">Team news</div><div class="eyebrow" id="league" style="color:var(--muted-2);margin-top:4px;">World Cup</div></div>
+    </div>
+    <div class="lr-headline" id="headline"></div>
+    <div class="lr-sub" id="sub"></div>
+    <div class="lr-stats" id="stats"></div>
+    <div class="lr-q" id="question"></div>
+    <div class="foot" style="margin-top:auto;"><span class="url">yaraspeaks.com</span><span class="right" id="foot">Manager vs model · we update at full time</span></div>
+  </div>
+</div>
+<script>
+(function(){
+  function readPayload(){var p=new URLSearchParams(location.search),raw=p.get("data");if(!raw)return null;try{var d;try{d=decodeURIComponent(escape(atob(raw)))}catch(_){d=decodeURIComponent(raw)}return JSON.parse(d)}catch(e){return{__error:e.message}}}
+  function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+  function err(m){document.getElementById("sub").innerHTML='<div class="err">RENDER ERROR\n'+esc(m)+'</div>';document.documentElement.setAttribute("data-rendered","1")}
+  function render(d){
+    if(!d) return err("no ?data=");
+    if(d.__error) return err(d.__error);
+    document.getElementById("title").textContent=d.title||"Confirmed XI";
+    document.getElementById("when").textContent=d.when||"Team news";
+    document.getElementById("league").textContent=d.league||"World Cup";
+    document.getElementById("headline").innerHTML=d.headline||"";
+    document.getElementById("sub").textContent=d.sub||"";
+    document.getElementById("question").innerHTML=d.question||"";
+    document.getElementById("stats").innerHTML=(d.stats||[]).map(function(s){
+      return '<div class="lr-stat"><div class="lab">'+esc(s.lab)+'</div><div class="v '+(s.red?'red':'')+'">'+esc(s.val)+'</div><div class="meta">'+esc(s.meta||"")+'</div></div>';
+    }).join("");
+    document.documentElement.setAttribute("data-rendered","1");
+  }
+  render(readPayload());
+})();
+</script>
+</body></html>

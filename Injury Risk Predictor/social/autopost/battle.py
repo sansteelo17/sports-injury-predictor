@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from . import config, fetch
+from . import config, fetch, wc_schedule
 
 _FIXTURES_PKL = config.ROOT / "data" / "processed" / "world_cup_2026_fixtures.pkl"
 
@@ -41,7 +41,7 @@ def pick_fixture() -> Optional[Dict]:
     return {
         "home": best["home_team"], "away": best["away_team"],
         "date": str(best["utc_date"])[:10], "utc": best["utc_date"].to_pydatetime(),
-        "stage": str(best.get("stage") or "").replace("_", " ").title() or "World Cup",
+        "stage": wc_schedule.label(best.get("stage")),
     }
 
 

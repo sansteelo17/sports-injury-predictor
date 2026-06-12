@@ -34,6 +34,9 @@ def get(name: str, default: str = "") -> str:
 # Data API
 API_BASE = get("YARASPEAKS_API_BASE", "https://api.yaraspeaks.com").rstrip("/")
 
+# API-Football (api-sports.io) — confirmed lineups for the lineup-reaction post.
+API_FOOTBALL_KEY = get("API_FOOTBALL_KEY")
+
 # LLM (OpenAI-compatible). Reuses the project's OPENAI_* keys.
 OPENAI_API_KEY = get("OPENAI_API_KEY")
 OPENAI_BASE_URL = get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
